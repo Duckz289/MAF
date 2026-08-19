@@ -45,6 +45,8 @@ export interface CreateRunRequest {
 
 export interface RunSummary extends Run {
   task: string;
+  repositoryPath: string;
+  revision: string;
   currentPhase: string;
   lastMeaningfulEvent?: { type: string; timestamp: string };
   modeTransitions: number;
@@ -193,6 +195,8 @@ export class RunService {
         return {
           ...run,
           task: task?.prompt ?? "Unknown task",
+          repositoryPath: task?.repositoryPath ?? "",
+          revision: task?.revision ?? "HEAD",
           currentPhase: this.currentPhase(run, last?.type),
           ...(last ? { lastMeaningfulEvent: { type: last.type, timestamp: last.timestamp } } : {}),
           modeTransitions: events.filter((event) => event.type === "ModeChanged").length,

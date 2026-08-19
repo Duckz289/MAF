@@ -67,7 +67,7 @@ const waitForHealth = async () => {
 const verifyDashboard = async () => {
   const response = await fetch(`http://127.0.0.1:${port}/`);
   const html = await response.text();
-  if (!response.ok || !html.includes("Adaptive Harness Control")) {
+  if (!response.ok || !html.includes("MAF | Không gian kỹ thuật AI")) {
     throw new Error(`Dashboard was not served correctly: ${response.status}`);
   }
 };

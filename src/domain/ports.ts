@@ -224,6 +224,15 @@ export interface PlatformApiKeyProvider {
   issue(ownerId: string, scopes: string[]): Promise<{ key: string; id: string }>;
   verify(key: string, scope: string): Promise<boolean>;
   revoke(id: string): Promise<void>;
+  list(ownerId: string): Promise<PlatformApiKeyMetadata[]>;
+}
+
+export interface PlatformApiKeyMetadata {
+  id: string;
+  ownerId: string;
+  scopes: string[];
+  revoked: boolean;
+  createdAt: string;
 }
 
 export interface ModelRequest {

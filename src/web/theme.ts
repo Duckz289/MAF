@@ -1,0 +1,25 @@
+import { type Theme, webDarkTheme } from "@fluentui/react-components";
+
+export const mafDarkTheme: Theme = {
+  ...webDarkTheme,
+  colorNeutralBackground1: "#0c0d0e",
+  colorNeutralBackground2: "#111315",
+  colorNeutralBackground3: "#17191c",
+  colorNeutralBackground4: "#1d2024",
+  colorNeutralBackground5: "#24282d",
+  colorNeutralBackground6: "#2a2f35",
+  colorNeutralForeground1: "#f3f5f7",
+  colorNeutralForeground2: "#aeb6bf",
+  colorNeutralForeground3: "#858f9a",
+  colorNeutralStroke1: "#2b3036",
+  colorNeutralStroke2: "#22272c",
+  colorBrandBackground: "#3979d9",
+  colorBrandBackgroundHover: "#4a88e8",
+  colorBrandBackgroundPressed: "#326bbf",
+  colorBrandForeground1: "#75a9f2",
+  colorBrandStroke1: "#5791e5",
+  borderRadiusSmall: "6px",
+  borderRadiusMedium: "8px",
+  borderRadiusLarge: "12px",
+  borderRadiusXLarge: "12px",
+};

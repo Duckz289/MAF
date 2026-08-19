@@ -3,6 +3,7 @@ import type {
   CredentialBinding,
   CredentialResolver,
   ExternalConnectionProvider,
+  PlatformApiKeyMetadata,
   PlatformApiKeyProvider,
   UserAuthProvider,
   UserSession,
@@ -148,6 +149,7 @@ interface ApiKeyRecord {
   hash: Buffer;
   scopes: string[];
   revoked: boolean;
+  createdAt: string;
 }
 
 export class InMemoryPlatformApiKeys implements PlatformApiKeyProvider {
@@ -162,6 +164,7 @@ export class InMemoryPlatformApiKeys implements PlatformApiKeyProvider {
       hash: createHash("sha256").update(key).digest(),
       scopes: [...scopes],
       revoked: false,
+      createdAt: new Date().toISOString(),
     });
     return { key, id };
   }
@@ -180,6 +183,19 @@ export class InMemoryPlatformApiKeys implements PlatformApiKeyProvider {
   async revoke(id: string): Promise<void> {
     const record = this.records.get(id);
     if (record) record.revoked = true;
+  }
+
+  async list(ownerId: string): Promise<PlatformApiKeyMetadata[]> {
+    return [...this.records.values()]
+      .filter((record) => record.ownerId === ownerId)
+      .map(({ id, ownerId: recordOwnerId, scopes, revoked, createdAt }) => ({
+        id,
+        ownerId: recordOwnerId,
+        scopes: [...scopes],
+        revoked,
+        createdAt,
+      }))
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 }
 
