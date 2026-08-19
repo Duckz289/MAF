@@ -1,0 +1,21 @@
+{
+  "task": {
+    "id": "filesystem-fixture",
+    "prompt": "Create and verify a deterministic local fixture file",
+    "expectedVerification": "The file contains benchmark-fixture-ok"
+  },
+  "variants": [
+    {
+      "strategy": "NATIVE",
+      "command": "node",
+      "args": ["--import", "tsx", "benchmarks/fixture-executor.ts", "NATIVE"],
+      "cwd": "."
+    },
+    {
+      "strategy": "MAF_ADAPTIVE",
+      "command": "node",
+      "args": ["--import", "tsx", "benchmarks/fixture-executor.ts", "MAF_ADAPTIVE"],
+      "cwd": "."
+    }
+  ]
+}

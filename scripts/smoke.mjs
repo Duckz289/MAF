@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -22,6 +22,19 @@ await run("git", ["init", "-b", "main", repository], root);
 await run("git", ["config", "user.email", "smoke@example.invalid"], repository);
 await run("git", ["config", "user.name", "Harness Smoke"], repository);
 await writeFile(path.join(repository, "README.md"), "# Smoke fixture\n");
+for (const [file, source] of Object.entries({
+  "src/web/image.ts":
+    'import { loadMedia } from "../application/media";\nexport const image = loadMedia;\n',
+  "src/application/media.ts":
+    'import { resolveMedia } from "../infrastructure/resolver";\nexport const loadMedia = resolveMedia;\n',
+  "src/infrastructure/resolver.ts":
+    'import { canReadMedia } from "../domain/permissions";\nexport const resolveMedia = canReadMedia;\n',
+  "src/domain/permissions.ts": "export const canReadMedia = (): boolean => true;\n",
+})) {
+  const target = path.join(repository, file);
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, source);
+}
 await run("git", ["add", "."], repository);
 await run("git", ["commit", "-m", "baseline"], repository);
 
@@ -54,17 +67,17 @@ const waitForHealth = async () => {
 const verifyDashboard = async () => {
   const response = await fetch(`http://127.0.0.1:${port}/`);
   const html = await response.text();
-  if (!response.ok || !html.includes("Adaptive Harness Control")) {
+  if (!response.ok || !html.includes("MAF | Không gian kỹ thuật AI")) {
     throw new Error(`Dashboard was not served correctly: ${response.status}`);
   }
 };
 
-const create = async (expectedFile, signals) => {
+const create = async (expectedFile, signals, prompt = "Execute the native fixture agent") => {
   const response = await fetch(`http://127.0.0.1:${port}/api/v1/runs`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      prompt: "Execute the native fixture agent",
+      prompt,
       repositoryPath: repository,
       verification: { expectedFile },
       signals,
@@ -97,16 +110,22 @@ const waitForEvent = async (id, type) => {
 try {
   await waitForHealth();
   await verifyDashboard();
-  const pass = await create("agent-output.md", {
-    scopeStabilized: true,
-    mechanicalRemainingWork: true,
-  });
+  const pass = await create(
+    "agent-output.md",
+    undefined,
+    "Fix image rendering in web, then stabilize repeated edits",
+  );
   const fail = await create("missing-proof.txt", {
     rootCauseUncertainty: 0.9,
     crossModuleEdges: 5,
   });
-  const [verified, quarantined] = await Promise.all([waitForRun(pass.id), waitForRun(fail.id)]);
-  if (verified.verificationState !== "VERIFIED" || verified.executionMode !== "STRICT") {
+  const adaptive = await create("agent-output.md", undefined, "Fix image rendering in web");
+  const [verified, quarantined, adaptiveVerified] = await Promise.all([
+    waitForRun(pass.id),
+    waitForRun(fail.id),
+    waitForRun(adaptive.id),
+  ]);
+  if (verified.verificationState !== "VERIFIED" || verified.executionMode !== "GUIDED") {
     throw new Error(`Unexpected verified result: ${JSON.stringify(verified)}`);
   }
   if (
@@ -115,15 +134,28 @@ try {
   ) {
     throw new Error(`Unexpected quarantined result: ${JSON.stringify(quarantined)}`);
   }
-  const [stream] = await Promise.all([
+  if (
+    adaptiveVerified.verificationState !== "VERIFIED" ||
+    adaptiveVerified.executionMode !== "SOLO_NATIVE"
+  ) {
+    throw new Error(`Unexpected automatic adaptive result: ${JSON.stringify(adaptiveVerified)}`);
+  }
+  const [stream, adaptiveStream] = await Promise.all([
     waitForEvent(pass.id, "SandboxFinalized"),
     waitForEvent(fail.id, "SandboxFinalized"),
+    waitForEvent(adaptive.id, "SandboxFinalized"),
   ]);
   if (!stream.includes("ModeChanged") || !stream.includes("VerificationChanged")) {
     throw new Error("SSE stream did not contain required lifecycle events");
   }
+  if (
+    !adaptiveStream.includes("RuntimeSignalsObserved") ||
+    !adaptiveStream.includes("ModeChanged")
+  ) {
+    throw new Error("Automatic adaptive run did not expose signals and a mode transition");
+  }
   process.stdout.write(
-    "Smoke PASS: dashboard, VERIFIED, QUARANTINED, adaptive transitions, SSE, and worktree cleanup\n",
+    "Smoke PASS: dashboard, automatic runtime signals, VERIFIED, QUARANTINED, SSE, and cleanup\n",
   );
 } catch (error) {
   throw new Error(

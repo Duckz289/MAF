@@ -60,7 +60,9 @@ export interface ModeChangedData {
   from: ExecutionMode;
   to: ExecutionMode;
   reason: string;
-  evidence: Record<string, number | string | boolean>;
+  evidence: Record<string, unknown>;
+  signalSnapshotId?: string;
+  evidenceIds?: string[];
 }
 
 export interface Artifact {
@@ -83,6 +85,8 @@ export interface Verification {
   output: string;
   startedAt: string;
   completedAt: string;
+  attempt?: number;
+  candidateId?: string;
 }
 
 export interface TokenUsage {
@@ -110,6 +114,69 @@ export interface RuntimeSignals {
   scopeStabilized?: boolean | undefined;
   mechanicalRemainingWork?: boolean | undefined;
   independentWorkstreams?: number | undefined;
+  filesChanged?: number | undefined;
+  newDependenciesDiscovered?: number | undefined;
+  verificationFailureCount?: number | undefined;
+  stabilizationInvalidations?: number | undefined;
+}
+
+export type RuntimeSignalName = keyof RuntimeSignals;
+export type RuntimeSignalProvenance =
+  | "DETERMINISTIC"
+  | "HEURISTIC"
+  | "AGENT_INFERENCE"
+  | "EXTERNAL_HINT";
+export type RuntimeSignalReliability = "HIGH" | "MEDIUM" | "LOW";
+
+export interface RuntimeSignalEvidence {
+  id: string;
+  source: string;
+  provenance: RuntimeSignalProvenance;
+  summary: string;
+  data: Record<string, unknown>;
+  timestamp: string;
+}
+
+export interface RuntimeSignalValue<T extends number | boolean = number | boolean> {
+  value: T;
+  source: string;
+  provenance: RuntimeSignalProvenance;
+  reliability: RuntimeSignalReliability;
+  evidenceIds: string[];
+  timestamp: string;
+}
+
+export type RuntimeSignalValues = Partial<{
+  [Name in RuntimeSignalName]: RuntimeSignalValue<NonNullable<RuntimeSignals[Name]>>;
+}>;
+
+export interface RuntimeSignalSnapshot {
+  id: string;
+  runId: string;
+  sequence: number;
+  checkpoint: string;
+  timestamp: string;
+  signals: RuntimeSignalValues;
+  evidence: RuntimeSignalEvidence[];
+}
+
+export const signalValues = (snapshot: RuntimeSignalSnapshot): RuntimeSignals =>
+  Object.fromEntries(
+    Object.entries(snapshot.signals).map(([name, signal]) => [name, signal?.value]),
+  ) as RuntimeSignals;
+
+export type CredentialBoundaryCapability =
+  | "REFERENCE_ONLY"
+  | "REDACTED"
+  | "PROXY_MEDIATED"
+  | "ISOLATED";
+
+export interface AgentSecurityBoundary {
+  credentialCapability: CredentialBoundaryCapability;
+  environmentAllowlist: boolean;
+  processIsolation: boolean;
+  networkIsolation: boolean;
+  notes: string[];
 }
 
 export interface AgentCapabilities {

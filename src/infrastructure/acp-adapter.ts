@@ -4,7 +4,7 @@ import path from "node:path";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import type { AgentAdapter, AgentSession, AgentStartInput } from "../domain/ports";
-import type { AgentCapabilities, AgentEvent } from "../domain/types";
+import type { AgentCapabilities, AgentEvent, AgentSecurityBoundary } from "../domain/types";
 
 interface AcpProcessSession extends AgentSession {
   child: ChildProcessWithoutNullStreams;
@@ -43,6 +43,19 @@ export class ACPAdapter implements AgentAdapter {
       oauthAuth: true,
       apiKeyAuth: true,
       extensions: { acpV1: true },
+    };
+  }
+
+  async securityBoundary(): Promise<AgentSecurityBoundary> {
+    return {
+      credentialCapability: "REFERENCE_ONLY",
+      environmentAllowlist: true,
+      processIsolation: false,
+      networkIsolation: false,
+      notes: [
+        "ACP file callbacks are constrained to the worktree",
+        "The ACP subprocess is not network-isolated in LocalWorktree mode",
+      ],
     };
   }
 

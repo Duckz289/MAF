@@ -37,6 +37,54 @@ export const createFixtureRepository = async (): Promise<FixtureRepository> => {
   };
 };
 
+export const createAdaptiveFixtureRepository = async (): Promise<FixtureRepository> => {
+  const fixture = await createFixtureRepository();
+  const modules: Record<string, string> = {
+    "src/web/image.ts":
+      'import { loadMedia } from "../application/media";\nexport const renderImage = loadMedia;\n',
+    "src/application/media.ts":
+      'import { resolveMedia } from "../infrastructure/resolver";\nexport const loadMedia = resolveMedia;\n',
+    "src/application/controller.ts":
+      'import { loadMedia } from "./media";\nexport const controller = loadMedia;\n',
+    "src/infrastructure/resolver.ts":
+      'import { canReadMedia } from "../domain/permissions";\nexport const resolveMedia = (): boolean => canReadMedia();\n',
+    "src/domain/permissions.ts": "export const canReadMedia = (): boolean => true;\n",
+  };
+  for (const [file, source] of Object.entries(modules)) {
+    const target = path.join(fixture.path, file);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, source, "utf8");
+  }
+  await runProcess("git", ["add", "."], { cwd: fixture.path });
+  await runProcess("git", ["commit", "-m", "adaptive dependency fixture"], {
+    cwd: fixture.path,
+  });
+  return fixture;
+};
+
+export const createMonorepoFixtureRepository = async (): Promise<FixtureRepository> => {
+  const fixture = await createFixtureRepository();
+  const files: Record<string, string> = {
+    "package.json": JSON.stringify({ private: true, workspaces: ["apps/*", "packages/*"] }),
+    "apps/web/package.json": JSON.stringify({ name: "@fixture/web" }),
+    "apps/web/index.ts":
+      'import { apiValue } from "../api/index";\nexport const webValue = apiValue;\n',
+    "apps/api/package.json": JSON.stringify({ name: "@fixture/api" }),
+    "apps/api/index.ts":
+      'import { sharedValue } from "../../packages/shared/index";\nexport const apiValue = sharedValue;\n',
+    "packages/shared/package.json": JSON.stringify({ name: "@fixture/shared" }),
+    "packages/shared/index.ts": "export const sharedValue = true;\n",
+  };
+  for (const [file, source] of Object.entries(files)) {
+    const target = path.join(fixture.path, file);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, source, "utf8");
+  }
+  await runProcess("git", ["add", "."], { cwd: fixture.path });
+  await runProcess("git", ["commit", "-m", "workspace fixture"], { cwd: fixture.path });
+  return fixture;
+};
+
 export const waitFor = async <T>(
   read: () => Promise<T>,
   complete: (value: T) => boolean,

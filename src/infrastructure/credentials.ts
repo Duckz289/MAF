@@ -3,10 +3,12 @@ import type {
   CredentialBinding,
   CredentialResolver,
   ExternalConnectionProvider,
+  PlatformApiKeyMetadata,
   PlatformApiKeyProvider,
   UserAuthProvider,
   UserSession,
 } from "../domain/ports";
+import { redactSensitiveData } from "../domain/security";
 
 export class CredentialBindingStore {
   private readonly bindings = new Map<string, CredentialBinding>();
@@ -38,21 +40,7 @@ export class EnvironmentCredentialResolver implements CredentialResolver {
   }
 }
 
-export const redactSecrets = (value: unknown): unknown => {
-  const secretKey = /(api[-_]?key|secret|token|authorization|password|credential)/iu;
-  if (Array.isArray(value)) return value.map(redactSecrets);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, child]) => [
-        key,
-        secretKey.test(key) && !key.toLowerCase().endsWith("reference")
-          ? "[REDACTED]"
-          : redactSecrets(child),
-      ]),
-    );
-  }
-  return value;
-};
+export const redactSecrets = redactSensitiveData;
 
 export class LocalDevelopmentAuth implements UserAuthProvider {
   async session(
@@ -161,6 +149,7 @@ interface ApiKeyRecord {
   hash: Buffer;
   scopes: string[];
   revoked: boolean;
+  createdAt: string;
 }
 
 export class InMemoryPlatformApiKeys implements PlatformApiKeyProvider {
@@ -175,6 +164,7 @@ export class InMemoryPlatformApiKeys implements PlatformApiKeyProvider {
       hash: createHash("sha256").update(key).digest(),
       scopes: [...scopes],
       revoked: false,
+      createdAt: new Date().toISOString(),
     });
     return { key, id };
   }
@@ -194,6 +184,19 @@ export class InMemoryPlatformApiKeys implements PlatformApiKeyProvider {
     const record = this.records.get(id);
     if (record) record.revoked = true;
   }
+
+  async list(ownerId: string): Promise<PlatformApiKeyMetadata[]> {
+    return [...this.records.values()]
+      .filter((record) => record.ownerId === ownerId)
+      .map(({ id, ownerId: recordOwnerId, scopes, revoked, createdAt }) => ({
+        id,
+        ownerId: recordOwnerId,
+        scopes: [...scopes],
+        revoked,
+        createdAt,
+      }))
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
 }
 
 export class AgentVaultBroker {
@@ -206,5 +209,9 @@ export class AgentVaultBroker {
       HARNESS_CREDENTIAL_REFERENCE: reference,
       HARNESS_DUMMY_CREDENTIAL: `__${createHash("sha256").update(reference).digest("hex").slice(0, 20)}__`,
     };
+  }
+
+  capability(): "PROXY_MEDIATED" {
+    return "PROXY_MEDIATED";
   }
 }

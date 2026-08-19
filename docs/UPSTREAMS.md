@@ -7,7 +7,7 @@ vendored into this repository.
 | Project | Canonical repository | License | Audited revision/version | Purpose | Integration and updates |
 | --- | --- | --- | --- | --- | --- |
 | Agent Client Protocol TypeScript SDK | `agentclientprotocol/typescript-sdk` | Apache-2.0 | `7585334c5b738868583d561bdfc97caf77a3f3ba`; npm `1.3.0` | First-class interoperable agent transport | Pinned package dependency behind `AgentAdapter`; update after ACP conformance tests |
-| codebase-memory-mcp | `DeusData/codebase-memory-mcp` | MIT | `46ae198fc11cda80e817acbc5f5908d7c2de7032` | Optional structural project graph | MCP/service adapter; deterministic local index remains fallback |
+| codebase-memory-mcp | `DeusData/codebase-memory-mcp` | MIT | `46ae198fc11cda80e817acbc5f5908d7c2de7032` | Optional structural project graph | Explicit inactive optional port until transport is configured; deterministic local index reports itself as fallback |
 | Aider | `Aider-AI/aider` | Apache-2.0 | `5dc9490bb35f9729ef2c95d00a19ccd30c26339c` | Repository-map algorithm reference | Reference-only; no copied files; compact map is independently implemented |
 | ast-grep | `ast-grep/ast-grep` | MIT | `0eb08389b6c4c5f3e19f90efbcb726fc413ca63d`; npm `0.45.1` | Structural search | Pinned N-API package behind repository-index abstraction |
 | Bifrost | `maximhq/bifrost` | Apache-2.0 | `1eaa6840b43571ecec892d6b8cfb78d8bb7c34cb` | Multi-provider LLM gateway | OpenAI-compatible HTTP service adapter; no server code embedded |

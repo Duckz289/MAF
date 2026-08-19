@@ -3,12 +3,14 @@ import type {
   KnowledgeRecord,
   ProjectBrain,
   RepositoryIndex,
+  RepositoryIndexStatus,
   RepositorySnapshot,
 } from "../domain/ports";
 import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { moduleOwnerForFile } from "../domain/module-ownership";
 
 export class InMemoryProjectBrain implements ProjectBrain {
   private readonly records = new Map<string, KnowledgeRecord>();
@@ -70,8 +72,93 @@ const execCapture = async (command: string, args: string[], cwd: string): Promis
   return stdout;
 };
 
+const sourceExtensions = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
+
+const workspacePatterns = async (repositoryPath: string, files: string[]): Promise<string[]> => {
+  const patterns: string[] = [];
+  if (files.includes("package.json")) {
+    try {
+      const manifest = JSON.parse(
+        await readFile(path.join(repositoryPath, "package.json"), "utf8"),
+      ) as {
+        workspaces?: string[] | { packages?: string[] };
+      };
+      const workspaces = Array.isArray(manifest.workspaces)
+        ? manifest.workspaces
+        : (manifest.workspaces?.packages ?? []);
+      patterns.push(...workspaces);
+    } catch {
+      // An invalid manifest cannot be trusted as workspace evidence.
+    }
+  }
+  if (files.includes("pnpm-workspace.yaml")) {
+    try {
+      const yaml = await readFile(path.join(repositoryPath, "pnpm-workspace.yaml"), "utf8");
+      for (const line of yaml.split(/\r?\n/u)) {
+        const match = line.match(/^\s*-\s*['"]?([^'"#]+?)['"]?\s*$/u);
+        if (match?.[1]) patterns.push(match[1].trim());
+      }
+    } catch {
+      // Workspace hints are optional; tracked-file conventions remain available.
+    }
+  }
+  return [...new Set(patterns)];
+};
+
+const rootsForPattern = (pattern: string, files: string[]): string[] => {
+  const normalized = pattern.replaceAll("\\", "/").replace(/^\.\//u, "").replace(/\/$/u, "");
+  if (!normalized.includes("*"))
+    return files.some((file) => file.startsWith(`${normalized}/`)) ? [normalized] : [];
+  const prefix = normalized.slice(0, normalized.indexOf("*")).replace(/\/$/u, "");
+  const depth = prefix.split("/").filter(Boolean).length + 1;
+  return files
+    .filter((file) => file.startsWith(`${prefix}/`))
+    .map((file) => file.split("/").slice(0, depth).join("/"))
+    .filter(Boolean);
+};
+
+const discoverModuleRoots = async (repositoryPath: string, files: string[]): Promise<string[]> => {
+  const roots = new Set<string>();
+  for (const file of files) {
+    const normalized = file.replaceAll("\\", "/");
+    if (normalized.endsWith("/package.json")) roots.add(path.posix.dirname(normalized));
+    const segments = normalized.split("/");
+    if (["apps", "packages", "services"].includes(segments[0] ?? "") && segments[1]) {
+      roots.add(`${segments[0]}/${segments[1]}`);
+    }
+  }
+  for (const pattern of await workspacePatterns(repositoryPath, files)) {
+    for (const root of rootsForPattern(pattern, files)) roots.add(root);
+  }
+  return [...roots].sort((left, right) => left.localeCompare(right));
+};
+
+const resolveLocalImport = (
+  from: string,
+  specifier: string,
+  repositoryFiles: Set<string>,
+): string | undefined => {
+  if (!specifier.startsWith(".")) return undefined;
+  const base = path.posix.normalize(path.posix.join(path.posix.dirname(from), specifier));
+  const candidates = [
+    base,
+    ...sourceExtensions.map((extension) => `${base}${extension}`),
+    ...sourceExtensions.map((extension) => `${base}/index${extension}`),
+  ];
+  return candidates.find((candidate) => repositoryFiles.has(candidate));
+};
+
 export class LocalRepositoryIndex implements RepositoryIndex {
   readonly name = "local-deterministic-index";
+
+  status(): RepositoryIndexStatus {
+    return {
+      engine: this.name,
+      capability: "LOCAL_DETERMINISTIC",
+      active: true,
+      detail: "Tracked files, symbols, resolved local imports, module ownership, and ast-grep",
+    };
+  }
 
   async index(repositoryPath: string, revision: string): Promise<RepositorySnapshot> {
     const raw = await execCapture("git", ["ls-files"], repositoryPath);
@@ -81,10 +168,13 @@ export class LocalRepositoryIndex implements RepositoryIndex {
       .filter(Boolean)
       .slice(0, 4_000);
     const sourceFiles = files.filter((file) => /\.(?:ts|tsx|js|jsx|mjs|cjs)$/u.test(file));
+    const repositoryFiles = new Set(files.map((file) => file.replaceAll("\\", "/")));
     const symbols: RepositorySnapshot["symbols"] = [];
     const relations: RepositorySnapshot["relations"] = [];
     const moduleMap: Record<string, string[]> = {};
+    const moduleOwnership: Record<string, string> = {};
     const evidence: RepositorySnapshot["evidence"] = [];
+    const moduleRoots = await discoverModuleRoots(repositoryPath, files);
 
     await Promise.all(
       sourceFiles.slice(0, 500).map(async (file) => {
@@ -114,15 +204,34 @@ export class LocalRepositoryIndex implements RepositoryIndex {
             });
           }
           for (const match of line.matchAll(/(?:from\s+|import\s*\()["']([^"']+)["']/gu)) {
-            if (match[1]) relations.push({ from: file, to: match[1], kind: "IMPORTS" });
+            if (!match[1]) continue;
+            const target = resolveLocalImport(file, match[1], repositoryFiles);
+            if (target) relations.push({ from: file, to: target, kind: "IMPORTS" });
           }
         });
-        const module = file.split(/[\\/]/u)[0] ?? "root";
+        const normalizedFile = file.replaceAll("\\", "/");
+        const module = moduleOwnerForFile(normalizedFile, moduleRoots);
+        moduleOwnership[normalizedFile] = module;
         moduleMap[module] = [...(moduleMap[module] ?? []), file];
       }),
     );
 
-    return { revision, files, symbols, relations, moduleMap, evidence };
+    symbols.sort((left, right) => left.file.localeCompare(right.file) || left.line - right.line);
+    relations.sort(
+      (left, right) => left.from.localeCompare(right.from) || left.to.localeCompare(right.to),
+    );
+    evidence.sort((left, right) => left.uri.localeCompare(right.uri));
+    for (const moduleFiles of Object.values(moduleMap)) moduleFiles.sort();
+    return {
+      revision,
+      files,
+      symbols,
+      relations,
+      moduleMap,
+      moduleOwnership,
+      moduleRoots,
+      evidence,
+    };
   }
 
   async structuralSearch(
@@ -156,26 +265,31 @@ export class LocalRepositoryIndex implements RepositoryIndex {
   }
 }
 
-export class CodebaseMemoryMcpIndex implements RepositoryIndex {
-  readonly name = "codebase-memory-mcp";
+export class OptionalCodebaseMemoryIndex implements RepositoryIndex {
+  readonly name: string;
 
-  constructor(
-    private readonly fallback: RepositoryIndex,
-    private readonly executable = "codebase-memory-mcp",
-  ) {}
+  constructor(private readonly fallback: RepositoryIndex) {
+    this.name = `optional-codebase-memory-port:fallback=${fallback.name}`;
+  }
 
   async index(repositoryPath: string, revision: string): Promise<RepositorySnapshot> {
-    try {
-      await execCapture(this.executable, ["--version"], repositoryPath);
-    } catch {
-      return this.fallback.index(repositoryPath, revision);
-    }
-    // The MCP process is intentionally owned by the host runtime. V0 falls back to the deterministic
-    // index until an initialized MCP session is injected rather than starting a hidden daemon here.
     return this.fallback.index(repositoryPath, revision);
   }
 
   structuralSearch(repositoryPath: string, language: string, pattern: string): Promise<string[]> {
     return this.fallback.structuralSearch(repositoryPath, language, pattern);
   }
+
+  status(): RepositoryIndexStatus {
+    return {
+      engine: this.name,
+      capability: "OPTIONAL_PORT",
+      active: false,
+      fallbackEngine: this.fallback.name,
+      detail: "No MCP session is configured; the deterministic local index is active",
+    };
+  }
 }
+
+/** @deprecated Compatibility alias. This is an optional port, not an active MCP session. */
+export { OptionalCodebaseMemoryIndex as CodebaseMemoryMcpIndex };

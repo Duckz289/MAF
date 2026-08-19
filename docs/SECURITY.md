@@ -7,12 +7,19 @@
 - `EnvironmentCredentialResolver` resolves a reference only at the gateway edge.
 - `AgentVaultBroker` supplies a broker URL and dummy reference credential to a sandbox. It does not
   inject the real upstream credential.
-- `redactSecrets` removes secret-shaped fields before domain telemetry export.
+- Recursive redaction removes secret-shaped fields and values before events, artifacts, and telemetry
+  are persisted or exported.
 - Agent initial context contains credential references only.
 - `.env.example` contains placeholders and `.env` is ignored.
 
 The local fixture and mock OAuth paths are labeled `MOCK_VERIFIED`. They do not imply a production
 provider test.
+
+Each agent adapter reports a credential boundary capability. Native CLI, ACP, and Claude Code are
+`REFERENCE_ONLY`: they receive an allowlisted process environment and credential references, but no
+managed provider secret. Agent Vault is `PROXY_MEDIATED`. These labels do not claim OS or network
+isolation. The integration probe verifies that a canary secret is absent from the agent artifact,
+events, and telemetry while the capability label remains visible.
 
 ## Sandbox boundary
 

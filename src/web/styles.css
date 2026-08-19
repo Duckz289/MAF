@@ -1,7 +1,9 @@
 :root {
   font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   color-scheme: dark;
-  background: #202020;
+  background: #0c0d0e;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
 }
 
 * {
@@ -12,10 +14,37 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100dvh;
+  background: #0c0d0e;
 }
 
 button:active {
   transform: translateY(1px);
+}
+
+button,
+a,
+input,
+textarea,
+select,
+summary {
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease,
+    transform 120ms ease;
+}
+
+summary {
+  cursor: pointer;
+}
+
+code {
+  font-family: "Cascadia Code", Consolas, monospace;
+}
+
+::selection {
+  color: #f7f9fb;
+  background: #285a9f;
 }
 
 @media (prefers-reduced-motion: reduce) {

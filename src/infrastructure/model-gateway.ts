@@ -74,8 +74,12 @@ export class BifrostModelGateway implements ModelGateway {
     throw lastError ?? new Error("Bifrost request failed");
   }
 
-  async estimateCost(_provider: string, _model: string, usage: TokenUsage): Promise<number> {
-    return (usage.input * 0.000_001 + usage.output * 0.000_003) / 1_000;
+  async estimateCost(
+    _provider: string,
+    _model: string,
+    _usage: TokenUsage,
+  ): Promise<number | null> {
+    return null;
   }
 
   async getProviderHealth(provider: string): Promise<ModelHealth> {
@@ -92,13 +96,13 @@ export class MockModelGateway implements ModelGateway {
     return {
       content,
       usage: { input: 8, output: 8, cached: 0 },
-      cost: 0,
+      cost: null,
       latencyMs: 1,
       retryCount: 0,
     };
   }
-  async estimateCost(): Promise<number> {
-    return 0;
+  async estimateCost(): Promise<number | null> {
+    return null;
   }
   async getProviderHealth(): Promise<ModelHealth> {
     return "HEALTHY";

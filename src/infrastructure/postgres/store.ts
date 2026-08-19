@@ -1,6 +1,13 @@
 import type { Pool } from "pg";
 import type { RunStore } from "../../domain/ports";
-import type { Artifact, Event, Run, Task, Verification } from "../../domain/types";
+import type {
+  Artifact,
+  Event,
+  Run,
+  RuntimeSignalSnapshot,
+  Task,
+  Verification,
+} from "../../domain/types";
 
 export class PostgresRunStore implements RunStore {
   constructor(private readonly pool: Pool) {}
@@ -68,11 +75,30 @@ export class PostgresRunStore implements RunStore {
         [event.id, event.runId, event.type, event.timestamp, event.data],
       );
       if (event.type === "ModeChanged") {
-        const data = event.data as { from: string; to: string; reason: string; evidence: unknown };
+        const data = event.data as {
+          from: string;
+          to: string;
+          reason: string;
+          evidence: unknown;
+          signalSnapshotId?: string;
+          evidenceIds?: string[];
+        };
         await client.query(
-          `INSERT INTO mode_transitions(id, run_id, from_mode, to_mode, reason, evidence, timestamp)
-           VALUES($1, $2, $3, $4, $5, $6, $7)`,
-          [event.id, event.runId, data.from, data.to, data.reason, data.evidence, event.timestamp],
+          `INSERT INTO mode_transitions(
+             id, run_id, from_mode, to_mode, reason, evidence, timestamp,
+             signal_snapshot_id, evidence_ids
+           ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [
+            event.id,
+            event.runId,
+            data.from,
+            data.to,
+            data.reason,
+            data.evidence,
+            event.timestamp,
+            data.signalSnapshotId ?? null,
+            JSON.stringify(data.evidenceIds ?? []),
+          ],
         );
       }
       await client.query("COMMIT");
@@ -129,8 +155,10 @@ export class PostgresRunStore implements RunStore {
 
   async addVerification(verification: Verification): Promise<void> {
     await this.pool.query(
-      `INSERT INTO verifications(id, run_id, type, state, command, exit_code, output, started_at, completed_at)
-       VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      `INSERT INTO verifications(
+         id, run_id, type, state, command, exit_code, output, started_at, completed_at,
+         attempt, candidate_id
+       ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
       [
         verification.id,
         verification.runId,
@@ -141,7 +169,46 @@ export class PostgresRunStore implements RunStore {
         verification.output,
         verification.startedAt,
         verification.completedAt,
+        verification.attempt ?? 1,
+        verification.candidateId ?? null,
       ],
     );
+  }
+
+  async listVerifications(runId: string): Promise<Verification[]> {
+    const result = await this.pool.query<Verification>(
+      `SELECT id, run_id AS "runId", type, state, command, exit_code AS "exitCode", output,
+              started_at::text AS "startedAt", completed_at::text AS "completedAt",
+              attempt, candidate_id AS "candidateId"
+       FROM verifications WHERE run_id=$1 ORDER BY attempt, started_at`,
+      [runId],
+    );
+    return result.rows;
+  }
+
+  async addSignalSnapshot(snapshot: RuntimeSignalSnapshot): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO runtime_signal_snapshots(id, run_id, sequence, checkpoint, signals, evidence, timestamp)
+       VALUES($1,$2,$3,$4,$5,$6,$7)`,
+      [
+        snapshot.id,
+        snapshot.runId,
+        snapshot.sequence,
+        snapshot.checkpoint,
+        snapshot.signals,
+        JSON.stringify(snapshot.evidence),
+        snapshot.timestamp,
+      ],
+    );
+  }
+
+  async listSignalSnapshots(runId: string): Promise<RuntimeSignalSnapshot[]> {
+    const result = await this.pool.query<RuntimeSignalSnapshot>(
+      `SELECT id, run_id AS "runId", sequence, checkpoint, signals, evidence,
+              timestamp::text AS timestamp
+       FROM runtime_signal_snapshots WHERE run_id=$1 ORDER BY sequence`,
+      [runId],
+    );
+    return result.rows;
   }
 }
