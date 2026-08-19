@@ -1,6 +1,7 @@
 import type {
   AgentCapabilities,
   AgentEvent,
+  AgentSecurityBoundary,
   Artifact,
   Event,
   ExecutionMode,
@@ -9,6 +10,8 @@ import type {
   Task,
   TokenUsage,
   Verification,
+  RuntimeSignalSnapshot,
+  RuntimeSignals,
 } from "./types";
 
 export interface RunStore {
@@ -23,6 +26,9 @@ export interface RunStore {
   addArtifact(artifact: Artifact): Promise<void>;
   listArtifacts(runId: string): Promise<Artifact[]>;
   addVerification(verification: Verification): Promise<void>;
+  listVerifications(runId: string): Promise<Verification[]>;
+  addSignalSnapshot(snapshot: RuntimeSignalSnapshot): Promise<void>;
+  listSignalSnapshots(runId: string): Promise<RuntimeSignalSnapshot[]>;
 }
 
 export interface AgentStartInput {
@@ -46,6 +52,7 @@ export interface AgentAdapter {
   events(session: AgentSession): AsyncIterable<AgentEvent>;
   cancel(session: AgentSession): Promise<void>;
   resume(nativeSessionId: string): Promise<AgentSession>;
+  securityBoundary?(): Promise<AgentSecurityBoundary>;
 }
 
 export interface Sandbox {
@@ -84,6 +91,15 @@ export interface RepositoryIndex {
   readonly name: string;
   index(repositoryPath: string, revision: string): Promise<RepositorySnapshot>;
   structuralSearch(repositoryPath: string, language: string, pattern: string): Promise<string[]>;
+  status?(): RepositoryIndexStatus;
+}
+
+export interface RepositoryIndexStatus {
+  engine: string;
+  capability: "LOCAL_DETERMINISTIC" | "OPTIONAL_PORT" | "REAL_MCP";
+  active: boolean;
+  fallbackEngine?: string;
+  detail: string;
 }
 
 export type KnowledgeStatus = "ACTIVE" | "STALE";
@@ -114,9 +130,54 @@ export interface ContextRequest {
 }
 
 export interface ContextBuilderPort {
-  build(
-    request: ContextRequest,
-  ): Promise<{ text: string; evidenceIds: string[]; tokenEstimate: number }>;
+  build(request: ContextRequest): Promise<ContextBuildResult>;
+}
+
+export interface ContextBuildResult {
+  text: string;
+  evidenceIds: string[];
+  tokenEstimate: number;
+  initialFiles: string[];
+  initialModules: string[];
+}
+
+export type RuntimeObservation =
+  | {
+      runId: string;
+      type: "INITIAL_CONTEXT";
+      timestamp: string;
+      checkpoint: string;
+      repository: RepositorySnapshot;
+      initialFiles: string[];
+      initialModules: string[];
+      externalHints?: RuntimeSignals;
+    }
+  | {
+      runId: string;
+      type: "AGENT_EVENT";
+      timestamp: string;
+      checkpoint: string;
+      event: AgentEvent;
+    }
+  | {
+      runId: string;
+      type: "DIFF_CAPTURED";
+      timestamp: string;
+      checkpoint: string;
+      diff: SandboxDiff;
+    }
+  | {
+      runId: string;
+      type: "VERIFICATION";
+      timestamp: string;
+      checkpoint: string;
+      verification: Verification;
+    };
+
+export interface RuntimeSignalCollector {
+  observe(observation: RuntimeObservation): Promise<RuntimeSignalSnapshot>;
+  latest(runId: string): Promise<RuntimeSignalSnapshot | undefined>;
+  history(runId: string): Promise<RuntimeSignalSnapshot[]>;
 }
 
 export type AuthStrategy =
@@ -174,7 +235,7 @@ export interface ModelRequest {
 export interface ModelResponse {
   content: string;
   usage: TokenUsage;
-  cost: number;
+  cost: number | null;
   latencyMs: number;
   retryCount: number;
 }
@@ -182,7 +243,7 @@ export interface ModelResponse {
 export interface ModelGateway {
   listModels(): Promise<string[]>;
   execute(request: ModelRequest): Promise<ModelResponse>;
-  estimateCost(provider: string, model: string, usage: TokenUsage): Promise<number>;
+  estimateCost(provider: string, model: string, usage: TokenUsage): Promise<number | null>;
   getProviderHealth(provider: string): Promise<ModelHealth>;
 }
 
@@ -196,7 +257,7 @@ export interface TelemetryRecord {
   inputTokens: number;
   outputTokens: number;
   cachedTokens: number;
-  modelCost: number;
+  modelCost: number | null;
   sandboxCost: number;
   verificationCost: number;
   retryCost: number;
@@ -207,6 +268,13 @@ export interface TelemetryRecord {
   verificationType: string;
   verificationState: string;
   modeTransitions: number;
+  signalSnapshots: number;
+  latestSignalSnapshotId?: string;
+  dependencyExpansion: number;
+  touchedModules: number;
+  crossModuleEdges: number;
+  verifierFailures: number;
+  contextExpansion: number;
   verifiedSuccess: boolean;
   timestamp: string;
 }

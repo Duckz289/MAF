@@ -1,5 +1,12 @@
 import type { RunStore } from "../domain/ports";
-import type { Artifact, Event, Run, Task, Verification } from "../domain/types";
+import type {
+  Artifact,
+  Event,
+  Run,
+  RuntimeSignalSnapshot,
+  Task,
+  Verification,
+} from "../domain/types";
 
 export class InMemoryRunStore implements RunStore {
   private readonly tasks = new Map<string, Task>();
@@ -7,6 +14,7 @@ export class InMemoryRunStore implements RunStore {
   private readonly eventsByRun = new Map<string, Event<unknown>[]>();
   private readonly artifactsByRun = new Map<string, Artifact[]>();
   private readonly verificationsByRun = new Map<string, Verification[]>();
+  private readonly signalSnapshotsByRun = new Map<string, RuntimeSignalSnapshot[]>();
 
   async createTask(task: Task): Promise<void> {
     this.tasks.set(task.id, structuredClone(task));
@@ -63,5 +71,23 @@ export class InMemoryRunStore implements RunStore {
     const verifications = this.verificationsByRun.get(verification.runId) ?? [];
     verifications.push(structuredClone(verification));
     this.verificationsByRun.set(verification.runId, verifications);
+  }
+
+  async listVerifications(runId: string): Promise<Verification[]> {
+    return (this.verificationsByRun.get(runId) ?? []).map((verification) =>
+      structuredClone(verification),
+    );
+  }
+
+  async addSignalSnapshot(snapshot: RuntimeSignalSnapshot): Promise<void> {
+    const snapshots = this.signalSnapshotsByRun.get(snapshot.runId) ?? [];
+    snapshots.push(structuredClone(snapshot));
+    this.signalSnapshotsByRun.set(snapshot.runId, snapshots);
+  }
+
+  async listSignalSnapshots(runId: string): Promise<RuntimeSignalSnapshot[]> {
+    return (this.signalSnapshotsByRun.get(runId) ?? []).map((snapshot) =>
+      structuredClone(snapshot),
+    );
   }
 }

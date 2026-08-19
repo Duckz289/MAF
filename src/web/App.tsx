@@ -40,6 +40,28 @@ interface Run {
   currentPhase: string;
   lastMeaningfulEvent?: { type: string; timestamp: string };
   modeTransitions: number;
+  signalSnapshots: number;
+  modeExplanation: {
+    mode: "STRICT" | "GUIDED" | "SOLO_NATIVE";
+    reason: string;
+    latestSnapshotId?: string;
+    latestSignals: Record<
+      string,
+      {
+        value: number | boolean;
+        source: string;
+        provenance: "DETERMINISTIC" | "HEURISTIC" | "AGENT_INFERENCE" | "EXTERNAL_HINT";
+        reliability: string;
+      }
+    >;
+    timeline: Array<{
+      from: string;
+      to: string;
+      reason: string;
+      timestamp: string;
+      signalSnapshotId?: string;
+    }>;
+  };
   operationalStatus: string;
 }
 
@@ -118,6 +140,26 @@ const useStyles = makeStyles({
     borderBottom: `1px solid ${tokens.colorNeutralStroke2}`,
   },
   metricValue: { fontSize: tokens.fontSizeBase600, fontWeight: tokens.fontWeightSemibold },
+  intelligence: {
+    display: "grid",
+    gap: tokens.spacingVerticalM,
+    padding: tokens.spacingHorizontalM,
+    border: `1px solid ${tokens.colorNeutralStroke2}`,
+    borderRadius: tokens.borderRadiusLarge,
+    backgroundColor: tokens.colorNeutralBackground2,
+  },
+  signalGrid: {
+    display: "grid",
+    gridTemplateColumns: "1fr auto",
+    gap: `${tokens.spacingVerticalXS} ${tokens.spacingHorizontalM}`,
+  },
+  timeline: {
+    display: "grid",
+    gap: tokens.spacingVerticalXS,
+    paddingTop: tokens.spacingVerticalS,
+    borderTop: `1px solid ${tokens.colorNeutralStroke2}`,
+  },
+  reason: { color: tokens.colorNeutralForeground2, lineHeight: tokens.lineHeightBase300 },
   mono: { fontFamily: "ui-monospace, SFMono-Regular, Consolas, monospace" },
   error: { color: tokens.colorPaletteRedForeground1 },
   empty: { padding: tokens.spacingHorizontalXXL, textAlign: "center" },
@@ -136,6 +178,7 @@ export function App() {
   const [runs, setRuns] = useState<Run[]>([]);
   const [missions, setMissions] = useState<Mission[]>([]);
   const [filter, setFilter] = useState("all");
+  const [selectedRunId, setSelectedRunId] = useState<string>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
 
@@ -182,7 +225,9 @@ export function App() {
       renderHeaderCell: () => "Run",
       renderCell: (item) => (
         <Tooltip content={item.id} relationship="description">
-          <span className={styles.mono}>{item.id.slice(0, 8)}</span>
+          <Button appearance="transparent" size="small" onClick={() => setSelectedRunId(item.id)}>
+            <span className={styles.mono}>{item.id.slice(0, 8)}</span>
+          </Button>
         </Tooltip>
       ),
     }),
@@ -210,7 +255,11 @@ export function App() {
     createTableColumn<Run>({
       columnId: "mode",
       renderHeaderCell: () => "Mode",
-      renderCell: (item) => item.executionMode,
+      renderCell: (item) => (
+        <Tooltip content={item.modeExplanation.reason} relationship="description">
+          <span>{item.executionMode}</span>
+        </Tooltip>
+      ),
     }),
     createTableColumn<Run>({
       columnId: "verification",
@@ -250,6 +299,18 @@ export function App() {
   const failed = runs.filter((run) => run.state === "FAILED").length;
   const verified = runs.filter((run) => run.verificationState === "VERIFIED").length;
   const totalCost = runs.reduce((sum, run) => sum + run.cost.total, 0);
+  const selectedRun = runs.find((run) => run.id === selectedRunId) ?? filtered[0] ?? runs[0];
+  const visibleSignals: Array<
+    [string, Run["modeExplanation"]["latestSignals"][string] | undefined]
+  > = selectedRun
+    ? [
+        ["Touched modules", selectedRun.modeExplanation.latestSignals.touchedModules],
+        ["Dependency expansion", selectedRun.modeExplanation.latestSignals.dependencyExpansion],
+        ["Cross-module edges", selectedRun.modeExplanation.latestSignals.crossModuleEdges],
+        ["Context expansion", selectedRun.modeExplanation.latestSignals.contextExpansion],
+        ["Verifier failures", selectedRun.modeExplanation.latestSignals.repeatedVerifierFailures],
+      ]
+    : [];
 
   return (
     <FluentProvider theme={webDarkTheme} className={styles.shell}>
@@ -307,6 +368,52 @@ export function App() {
           )}
         </section>
         <aside className={styles.summary} aria-label="Operational summary">
+          {selectedRun ? (
+            <section className={styles.intelligence} aria-label="Runtime intelligence">
+              <Subtitle1>Runtime intelligence</Subtitle1>
+              <div>
+                <Badge appearance="tint" color="informative">
+                  {selectedRun.executionMode}
+                </Badge>
+              </div>
+              <span className={styles.reason}>{selectedRun.modeExplanation.reason}</span>
+              <div className={styles.signalGrid}>
+                {visibleSignals.map(([label, signal]) => (
+                  <div key={String(label)} style={{ display: "contents" }}>
+                    <span>{String(label)}</span>
+                    <Tooltip
+                      content={
+                        signal
+                          ? `${signal.source}; ${signal.provenance}; ${signal.reliability}`
+                          : "Not observed"
+                      }
+                      relationship="description"
+                    >
+                      <span className={styles.mono}>{signal ? String(signal.value) : "n/a"}</span>
+                    </Tooltip>
+                  </div>
+                ))}
+              </div>
+              <div className={styles.timeline}>
+                <span>Mode transition timeline</span>
+                {selectedRun.modeExplanation.timeline.length === 0 ? (
+                  <span className={styles.reason}>No runtime transitions.</span>
+                ) : (
+                  selectedRun.modeExplanation.timeline.map((transition) => (
+                    <Tooltip
+                      key={`${transition.timestamp}-${transition.to}`}
+                      content={transition.reason}
+                      relationship="description"
+                    >
+                      <span className={styles.mono}>
+                        {transition.from} to {transition.to}
+                      </span>
+                    </Tooltip>
+                  ))
+                )}
+              </div>
+            </section>
+          ) : null}
           <div className={styles.metric}>
             <span>Running</span>
             <span className={styles.metricValue}>{active}</span>

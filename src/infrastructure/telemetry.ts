@@ -23,30 +23,45 @@ export class DomainTelemetryRecorder implements TelemetrySink {
         "harness.run_id": sanitized.runId,
         "harness.execution_mode": sanitized.executionMode,
         "harness.verified_success": sanitized.verifiedSuccess,
-        "harness.cost.total":
-          sanitized.modelCost +
-          sanitized.sandboxCost +
-          sanitized.verificationCost +
-          sanitized.retryCost +
-          sanitized.recoveryCost,
+        "harness.signal_snapshots": sanitized.signalSnapshots,
+        "harness.dependency_expansion": sanitized.dependencyExpansion,
+        "harness.touched_modules": sanitized.touchedModules,
+        "harness.cross_module_edges": sanitized.crossModuleEdges,
+        "harness.verifier_failures": sanitized.verifierFailures,
+        "harness.context_expansion": sanitized.contextExpansion,
+        "harness.cost.known": sanitized.modelCost !== null,
       });
+      if (sanitized.latestSignalSnapshotId)
+        span.setAttribute("harness.signal_snapshot.latest_id", sanitized.latestSignalSnapshotId);
+      if (sanitized.modelCost !== null)
+        span.setAttribute(
+          "harness.cost.total",
+          sanitized.modelCost +
+            sanitized.sandboxCost +
+            sanitized.verificationCost +
+            sanitized.retryCost +
+            sanitized.recoveryCost,
+        );
       span.end();
     });
   }
 
   async costPerVerifiedSuccess(): Promise<number | null> {
-    const total = this.records.reduce(
+    const knownSuccesses = this.records.filter(
+      (record) => record.verifiedSuccess && record.modelCost !== null,
+    );
+    if (knownSuccesses.length === 0) return null;
+    const total = knownSuccesses.reduce(
       (sum, record) =>
         sum +
-        record.modelCost +
+        (record.modelCost ?? 0) +
         record.sandboxCost +
         record.verificationCost +
         record.retryCost +
         record.recoveryCost,
       0,
     );
-    const successes = this.records.filter((record) => record.verifiedSuccess).length;
-    return successes === 0 ? null : total / successes;
+    return total / knownSuccesses.length;
   }
 
   snapshot(): TelemetryRecord[] {
@@ -80,11 +95,13 @@ export class PostgresTelemetrySink implements TelemetrySink {
   async record(record: TelemetryRecord): Promise<void> {
     await this.genericTelemetry.record(record);
     const totalCost =
-      record.modelCost +
-      record.sandboxCost +
-      record.verificationCost +
-      record.retryCost +
-      record.recoveryCost;
+      record.modelCost === null
+        ? null
+        : record.modelCost +
+          record.sandboxCost +
+          record.verificationCost +
+          record.retryCost +
+          record.recoveryCost;
     await this.pool.query(
       `INSERT INTO telemetry(
         task_id, run_id, execution_mode, verification_state, verified_success,
@@ -111,8 +128,9 @@ export class PostgresTelemetrySink implements TelemetrySink {
 
   async costPerVerifiedSuccess(): Promise<number | null> {
     const result = await this.pool.query<{ value: string | null }>(
-      `SELECT CASE WHEN COUNT(*) FILTER (WHERE verified_success) = 0 THEN NULL
-         ELSE SUM(total_cost) / COUNT(*) FILTER (WHERE verified_success) END AS value
+      `SELECT AVG(total_cost) FILTER (
+         WHERE verified_success AND total_cost IS NOT NULL
+       ) AS value
        FROM telemetry`,
     );
     const value = result.rows[0]?.value;

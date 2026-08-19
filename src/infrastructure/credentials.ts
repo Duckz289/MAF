@@ -7,6 +7,7 @@ import type {
   UserAuthProvider,
   UserSession,
 } from "../domain/ports";
+import { redactSensitiveData } from "../domain/security";
 
 export class CredentialBindingStore {
   private readonly bindings = new Map<string, CredentialBinding>();
@@ -38,21 +39,7 @@ export class EnvironmentCredentialResolver implements CredentialResolver {
   }
 }
 
-export const redactSecrets = (value: unknown): unknown => {
-  const secretKey = /(api[-_]?key|secret|token|authorization|password|credential)/iu;
-  if (Array.isArray(value)) return value.map(redactSecrets);
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, child]) => [
-        key,
-        secretKey.test(key) && !key.toLowerCase().endsWith("reference")
-          ? "[REDACTED]"
-          : redactSecrets(child),
-      ]),
-    );
-  }
-  return value;
-};
+export const redactSecrets = redactSensitiveData;
 
 export class LocalDevelopmentAuth implements UserAuthProvider {
   async session(
@@ -206,5 +193,9 @@ export class AgentVaultBroker {
       HARNESS_CREDENTIAL_REFERENCE: reference,
       HARNESS_DUMMY_CREDENTIAL: `__${createHash("sha256").update(reference).digest("hex").slice(0, 20)}__`,
     };
+  }
+
+  capability(): "PROXY_MEDIATED" {
+    return "PROXY_MEDIATED";
   }
 }

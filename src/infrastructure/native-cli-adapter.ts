@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { AgentAdapter, AgentSession, AgentStartInput } from "../domain/ports";
-import type { AgentCapabilities, AgentEvent } from "../domain/types";
+import type { AgentCapabilities, AgentEvent, AgentSecurityBoundary } from "../domain/types";
 
 interface ProcessSession extends AgentSession {
   process: ChildProcessWithoutNullStreams;
@@ -43,6 +43,19 @@ export class NativeCliAdapter implements AgentAdapter {
 
   async capabilities(): Promise<AgentCapabilities> {
     return { ...defaultCapabilities, ...this.config.capabilities };
+  }
+
+  async securityBoundary(): Promise<AgentSecurityBoundary> {
+    return {
+      credentialCapability: "REFERENCE_ONLY",
+      environmentAllowlist: true,
+      processIsolation: false,
+      networkIsolation: false,
+      notes: [
+        "Only credential references enter the agent payload",
+        "The local process and network are not OS-isolated",
+      ],
+    };
   }
 
   async start(input: AgentStartInput): Promise<AgentSession> {

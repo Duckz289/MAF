@@ -5,12 +5,14 @@ import type {
   ProjectBrain,
   RepositoryIndex,
   RunStore,
+  RuntimeSignalCollector,
   Sandbox,
   SandboxProvider,
   TelemetrySink,
   VerifierPort,
 } from "../domain/ports";
 import { AdaptiveModeController } from "../domain/mode-controller";
+import { redactSensitiveData } from "../domain/security";
 import {
   emptyCost,
   emptyUsage,
@@ -19,6 +21,7 @@ import {
   type ExecutionMode,
   type Run,
   type RuntimeSignals,
+  type RuntimeSignalSnapshot,
   type Task,
   type VerificationSpec,
 } from "../domain/types";
@@ -42,7 +45,23 @@ export interface RunSummary extends Run {
   currentPhase: string;
   lastMeaningfulEvent?: { type: string; timestamp: string };
   modeTransitions: number;
+  signalSnapshots: number;
+  modeExplanation: ModeExplanation;
   operationalStatus: "QUEUED" | "RUNNING" | "STUCK" | "VERIFIED" | "FAILED" | "CANCELLED";
+}
+
+export interface ModeExplanation {
+  mode: ExecutionMode;
+  reason: string;
+  latestSnapshotId?: string;
+  latestSignals: RuntimeSignalSnapshot["signals"];
+  timeline: Array<{
+    from: ExecutionMode;
+    to: ExecutionMode;
+    reason: string;
+    timestamp: string;
+    signalSnapshotId?: string;
+  }>;
 }
 
 interface RunServiceDependencies {
@@ -54,6 +73,7 @@ interface RunServiceDependencies {
   projectBrain: ProjectBrain;
   contextBuilder: ContextBuilderPort;
   telemetry: TelemetrySink;
+  runtimeSignals: RuntimeSignalCollector;
   modeController?: AdaptiveModeController;
 }
 
@@ -121,6 +141,7 @@ export class RunService {
           this.dependencies.store.getTask(run.taskId),
           this.dependencies.store.listEvents(run.id),
         ]);
+        const snapshots = await this.dependencies.store.listSignalSnapshots(run.id);
         const elapsed = Date.now() - Date.parse(run.startedAt ?? run.createdAt);
         const operationalStatus: RunSummary["operationalStatus"] =
           run.verificationState === "VERIFIED"
@@ -141,6 +162,8 @@ export class RunService {
           currentPhase: this.currentPhase(run, last?.type),
           ...(last ? { lastMeaningfulEvent: { type: last.type, timestamp: last.timestamp } } : {}),
           modeTransitions: events.filter((event) => event.type === "ModeChanged").length,
+          signalSnapshots: snapshots.length,
+          modeExplanation: this.explain(run, events, snapshots),
           operationalStatus,
         };
       }),
@@ -153,6 +176,20 @@ export class RunService {
 
   async artifacts(id: string): Promise<Artifact[]> {
     return this.dependencies.store.listArtifacts(id);
+  }
+
+  async signalSnapshots(id: string): Promise<RuntimeSignalSnapshot[]> {
+    await this.requireRun(id);
+    return this.dependencies.store.listSignalSnapshots(id);
+  }
+
+  async modeExplanation(id: string): Promise<ModeExplanation> {
+    const run = await this.requireRun(id);
+    const [events, snapshots] = await Promise.all([
+      this.dependencies.store.listEvents(id),
+      this.dependencies.store.listSignalSnapshots(id),
+    ]);
+    return this.explain(run, events, snapshots);
   }
 
   async waitForIdle(id: string, timeoutMs = 15_000): Promise<void> {
@@ -182,11 +219,18 @@ export class RunService {
     id: string,
     to: ExecutionMode,
     reason: string,
-    evidence: Record<string, string | number | boolean>,
+    evidence: Record<string, unknown>,
   ): Promise<Run> {
     const run = await this.requireRun(id);
     if (run.executionMode === to) return run;
-    const event = this.modeController.apply(run, { to, reason, evidence });
+    const event = this.modeController.apply(run, {
+      to,
+      reason,
+      evidence: redactSensitiveData({ ...evidence, source: "EXTERNAL_HINT" }) as Record<
+        string,
+        unknown
+      >,
+    });
     await this.dependencies.store.updateRun(run);
     await this.dependencies.store.appendEvent(event);
     return run;
@@ -194,7 +238,8 @@ export class RunService {
 
   private async execute(run: Run, task: Task, credentialReferences: string[]): Promise<void> {
     const started = performance.now();
-    let modeTransitions = 0;
+    const transitionState: { count: number; lastSequence?: number } = { count: 0 };
+    let modelCostReported = false;
     let sandbox: Sandbox | undefined;
     try {
       run.state = "RUNNING";
@@ -202,12 +247,6 @@ export class RunService {
       run.updatedAt = run.startedAt;
       await this.dependencies.store.updateRun(run);
       await this.event(run.id, "RunStarted", {});
-
-      const initialDecision = this.modeController.decide(run.executionMode, task.signals ?? {});
-      if (initialDecision) {
-        await this.dependencies.store.appendEvent(this.modeController.apply(run, initialDecision));
-        modeTransitions += 1;
-      }
 
       sandbox = await this.dependencies.sandbox.create(run.id, task.repositoryPath, task.revision);
       const active = this.active.get(run.id);
@@ -233,7 +272,27 @@ export class RunService {
         evidenceIds: context.evidenceIds,
         modules: Object.keys(snapshot.moduleMap).length,
         symbols: snapshot.symbols.length,
+        initialFiles: context.initialFiles,
+        initialModules: context.initialModules,
       });
+
+      await this.observeAndDecide(
+        run,
+        {
+          runId: run.id,
+          type: "INITIAL_CONTEXT",
+          timestamp: new Date().toISOString(),
+          checkpoint: "context-built",
+          repository: snapshot,
+          initialFiles: context.initialFiles,
+          initialModules: context.initialModules,
+          ...(task.signals ? { externalHints: task.signals } : {}),
+        },
+        transitionState,
+      );
+
+      const securityBoundary = await this.dependencies.agent.securityBoundary?.();
+      if (securityBoundary) await this.event(run.id, "AgentSecurityBoundary", securityBoundary);
 
       const session = await this.dependencies.agent.start({
         run,
@@ -253,18 +312,32 @@ export class RunService {
           run.usage.input += Number(agentEvent.data.inputTokens ?? 0);
           run.usage.output += Number(agentEvent.data.outputTokens ?? 0);
           run.usage.cached += Number(agentEvent.data.cachedTokens ?? 0);
+          if (typeof agentEvent.data.costUsd === "number") {
+            modelCostReported = true;
+            run.cost.model += agentEvent.data.costUsd;
+            run.cost.total =
+              run.cost.model +
+              run.cost.sandbox +
+              run.cost.verification +
+              run.cost.retry +
+              run.cost.recovery;
+          }
         }
         if (agentEvent.type === "context_expansion") {
           await this.event(run.id, "ContextExpanded", agentEvent.data);
-          const decision = this.modeController.decide(run.executionMode, {
-            ...(task.signals ?? {}),
-            dependencyExpansion: Number(agentEvent.data.count ?? 1),
-            contextExpansion: Number(agentEvent.data.count ?? 1),
-          });
-          if (decision) {
-            await this.dependencies.store.appendEvent(this.modeController.apply(run, decision));
-            modeTransitions += 1;
-          }
+        }
+        if (agentEvent.type === "tool" || agentEvent.type === "context_expansion") {
+          await this.observeAndDecide(
+            run,
+            {
+              runId: run.id,
+              type: "AGENT_EVENT",
+              timestamp: agentEvent.timestamp,
+              checkpoint: `agent-${agentEvent.type}`,
+              event: agentEvent,
+            },
+            transitionState,
+          );
         }
         if (agentEvent.type === "error")
           throw new Error(String(agentEvent.data.message ?? "Agent failed"));
@@ -278,11 +351,11 @@ export class RunService {
         kind: "DIFF",
         uri: `sandbox://${run.id}/changes.patch`,
         digest: LocalWorktreeSandbox.digest(diff),
-        metadata: {
+        metadata: redactSensitiveData({
           changedFiles: diff.changedFiles,
           bytes: Buffer.byteLength(diff.patch),
           preview: diff.patch.slice(0, 20_000),
-        },
+        }) as Record<string, unknown>,
         createdAt: new Date().toISOString(),
       };
       await this.dependencies.store.addArtifact(artifact);
@@ -291,12 +364,34 @@ export class RunService {
         changedFiles: diff.changedFiles,
         digest: artifact.digest,
       });
+      await this.observeAndDecide(
+        run,
+        {
+          runId: run.id,
+          type: "DIFF_CAPTURED",
+          timestamp: new Date().toISOString(),
+          checkpoint: "diff-captured",
+          diff,
+        },
+        transitionState,
+      );
 
       run.verificationState = "VERIFYING";
       await this.dependencies.store.updateRun(run);
       await this.event(run.id, "VerificationChanged", { state: "VERIFYING" });
       const verification = await this.dependencies.verifier.verify(run, task, sandbox, diff);
       await this.dependencies.store.addVerification(verification);
+      await this.observeAndDecide(
+        run,
+        {
+          runId: run.id,
+          type: "VERIFICATION",
+          timestamp: verification.completedAt,
+          checkpoint: `verification-${verification.state.toLowerCase()}`,
+          verification,
+        },
+        transitionState,
+      );
       run.verificationState = verification.state;
       run.state = verification.state === "VERIFIED" ? "COMPLETED" : "FAILED";
       run.completedAt = new Date().toISOString();
@@ -312,6 +407,8 @@ export class RunService {
         verificationState: run.verificationState,
       });
       try {
+        const latestSignals = await this.dependencies.runtimeSignals.latest(run.id);
+        const signalValues = latestSignals?.signals;
         await this.dependencies.telemetry.record({
           taskId: task.id,
           runId: run.id,
@@ -322,7 +419,7 @@ export class RunService {
           inputTokens: run.usage.input,
           outputTokens: run.usage.output,
           cachedTokens: run.usage.cached,
-          modelCost: run.cost.model,
+          modelCost: modelCostReported ? run.cost.model : null,
           sandboxCost: run.cost.sandbox,
           verificationCost: run.cost.verification,
           retryCost: run.cost.retry,
@@ -332,7 +429,14 @@ export class RunService {
           filesChanged: run.changedFiles.length,
           verificationType: "command",
           verificationState: run.verificationState,
-          modeTransitions,
+          modeTransitions: transitionState.count,
+          signalSnapshots: (await this.dependencies.store.listSignalSnapshots(run.id)).length,
+          ...(latestSignals ? { latestSignalSnapshotId: latestSignals.id } : {}),
+          dependencyExpansion: Number(signalValues?.dependencyExpansion?.value ?? 0),
+          touchedModules: Number(signalValues?.touchedModules?.value ?? 0),
+          crossModuleEdges: Number(signalValues?.crossModuleEdges?.value ?? 0),
+          verifierFailures: Number(signalValues?.repeatedVerifierFailures?.value ?? 0),
+          contextExpansion: Number(signalValues?.contextExpansion?.value ?? 0),
           verifiedSuccess: run.verificationState === "VERIFIED",
           timestamp: run.completedAt,
         });
@@ -375,8 +479,64 @@ export class RunService {
       runId,
       type,
       timestamp: new Date().toISOString(),
-      data,
+      data: redactSensitiveData(data),
     });
+  }
+
+  private async observeAndDecide(
+    run: Run,
+    observation: Parameters<RuntimeSignalCollector["observe"]>[0],
+    transitionState: { count: number; lastSequence?: number },
+  ): Promise<RuntimeSignalSnapshot> {
+    const snapshot = await this.dependencies.runtimeSignals.observe(observation);
+    await this.dependencies.store.addSignalSnapshot(snapshot);
+    await this.event(run.id, "RuntimeSignalsObserved", snapshot);
+    const decision = this.modeController.decide(run.executionMode, snapshot, {
+      ...(transitionState.lastSequence !== undefined
+        ? { lastTransitionSequence: transitionState.lastSequence }
+        : {}),
+    });
+    if (decision && decision.to !== run.executionMode) {
+      const event = this.modeController.apply(run, decision);
+      await this.dependencies.store.updateRun(run);
+      await this.dependencies.store.appendEvent(event);
+      transitionState.count += 1;
+      transitionState.lastSequence = snapshot.sequence;
+    }
+    return snapshot;
+  }
+
+  private explain(
+    run: Run,
+    events: Event<unknown>[],
+    snapshots: RuntimeSignalSnapshot[],
+  ): ModeExplanation {
+    const transitions = events
+      .filter((event) => event.type === "ModeChanged")
+      .map((event) => {
+        const data = event.data as {
+          from: ExecutionMode;
+          to: ExecutionMode;
+          reason: string;
+          signalSnapshotId?: string;
+        };
+        return {
+          from: data.from,
+          to: data.to,
+          reason: data.reason,
+          timestamp: event.timestamp,
+          ...(data.signalSnapshotId ? { signalSnapshotId: data.signalSnapshotId } : {}),
+        };
+      });
+    const latest = snapshots.at(-1);
+    const lastTransition = transitions.at(-1);
+    return {
+      mode: run.executionMode,
+      reason: lastTransition?.reason ?? "Initial mode selected; no runtime transition has occurred",
+      ...(latest ? { latestSnapshotId: latest.id } : {}),
+      latestSignals: latest?.signals ?? {},
+      timeline: transitions,
+    };
   }
 
   private async requireRun(id: string): Promise<Run> {

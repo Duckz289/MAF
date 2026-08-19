@@ -3,6 +3,7 @@ import type {
   KnowledgeRecord,
   ProjectBrain,
   RepositoryIndex,
+  RepositoryIndexStatus,
   RepositorySnapshot,
 } from "../domain/ports";
 import { createHash } from "node:crypto";
@@ -70,8 +71,34 @@ const execCapture = async (command: string, args: string[], cwd: string): Promis
   return stdout;
 };
 
+const sourceExtensions = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
+
+const resolveLocalImport = (
+  from: string,
+  specifier: string,
+  repositoryFiles: Set<string>,
+): string | undefined => {
+  if (!specifier.startsWith(".")) return undefined;
+  const base = path.posix.normalize(path.posix.join(path.posix.dirname(from), specifier));
+  const candidates = [
+    base,
+    ...sourceExtensions.map((extension) => `${base}${extension}`),
+    ...sourceExtensions.map((extension) => `${base}/index${extension}`),
+  ];
+  return candidates.find((candidate) => repositoryFiles.has(candidate));
+};
+
 export class LocalRepositoryIndex implements RepositoryIndex {
   readonly name = "local-deterministic-index";
+
+  status(): RepositoryIndexStatus {
+    return {
+      engine: this.name,
+      capability: "LOCAL_DETERMINISTIC",
+      active: true,
+      detail: "Tracked files, symbols, resolved local imports, module ownership, and ast-grep",
+    };
+  }
 
   async index(repositoryPath: string, revision: string): Promise<RepositorySnapshot> {
     const raw = await execCapture("git", ["ls-files"], repositoryPath);
@@ -81,6 +108,7 @@ export class LocalRepositoryIndex implements RepositoryIndex {
       .filter(Boolean)
       .slice(0, 4_000);
     const sourceFiles = files.filter((file) => /\.(?:ts|tsx|js|jsx|mjs|cjs)$/u.test(file));
+    const repositoryFiles = new Set(files.map((file) => file.replaceAll("\\", "/")));
     const symbols: RepositorySnapshot["symbols"] = [];
     const relations: RepositorySnapshot["relations"] = [];
     const moduleMap: Record<string, string[]> = {};
@@ -114,14 +142,23 @@ export class LocalRepositoryIndex implements RepositoryIndex {
             });
           }
           for (const match of line.matchAll(/(?:from\s+|import\s*\()["']([^"']+)["']/gu)) {
-            if (match[1]) relations.push({ from: file, to: match[1], kind: "IMPORTS" });
+            if (!match[1]) continue;
+            const target = resolveLocalImport(file, match[1], repositoryFiles);
+            if (target) relations.push({ from: file, to: target, kind: "IMPORTS" });
           }
         });
-        const module = file.split(/[\\/]/u)[0] ?? "root";
+        const module =
+          file.includes("/") || file.includes("\\") ? (file.split(/[\\/]/u)[0] ?? "root") : "root";
         moduleMap[module] = [...(moduleMap[module] ?? []), file];
       }),
     );
 
+    symbols.sort((left, right) => left.file.localeCompare(right.file) || left.line - right.line);
+    relations.sort(
+      (left, right) => left.from.localeCompare(right.from) || left.to.localeCompare(right.to),
+    );
+    evidence.sort((left, right) => left.uri.localeCompare(right.uri));
+    for (const moduleFiles of Object.values(moduleMap)) moduleFiles.sort();
     return { revision, files, symbols, relations, moduleMap, evidence };
   }
 
@@ -156,26 +193,31 @@ export class LocalRepositoryIndex implements RepositoryIndex {
   }
 }
 
-export class CodebaseMemoryMcpIndex implements RepositoryIndex {
-  readonly name = "codebase-memory-mcp";
+export class OptionalCodebaseMemoryIndex implements RepositoryIndex {
+  readonly name: string;
 
-  constructor(
-    private readonly fallback: RepositoryIndex,
-    private readonly executable = "codebase-memory-mcp",
-  ) {}
+  constructor(private readonly fallback: RepositoryIndex) {
+    this.name = `optional-codebase-memory-port:fallback=${fallback.name}`;
+  }
 
   async index(repositoryPath: string, revision: string): Promise<RepositorySnapshot> {
-    try {
-      await execCapture(this.executable, ["--version"], repositoryPath);
-    } catch {
-      return this.fallback.index(repositoryPath, revision);
-    }
-    // The MCP process is intentionally owned by the host runtime. V0 falls back to the deterministic
-    // index until an initialized MCP session is injected rather than starting a hidden daemon here.
     return this.fallback.index(repositoryPath, revision);
   }
 
   structuralSearch(repositoryPath: string, language: string, pattern: string): Promise<string[]> {
     return this.fallback.structuralSearch(repositoryPath, language, pattern);
   }
+
+  status(): RepositoryIndexStatus {
+    return {
+      engine: this.name,
+      capability: "OPTIONAL_PORT",
+      active: false,
+      fallbackEngine: this.fallback.name,
+      detail: "No MCP session is configured; the deterministic local index is active",
+    };
+  }
 }
+
+/** @deprecated Compatibility alias. This is an optional port, not an active MCP session. */
+export { OptionalCodebaseMemoryIndex as CodebaseMemoryMcpIndex };

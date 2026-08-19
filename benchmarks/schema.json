@@ -1,30 +1,75 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": [
-    "task",
-    "expectedVerification",
-    "agent",
-    "model",
-    "executionMode",
-    "tokens",
-    "cost",
-    "latencyMs",
-    "retryCount",
-    "changedFiles",
-    "verificationResult"
-  ],
+  "required": ["generatedAt", "samples", "metrics"],
   "properties": {
-    "task": { "type": "string" },
-    "expectedVerification": { "type": "string" },
-    "agent": { "type": "string" },
-    "model": { "type": "string" },
-    "executionMode": { "enum": ["STRICT", "GUIDED", "SOLO_NATIVE"] },
-    "tokens": { "type": "integer", "minimum": 0 },
-    "cost": { "type": "number", "minimum": 0 },
-    "latencyMs": { "type": "integer", "minimum": 0 },
-    "retryCount": { "type": "integer", "minimum": 0 },
-    "changedFiles": { "type": "array", "items": { "type": "string" } },
-    "verificationResult": { "enum": ["VERIFIED", "QUARANTINED", "FAILED"] }
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "samples": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "task",
+          "strategy",
+          "agent",
+          "model",
+          "provider",
+          "initialMode",
+          "finalMode",
+          "modeTransitions",
+          "signalSnapshots",
+          "inputTokens",
+          "outputTokens",
+          "cachedTokens",
+          "reportedCost",
+          "costStatus",
+          "latencyMs",
+          "retryCount",
+          "verificationResult",
+          "verifiedSuccess",
+          "filesChanged",
+          "contextExpansion",
+          "orchestrationOverheadMs"
+        ],
+        "properties": {
+          "task": { "type": "object" },
+          "strategy": { "enum": ["NATIVE", "MAF_ADAPTIVE"] },
+          "agent": { "type": "string" },
+          "model": { "type": "string" },
+          "provider": { "type": "string" },
+          "initialMode": { "enum": ["NATIVE", "STRICT", "GUIDED", "SOLO_NATIVE"] },
+          "finalMode": { "enum": ["NATIVE", "STRICT", "GUIDED", "SOLO_NATIVE"] },
+          "modeTransitions": { "type": "array" },
+          "signalSnapshots": { "type": "array" },
+          "inputTokens": { "type": "integer", "minimum": 0 },
+          "outputTokens": { "type": "integer", "minimum": 0 },
+          "cachedTokens": { "type": "integer", "minimum": 0 },
+          "reportedCost": { "type": ["number", "null"], "minimum": 0 },
+          "costStatus": { "enum": ["REPORTED", "UNKNOWN"] },
+          "latencyMs": { "type": "number", "minimum": 0 },
+          "retryCount": { "type": "integer", "minimum": 0 },
+          "verificationResult": { "enum": ["VERIFIED", "QUARANTINED", "FAILED"] },
+          "verifiedSuccess": { "type": "boolean" },
+          "filesChanged": { "type": "array", "items": { "type": "string" } },
+          "contextExpansion": { "type": "integer", "minimum": 0 },
+          "orchestrationOverheadMs": { "type": "number", "minimum": 0 }
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "required": [
+        "sampleCount",
+        "verifiedSuccessRate",
+        "costPerVerifiedSuccess",
+        "verifiedRunsWithKnownCost"
+      ],
+      "properties": {
+        "sampleCount": { "type": "integer", "minimum": 0 },
+        "verifiedSuccessRate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "costPerVerifiedSuccess": { "type": ["number", "null"], "minimum": 0 },
+        "verifiedRunsWithKnownCost": { "type": "integer", "minimum": 0 }
+      }
+    }
   }
 }

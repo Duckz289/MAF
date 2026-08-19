@@ -8,6 +8,7 @@ import { z } from "zod";
 import { GuidedContextBuilder } from "../application/context-builder";
 import { MissionRegistry } from "../application/mission-registry";
 import { RunService } from "../application/run-service";
+import { EvidenceRuntimeSignalCollector } from "../application/runtime-signal-collector";
 import type { RunStore } from "../domain/ports";
 import {
   BetterAuthConfigAdapter,
@@ -16,13 +17,14 @@ import {
   MockExternalConnections,
 } from "../infrastructure/credentials";
 import { LocalWorktreeSandbox, type SandboxRetention } from "../infrastructure/local-worktree";
+import { ClaudeCodeAdapter } from "../infrastructure/claude-code-adapter";
 import { InMemoryRunStore } from "../infrastructure/memory-store";
 import { NativeCliAdapter } from "../infrastructure/native-cli-adapter";
 import { PostgresRunStore } from "../infrastructure/postgres/store";
 import {
-  CodebaseMemoryMcpIndex,
   InMemoryProjectBrain,
   LocalRepositoryIndex,
+  OptionalCodebaseMemoryIndex,
 } from "../infrastructure/project-brain";
 import { DomainTelemetryRecorder, PostgresTelemetrySink } from "../infrastructure/telemetry";
 import { CommandVerifier } from "../infrastructure/verifier";
@@ -50,6 +52,9 @@ const createRunSchema = z.object({
       scopeStabilized: z.boolean().optional(),
       mechanicalRemainingWork: z.boolean().optional(),
       independentWorkstreams: z.number().nonnegative().optional(),
+      filesChanged: z.number().nonnegative().optional(),
+      newDependenciesDiscovered: z.number().nonnegative().optional(),
+      verificationFailureCount: z.number().nonnegative().optional(),
     })
     .optional(),
   agent: z.string().optional(),
@@ -116,11 +121,20 @@ export const createApp = async (): Promise<AppRuntime> => {
     store = new InMemoryRunStore();
   }
   const brain = new InMemoryProjectBrain();
-  const repositoryIndex = new CodebaseMemoryMcpIndex(new LocalRepositoryIndex());
+  const repositoryIndex = new OptionalCodebaseMemoryIndex(new LocalRepositoryIndex());
   const genericTelemetry = new DomainTelemetryRecorder();
   const telemetry = pool ? new PostgresTelemetrySink(pool, genericTelemetry) : genericTelemetry;
   const agentCommand = fixtureAgentPath();
-  const agent = new NativeCliAdapter(agentCommand);
+  const agent =
+    process.env.MAF_NATIVE_AGENT === "claude"
+      ? new ClaudeCodeAdapter({
+          command: process.env.CLAUDE_COMMAND ?? "claude",
+          ...(process.env.CLAUDE_MODEL ? { model: process.env.CLAUDE_MODEL } : {}),
+          ...(process.env.CLAUDE_MAX_BUDGET_USD
+            ? { maxBudgetUsd: Number(process.env.CLAUDE_MAX_BUDGET_USD) }
+            : {}),
+        })
+      : new NativeCliAdapter(agentCommand);
   const sandboxRoot = path.resolve(
     process.env.SANDBOX_ROOT ?? path.join(process.cwd(), ".adaptive-harness", "worktrees"),
   );
@@ -134,6 +148,7 @@ export const createApp = async (): Promise<AppRuntime> => {
     projectBrain: brain,
     contextBuilder: new GuidedContextBuilder(brain),
     telemetry,
+    runtimeSignals: new EvidenceRuntimeSignalCollector(),
   });
   const auth = new LocalDevelopmentAuth();
   const authConfig = new BetterAuthConfigAdapter();
@@ -155,7 +170,11 @@ export const createApp = async (): Promise<AppRuntime> => {
     });
   });
 
-  app.get("/health", async () => ({ status: "ok", store: pool ? "postgres" : "memory" }));
+  app.get("/health", async () => ({
+    status: "ok",
+    store: pool ? "postgres" : "memory",
+    repositoryIndex: repositoryIndex.status(),
+  }));
   app.post("/api/v1/runs", async (request, reply) => {
     const body = createRunSchema.parse(request.body);
     const run = await runs.create(body);
@@ -168,6 +187,12 @@ export const createApp = async (): Promise<AppRuntime> => {
   });
   app.get<{ Params: { id: string } }>("/api/v1/runs/:id/artifacts", async (request) =>
     runs.artifacts(request.params.id),
+  );
+  app.get<{ Params: { id: string } }>("/api/v1/runs/:id/runtime-signals", async (request) =>
+    runs.signalSnapshots(request.params.id),
+  );
+  app.get<{ Params: { id: string } }>("/api/v1/runs/:id/mode-explanation", async (request) =>
+    runs.modeExplanation(request.params.id),
   );
   app.post<{ Params: { id: string } }>("/api/v1/runs/:id/cancel", async (request) =>
     runs.cancel(request.params.id),
