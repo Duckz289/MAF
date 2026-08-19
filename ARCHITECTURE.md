@@ -102,14 +102,37 @@ immediately.
 ## Project Brain
 
 `ProjectBrain` separates `FACT`, `INFERENCE`, `EVIDENCE`, and `DECISION`. A fact without evidence is
-rejected. Records from a different source revision become `STALE`. The default index builds file,
-symbol, resolved local import-relation, module-map, file-to-module ownership, and digest evidence.
-Workspace/package roots (`workspaces`, simple pnpm workspace entries, `apps/*`, `packages/*`, and
-`services/*`) take precedence. Single-package `src/*` layers and `src/features/*` feature roots form
-bounded deterministic modules.
+rejected. Records from a different source revision become `STALE`.
 `OptionalCodebaseMemoryIndex` is an explicitly inactive optional port until a configured MCP/service
 transport exists; its status exposes the deterministic local fallback and never claims a hidden
 daemon connection.
+
+## Project Graph: bounded incremental indexing
+
+`RepositoryIndex.index()` is a cheap, unbounded, path-only pass — every tracked file (up to a
+100 000-file safety ceiling, with an honest `filesTruncated` flag rather than a silent slice) plus
+package/module ownership derived from paths alone. No file content is read, so it is safe to call
+on every task regardless of repository size. `RepositoryIndex.indexScope()` performs the bounded,
+expensive part — parsing symbols and resolved local `IMPORTS` relations for exactly the requested
+files — and caches each file's parse by content digest so repeated calls during a run only do new
+work for files that changed or were never seen before.
+
+`RunService` selects an initial scope from the cheap snapshot (via `ContextBuilderPort`, using only
+module/path data), scope-indexes exactly that scope, and re-renders the context with real symbols.
+As the agent touches new files (tool events, diffs), `RunService` incrementally scope-indexes any
+newly referenced files not yet parsed and grows the same snapshot instance; the enlarged snapshot
+is threaded into subsequent `RuntimeSignalCollector` observations, so dependency-expansion and
+cross-module-edge signals reflect real resolved relations for whatever has actually been touched,
+never a frozen initial slice.
+
+Package (`packageOwnership`) and architectural module (`moduleOwnership`) are tracked separately.
+A package/workspace root (`workspaces`, simple pnpm workspace entries, `apps/*`, `packages/*`, and
+`services/*`) is the outer unit; a `src/<layer>` or `src/features/<name>` convention within that
+package forms a deeper architectural module (e.g. package `apps/web`, module
+`apps/web/src/domain`), falling back to the package root when no such convention applies.
+Relationship kinds stay deterministic: `IMPORTS` requires both a real resolved local specifier and
+the target file to exist in the repository snapshot. Nothing derived from agent-claimed data is
+ever labeled deterministic.
 
 ## Durable state
 

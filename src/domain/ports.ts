@@ -87,18 +87,45 @@ export interface VerifierPort {
 
 export interface RepositorySnapshot {
   revision: string;
+  /** All tracked files (paths only), up to the safety ceiling. Cheap at any repository size. */
   files: string[];
+  /** True only if the tracked-file count exceeded the safety ceiling; never a silent truncation. */
+  filesTruncated: boolean;
+  /** Symbols/relations are populated only for files that have been through indexScope so far. */
   symbols: Array<{ name: string; kind: string; file: string; line: number }>;
   relations: Array<{ from: string; to: string; kind: string }>;
+  /** File → deeper architectural module (e.g. `apps/web/src/domain`), derived from paths alone. */
   moduleMap: Record<string, string[]>;
   moduleOwnership: Record<string, string>;
+  /** File → outer package/workspace root (e.g. `apps/web`), derived from paths alone. */
+  packageOwnership: Record<string, string>;
+  /** Package/workspace roots (not architectural modules); "module" in moduleOwnership is deeper. */
   moduleRoots: string[];
+  /** Files that have actually been parsed for symbols/relations via indexScope. */
+  parsedFiles: string[];
+  /** True only if the most recent indexScope call had to truncate its own requested file set. */
+  scopeTruncated: boolean;
+  /** Per-file content digest for every parsed file; the live cache for staleness detection. */
   evidence: Array<{ uri: string; digest: string }>;
 }
 
 export interface RepositoryIndex {
   readonly name: string;
+  /** Cheap full pass: tracked files plus path-derived package/module ownership. No file content
+   * is read, so this is safe to call on every task regardless of repository size. */
   index(repositoryPath: string, revision: string): Promise<RepositorySnapshot>;
+  /**
+   * Bounded parse of specific files into symbols and resolved local import relations, merged onto
+   * the given snapshot. Each file's parse is cached by content digest, so calling this repeatedly
+   * as scope grows during a run only does new work for files not already parsed at their current
+   * content. Files already in `snapshot.parsedFiles` are skipped.
+   */
+  indexScope(
+    repositoryPath: string,
+    revision: string,
+    snapshot: RepositorySnapshot,
+    files: string[],
+  ): Promise<RepositorySnapshot>;
   structuralSearch(repositoryPath: string, language: string, pattern: string): Promise<string[]>;
   status?(): RepositoryIndexStatus;
 }
@@ -167,6 +194,10 @@ export type RuntimeObservation =
       timestamp: string;
       checkpoint: string;
       event: AgentEvent;
+      /** The latest incrementally-grown repository snapshot, if scope-indexing has run since the
+       * last observation. Lets cross-module-edge detection see real resolved relations for
+       * whatever has actually been touched, rather than a frozen initial snapshot. */
+      repository?: RepositorySnapshot;
     }
   | {
       runId: string;
@@ -174,6 +205,7 @@ export type RuntimeObservation =
       timestamp: string;
       checkpoint: string;
       diff: SandboxDiff;
+      repository?: RepositorySnapshot;
     }
   | {
       runId: string;

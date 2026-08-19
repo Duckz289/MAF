@@ -12,6 +12,7 @@ const repository: RepositorySnapshot = {
     "src/infrastructure/resolver.ts",
     "src/domain/permissions.ts",
   ],
+  filesTruncated: false,
   symbols: [],
   relations: [
     { from: "src/web/image.ts", to: "src/application/media.ts", kind: "IMPORTS" },
@@ -44,7 +45,16 @@ const repository: RepositorySnapshot = {
     "src/infrastructure/resolver.ts": "src/infrastructure",
     "src/domain/permissions.ts": "src/domain",
   },
+  packageOwnership: {
+    "src/web/image.ts": "root",
+    "src/application/media.ts": "root",
+    "src/application/controller.ts": "root",
+    "src/infrastructure/resolver.ts": "root",
+    "src/domain/permissions.ts": "root",
+  },
   moduleRoots: [],
+  parsedFiles: [],
+  scopeTruncated: false,
   evidence: [],
 };
 

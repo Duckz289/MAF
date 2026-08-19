@@ -7,10 +7,11 @@ import type {
   RepositorySnapshot,
 } from "../domain/ports";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { moduleOwnerForFile } from "../domain/module-ownership";
+import { moduleOwnerForFile, packageOwnerForFile } from "../domain/module-ownership";
 
 export class InMemoryProjectBrain implements ProjectBrain {
   private readonly records = new Map<string, KnowledgeRecord>();
@@ -148,6 +149,55 @@ const resolveLocalImport = (
   return candidates.find((candidate) => repositoryFiles.has(candidate));
 };
 
+const isSourceFile = (file: string): boolean => /\.(?:ts|tsx|js|jsx|mjs|cjs)$/u.test(file);
+
+/** Safety ceiling on the tracked-file list. Exceeding it is recorded, never silently dropped. */
+const MAX_TRACKED_FILES = 100_000;
+/** Safety ceiling on symbols/relations parsed by a single indexScope call. */
+const MAX_SCOPE_FILES_PER_CALL = 2_000;
+
+const parseFileDeclarations = (
+  file: string,
+  source: string,
+  repositoryFiles: Set<string>,
+): Pick<RepositorySnapshot, "symbols" | "relations"> => {
+  const symbols: RepositorySnapshot["symbols"] = [];
+  const relations: RepositorySnapshot["relations"] = [];
+  const lines = source.split(/\r?\n/u);
+  lines.forEach((line, index) => {
+    const declaration = line.match(
+      /(?:export\s+)?(?:async\s+)?(?:class|function|interface|type|const)\s+([A-Za-z_$][\w$]*)/u,
+    );
+    if (declaration?.[1]) {
+      symbols.push({
+        name: declaration[1],
+        kind: line.includes("class ")
+          ? "class"
+          : line.includes("interface ")
+            ? "interface"
+            : "symbol",
+        file,
+        line: index + 1,
+      });
+    }
+    for (const match of line.matchAll(/(?:from\s+|import\s*\()["']([^"']+)["']/gu)) {
+      if (!match[1]) continue;
+      const target = resolveLocalImport(file, match[1], repositoryFiles);
+      if (target) relations.push({ from: file, to: target, kind: "IMPORTS" });
+    }
+  });
+  return { symbols, relations };
+};
+
+/**
+ * Deterministic, bounded, incrementally-cacheable repository index. `index()` is a cheap
+ * path-only pass safe to run on every task regardless of repository size; `indexScope()` parses
+ * exactly the requested files. The snapshot's own per-file evidence digest IS the cache: a file
+ * whose digest hasn't changed since it was last recorded is never re-parsed, and a file whose
+ * digest HAS changed always is — this cache is naturally scoped to the snapshot/run it belongs to
+ * (no unbounded process-lifetime state) and staleness is checked live on every call rather than
+ * gated behind "has this file ever been requested before".
+ */
 export class LocalRepositoryIndex implements RepositoryIndex {
   readonly name = "local-deterministic-index";
 
@@ -156,81 +206,173 @@ export class LocalRepositoryIndex implements RepositoryIndex {
       engine: this.name,
       capability: "LOCAL_DETERMINISTIC",
       active: true,
-      detail: "Tracked files, symbols, resolved local imports, module ownership, and ast-grep",
+      detail:
+        "Tracked files, symbols, resolved local imports, module/package ownership, and ast-grep",
     };
   }
 
   async index(repositoryPath: string, revision: string): Promise<RepositorySnapshot> {
     const raw = await execCapture("git", ["ls-files"], repositoryPath);
-    const files = raw
+    const allFiles = raw
       .split(/\r?\n/u)
       .map((file) => file.trim())
-      .filter(Boolean)
-      .slice(0, 4_000);
-    const sourceFiles = files.filter((file) => /\.(?:ts|tsx|js|jsx|mjs|cjs)$/u.test(file));
-    const repositoryFiles = new Set(files.map((file) => file.replaceAll("\\", "/")));
-    const symbols: RepositorySnapshot["symbols"] = [];
-    const relations: RepositorySnapshot["relations"] = [];
+      .filter(Boolean);
+    const filesTruncated = allFiles.length > MAX_TRACKED_FILES;
+    const files = filesTruncated ? allFiles.slice(0, MAX_TRACKED_FILES) : allFiles;
+    const moduleRoots = await discoverModuleRoots(repositoryPath, files);
     const moduleMap: Record<string, string[]> = {};
     const moduleOwnership: Record<string, string> = {};
-    const evidence: RepositorySnapshot["evidence"] = [];
-    const moduleRoots = await discoverModuleRoots(repositoryPath, files);
-
-    await Promise.all(
-      sourceFiles.slice(0, 500).map(async (file) => {
-        const absolute = path.join(repositoryPath, file);
-        const fileStat = await stat(absolute);
-        if (fileStat.size > 1_000_000) return;
-        const source = await readFile(absolute, "utf8");
-        evidence.push({
-          uri: file,
-          digest: createHash("sha256").update(source).digest("hex"),
-        });
-        const lines = source.split(/\r?\n/u);
-        lines.forEach((line, index) => {
-          const declaration = line.match(
-            /(?:export\s+)?(?:async\s+)?(?:class|function|interface|type|const)\s+([A-Za-z_$][\w$]*)/u,
-          );
-          if (declaration?.[1]) {
-            symbols.push({
-              name: declaration[1],
-              kind: line.includes("class ")
-                ? "class"
-                : line.includes("interface ")
-                  ? "interface"
-                  : "symbol",
-              file,
-              line: index + 1,
-            });
-          }
-          for (const match of line.matchAll(/(?:from\s+|import\s*\()["']([^"']+)["']/gu)) {
-            if (!match[1]) continue;
-            const target = resolveLocalImport(file, match[1], repositoryFiles);
-            if (target) relations.push({ from: file, to: target, kind: "IMPORTS" });
-          }
-        });
-        const normalizedFile = file.replaceAll("\\", "/");
-        const module = moduleOwnerForFile(normalizedFile, moduleRoots);
-        moduleOwnership[normalizedFile] = module;
-        moduleMap[module] = [...(moduleMap[module] ?? []), file];
-      }),
-    );
-
-    symbols.sort((left, right) => left.file.localeCompare(right.file) || left.line - right.line);
-    relations.sort(
-      (left, right) => left.from.localeCompare(right.from) || left.to.localeCompare(right.to),
-    );
-    evidence.sort((left, right) => left.uri.localeCompare(right.uri));
+    const packageOwnership: Record<string, string> = {};
+    // Path-only pass: no file content is read, so this stays cheap at any repository size and
+    // never silently omits files from the module/package graph the way a content-parse cap would.
+    for (const file of files) {
+      if (!isSourceFile(file)) continue;
+      const normalizedFile = file.replaceAll("\\", "/");
+      const module = moduleOwnerForFile(normalizedFile, moduleRoots);
+      packageOwnership[normalizedFile] = packageOwnerForFile(normalizedFile, moduleRoots);
+      moduleOwnership[normalizedFile] = module;
+      moduleMap[module] = [...(moduleMap[module] ?? []), file];
+    }
     for (const moduleFiles of Object.values(moduleMap)) moduleFiles.sort();
     return {
       revision,
       files,
-      symbols,
-      relations,
+      filesTruncated,
+      symbols: [],
+      relations: [],
       moduleMap,
       moduleOwnership,
+      packageOwnership,
       moduleRoots,
+      parsedFiles: [],
+      scopeTruncated: false,
+      evidence: [],
+    };
+  }
+
+  async indexScope(
+    repositoryPath: string,
+    _revision: string,
+    snapshot: RepositorySnapshot,
+    requestedFiles: string[],
+  ): Promise<RepositorySnapshot> {
+    const knownFiles = new Set(snapshot.files.map((file) => file.replaceAll("\\", "/")));
+    const requested = [...new Set(requestedFiles.map((file) => file.replaceAll("\\", "/")))].filter(
+      isSourceFile,
+    );
+    if (requested.length === 0) return snapshot;
+
+    // A file the agent created mid-run is invisible to the frozen initial git ls-files pass.
+    // Register any requested file that genuinely exists on disk but isn't in the snapshot yet, so
+    // it can still be parsed and act as an import target, using the same path-only classification
+    // index() uses.
+    const newlyRegistered = requested.filter(
+      (file) => !knownFiles.has(file) && existsSync(path.join(repositoryPath, file)),
+    );
+    for (const file of newlyRegistered) knownFiles.add(file);
+    let files = snapshot.files;
+    let moduleMap = snapshot.moduleMap;
+    let moduleOwnership = snapshot.moduleOwnership;
+    let packageOwnership = snapshot.packageOwnership;
+    if (newlyRegistered.length > 0) {
+      files = [...files, ...newlyRegistered].sort();
+      moduleMap = { ...moduleMap };
+      moduleOwnership = { ...moduleOwnership };
+      packageOwnership = { ...packageOwnership };
+      for (const file of newlyRegistered) {
+        const module = moduleOwnerForFile(file, snapshot.moduleRoots);
+        packageOwnership[file] = packageOwnerForFile(file, snapshot.moduleRoots);
+        moduleOwnership[file] = module;
+        moduleMap[module] = [...(moduleMap[module] ?? []), file].sort();
+      }
+    }
+
+    const scopeTruncated = requested.length > MAX_SCOPE_FILES_PER_CALL;
+    const candidates = requested.slice(0, MAX_SCOPE_FILES_PER_CALL);
+    const evidenceByFile = new Map(snapshot.evidence.map((entry) => [entry.uri, entry.digest]));
+    const changedFiles = new Set<string>();
+    const newlyAttempted: string[] = [];
+    const newSymbols: RepositorySnapshot["symbols"] = [];
+    const newRelations: RepositorySnapshot["relations"] = [];
+    const newEvidence: RepositorySnapshot["evidence"] = [];
+    await Promise.all(
+      candidates.map(async (file) => {
+        const absolute = path.join(repositoryPath, file);
+        let fileStat: Awaited<ReturnType<typeof stat>>;
+        try {
+          fileStat = await stat(absolute);
+        } catch {
+          // Tracked but absent in this worktree (e.g. deleted on this branch); nothing to parse,
+          // but it must still count as attempted so a future call does not retry forever.
+          newlyAttempted.push(file);
+          return;
+        }
+        if (fileStat.size > 1_000_000) {
+          newlyAttempted.push(file);
+          return;
+        }
+        const source = await readFile(absolute, "utf8");
+        const digest = createHash("sha256").update(source).digest("hex");
+        newlyAttempted.push(file);
+        // The snapshot's own recorded digest for this file IS the cache: unchanged content means
+        // the symbols/relations already merged in remain correct and nothing needs to be redone.
+        if (evidenceByFile.get(file) === digest) return;
+        changedFiles.add(file);
+        const parsed = parseFileDeclarations(file, source, knownFiles);
+        newSymbols.push(...parsed.symbols);
+        newRelations.push(...parsed.relations);
+        newEvidence.push({ uri: file, digest });
+      }),
+    );
+
+    const parsedFilesUnchanged = newlyAttempted.every((file) =>
+      snapshot.parsedFiles.includes(file),
+    );
+    const parsedFiles = parsedFilesUnchanged
+      ? snapshot.parsedFiles
+      : [...new Set([...snapshot.parsedFiles, ...newlyAttempted])].sort();
+    if (changedFiles.size === 0 && newlyRegistered.length === 0 && parsedFilesUnchanged) {
+      return snapshot;
+    }
+
+    // A changed file's own prior symbols/relations are dropped before its fresh parse is added;
+    // relations FROM other unchanged files stay valid regardless (their target existing is what
+    // matters, not the target's own content), so only relations FROM a changed file are dropped.
+    const symbols =
+      changedFiles.size === 0
+        ? snapshot.symbols
+        : [
+            ...snapshot.symbols.filter((symbol) => !changedFiles.has(symbol.file)),
+            ...newSymbols,
+          ].sort((left, right) => left.file.localeCompare(right.file) || left.line - right.line);
+    const relations =
+      changedFiles.size === 0
+        ? snapshot.relations
+        : [
+            ...snapshot.relations.filter((relation) => !changedFiles.has(relation.from)),
+            ...newRelations,
+          ].sort(
+            (left, right) => left.from.localeCompare(right.from) || left.to.localeCompare(right.to),
+          );
+    const evidence =
+      changedFiles.size === 0
+        ? snapshot.evidence
+        : [
+            ...snapshot.evidence.filter((entry) => !changedFiles.has(entry.uri)),
+            ...newEvidence,
+          ].sort((left, right) => left.uri.localeCompare(right.uri));
+
+    return {
+      ...snapshot,
+      files,
+      moduleMap,
+      moduleOwnership,
+      packageOwnership,
+      symbols,
+      relations,
       evidence,
+      parsedFiles,
+      scopeTruncated,
     };
   }
 
@@ -274,6 +416,15 @@ export class OptionalCodebaseMemoryIndex implements RepositoryIndex {
 
   async index(repositoryPath: string, revision: string): Promise<RepositorySnapshot> {
     return this.fallback.index(repositoryPath, revision);
+  }
+
+  async indexScope(
+    repositoryPath: string,
+    revision: string,
+    snapshot: RepositorySnapshot,
+    files: string[],
+  ): Promise<RepositorySnapshot> {
+    return this.fallback.indexScope(repositoryPath, revision, snapshot, files);
   }
 
   structuralSearch(repositoryPath: string, language: string, pattern: string): Promise<string[]> {

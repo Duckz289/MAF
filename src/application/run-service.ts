@@ -23,6 +23,7 @@ import {
   type PendingModeEnforcement,
 } from "../domain/policy-enforcement";
 import { redactSensitiveData } from "../domain/security";
+import { extractFileCandidates, findRepositoryFile, normalizeFile } from "./file-candidates";
 import {
   emptyCost,
   emptyUsage,
@@ -378,26 +379,46 @@ export class RunService {
       });
 
       await this.dependencies.projectBrain.markStale(task.repositoryPath, task.revision);
-      const snapshot = await this.dependencies.repositoryIndex.index(sandbox.path, task.revision);
+      // Cheap full pass: file list plus path-derived package/module ownership, no content read.
+      const cheapSnapshot = await this.dependencies.repositoryIndex.index(
+        sandbox.path,
+        task.revision,
+      );
+      // Selecting scope needs only moduleMap/paths, not symbols, so this first build is cheap.
+      const scope = await this.dependencies.contextBuilder.build({
+        task,
+        mode: run.effectiveMode,
+        snapshot: cheapSnapshot,
+        projectId: task.repositoryPath,
+      });
+      const enrichedSnapshot = await this.dependencies.repositoryIndex.indexScope(
+        sandbox.path,
+        task.revision,
+        cheapSnapshot,
+        scope.initialFiles,
+      );
+      // Re-render with the now-parsed initial scope so the context text carries real symbols.
       const context = await this.dependencies.contextBuilder.build({
         task,
         mode: run.effectiveMode,
-        snapshot,
+        snapshot: enrichedSnapshot,
         projectId: task.repositoryPath,
       });
       const contextState: ContextState = {
         current: context,
         mode: run.effectiveMode,
-        snapshot,
+        snapshot: enrichedSnapshot,
         projectId: task.repositoryPath,
       };
       await this.event(run.id, "ContextBuilt", {
         tokenEstimate: context.tokenEstimate,
         evidenceIds: context.evidenceIds,
-        modules: Object.keys(snapshot.moduleMap).length,
-        symbols: snapshot.symbols.length,
+        modules: Object.keys(enrichedSnapshot.moduleMap).length,
+        symbols: enrichedSnapshot.symbols.length,
         initialFiles: context.initialFiles,
         initialModules: context.initialModules,
+        filesTruncated: enrichedSnapshot.filesTruncated,
+        scopeTruncated: enrichedSnapshot.scopeTruncated,
       });
 
       await this.observeAndDecide(run, {
@@ -405,7 +426,7 @@ export class RunService {
         type: "INITIAL_CONTEXT",
         timestamp: new Date().toISOString(),
         checkpoint: "context-built",
-        repository: snapshot,
+        repository: enrichedSnapshot,
         initialFiles: context.initialFiles,
         initialModules: context.initialModules,
         ...(task.signals ? { externalHints: task.signals } : {}),
@@ -414,7 +435,7 @@ export class RunService {
       const securityBoundary = await this.dependencies.agent.securityBoundary?.();
       if (securityBoundary) await this.event(run.id, "AgentSecurityBoundary", securityBoundary);
       const capabilities = await this.dependencies.agent.capabilities();
-      await this.refreshContext(run, task, contextState);
+      await this.refreshContext(run, task, sandbox, contextState);
       let sessionResult = await this.runGovernedSession(
         run,
         task,
@@ -434,7 +455,9 @@ export class RunService {
       for (;;) {
         candidate = await this.captureCandidate(
           run,
+          task,
           sandbox,
+          contextState,
           verificationAttempts + 1,
           parentCandidateId,
         );
@@ -503,7 +526,7 @@ export class RunService {
               : "NEW_BOUNDED_SESSION",
         });
         parentCandidateId = candidate.id;
-        await this.refreshContext(run, task, contextState);
+        await this.refreshContext(run, task, sandbox, contextState);
         sessionResult = await this.runGovernedSession(
           run,
           task,
@@ -625,7 +648,7 @@ export class RunService {
       run,
       task,
       sandbox,
-      contextState.current.text,
+      contextState,
       credentialReferences,
       message,
       resumeFrom,
@@ -646,7 +669,7 @@ export class RunService {
           workspacePreserved: true,
         },
       });
-      await this.refreshContext(run, task, contextState);
+      await this.refreshContext(run, task, sandbox, contextState);
       // Preserve whatever the interrupted session was actually working on — the original task on
       // a first attempt, or the verifier repair instructions if this restart interrupted a bounded
       // repair. Always falling back to task.prompt would silently discard repair evidence and
@@ -660,7 +683,7 @@ export class RunService {
         run,
         task,
         sandbox,
-        contextState.current.text,
+        contextState,
         credentialReferences,
         continuation,
       );
@@ -674,7 +697,7 @@ export class RunService {
     run: Run,
     task: Task,
     sandbox: Sandbox,
-    initialContext: string,
+    contextState: ContextState,
     credentialReferences: string[],
     message: string,
     resumeFrom?: AgentSession,
@@ -686,7 +709,7 @@ export class RunService {
             run,
             task,
             workspacePath: sandbox.path,
-            initialContext,
+            initialContext: contextState.current.text,
             credentialReferences,
           });
     const active = this.active.get(run.id);
@@ -732,6 +755,13 @@ export class RunService {
           });
         }
         if (agentEvent.type === "tool" || agentEvent.type === "context_expansion") {
+          const grown = await this.growGraph(
+            run,
+            task,
+            sandbox,
+            contextState,
+            extractFileCandidates(agentEvent.data),
+          );
           await this.observeAndDecide(run, {
             runId: run.id,
             type: "AGENT_EVENT",
@@ -741,6 +771,7 @@ export class RunService {
                 ? `agent-${agentEvent.type}`
                 : `verification-repair-${run.retryCount}-${agentEvent.type}`,
             event: agentEvent,
+            ...(grown ? { repository: contextState.snapshot } : {}),
           });
         }
         if (agentEvent.type === "error") {
@@ -937,8 +968,23 @@ export class RunService {
   }
 
   /** Rebuilds the session context when the effective mode changed since the last build. */
-  private async refreshContext(run: Run, task: Task, contextState: ContextState): Promise<void> {
+  private async refreshContext(
+    run: Run,
+    task: Task,
+    sandbox: Sandbox,
+    contextState: ContextState,
+  ): Promise<void> {
     if (contextState.mode === run.effectiveMode) return;
+    // Selecting scope for the new mode needs only path/module data; scope-index any of the newly
+    // selected files not already parsed so the re-rendered text carries real symbols, not a blank
+    // "Relevant symbols" section for files the graph has not seen yet.
+    const scope = await this.dependencies.contextBuilder.build({
+      task,
+      mode: run.effectiveMode,
+      snapshot: contextState.snapshot,
+      projectId: contextState.projectId,
+    });
+    await this.growGraphTrusted(run, task, sandbox, contextState, scope.initialFiles);
     const rebuilt = await this.dependencies.contextBuilder.build({
       task,
       mode: run.effectiveMode,
@@ -957,7 +1003,9 @@ export class RunService {
 
   private async captureCandidate(
     run: Run,
+    task: Task,
     sandbox: Sandbox,
+    contextState: ContextState,
     attempt: number,
     parentCandidateId: string | undefined,
   ): Promise<Candidate> {
@@ -991,14 +1039,95 @@ export class RunService {
       changedFiles: diff.changedFiles,
       digest: artifact.digest,
     });
+    const grown = await this.growGraphTrusted(run, task, sandbox, contextState, diff.changedFiles);
     await this.observeAndDecide(run, {
       runId: run.id,
       type: "DIFF_CAPTURED",
       timestamp: new Date().toISOString(),
       checkpoint: attempt === 1 ? "diff-captured" : `verification-repair-${attempt - 1}-diff`,
       diff,
+      ...(grown ? { repository: contextState.snapshot } : {}),
     });
     return { id, artifact, diff, attempt };
+  }
+
+  /**
+   * Incrementally scope-indexes any candidate files not yet parsed and merges them onto the
+   * shared graph the run is holding. Returns whether the graph actually grew, so callers only pay
+   * the (small) cost of attaching the updated snapshot to an observation when something changed.
+   */
+  /**
+   * Grows the graph from agent-claimed paths (tool calls, context-expansion declarations), which
+   * need fuzzy resolution against the known-files list since the agent's own string data cannot
+   * be trusted to be an exact repository-relative path.
+   */
+  private async growGraph(
+    run: Run,
+    task: Task,
+    sandbox: Sandbox,
+    contextState: ContextState,
+    candidates: string[],
+  ): Promise<boolean> {
+    const repositoryFiles = new Set(contextState.snapshot.files.map(normalizeFile));
+    const resolved = [
+      ...new Set(
+        candidates
+          .map((candidate) => findRepositoryFile(candidate, repositoryFiles))
+          .filter((candidate): candidate is string => Boolean(candidate)),
+      ),
+    ];
+    return this.applyGraphGrowth(run, task, sandbox, contextState, resolved);
+  }
+
+  /**
+   * Grows the graph from already-exact repository-relative paths (git-status output, or module
+   * ranking straight from the repository snapshot's own moduleMap) — no fuzzy resolution needed.
+   * This is what lets a file the agent just created (and which therefore is not yet in the frozen
+   * initial file list) reach indexScope's new-file registration.
+   */
+  private async growGraphTrusted(
+    run: Run,
+    task: Task,
+    sandbox: Sandbox,
+    contextState: ContextState,
+    trustedFiles: string[],
+  ): Promise<boolean> {
+    return this.applyGraphGrowth(run, task, sandbox, contextState, [
+      ...new Set(trustedFiles.map(normalizeFile)),
+    ]);
+  }
+
+  private async applyGraphGrowth(
+    run: Run,
+    task: Task,
+    sandbox: Sandbox,
+    contextState: ContextState,
+    files: string[],
+  ): Promise<boolean> {
+    if (files.length === 0) return false;
+    let updated: RepositorySnapshot;
+    try {
+      updated = await this.dependencies.repositoryIndex.indexScope(
+        sandbox.path,
+        task.revision,
+        contextState.snapshot,
+        files,
+      );
+    } catch (error) {
+      // Scope-indexing enriches signal quality; it is not correctness-critical to completing the
+      // run, so a transient read/parse failure must not fail the whole run over it.
+      await this.event(run.id, "ScopeIndexFailed", {
+        error: error instanceof Error ? error.message : String(error),
+        requestedFiles: files.length,
+      });
+      return false;
+    }
+    if (updated === contextState.snapshot) return false;
+    if (updated.scopeTruncated) {
+      await this.event(run.id, "ScopeIndexTruncated", { requestedFiles: files.length });
+    }
+    contextState.snapshot = updated;
+    return true;
   }
 
   private repairMessage(

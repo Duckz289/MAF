@@ -1,4 +1,5 @@
 import path from "node:path";
+import { extractFileCandidates, findRepositoryFile, normalizeFile } from "./file-candidates";
 import { repositoryModuleOwner } from "../domain/module-ownership";
 import type {
   RepositorySnapshot,
@@ -61,12 +62,6 @@ interface CollectorState {
   snapshots: RuntimeSignalSnapshot[];
 }
 
-const normalizeFile = (value: string): string =>
-  value
-    .replace(/^file:\/\//u, "")
-    .replaceAll("\\", "/")
-    .replace(/^\.\//u, "");
-
 const moduleLookup = (snapshot: RepositorySnapshot): Map<string, string> => {
   const lookup = new Map(
     Object.entries(snapshot.moduleOwnership).map(([file, module]) => [normalizeFile(file), module]),
@@ -93,23 +88,6 @@ const meaningfulCrossModuleEdges = (
     }
   }
   return edges;
-};
-
-const findRepositoryFile = (candidate: string, files: Set<string>): string | undefined => {
-  const normalized = normalizeFile(candidate);
-  if (files.has(normalized)) return normalized;
-  return [...files].find((file) => normalized.endsWith(`/${file}`));
-};
-
-const extractFileCandidates = (value: unknown, key = "", output = new Set<string>()): string[] => {
-  if (typeof value === "string" && /(file|path|target|uri)/iu.test(key)) output.add(value);
-  if (Array.isArray(value) && /(file|path|target|uri)/iu.test(key)) {
-    for (const child of value) if (typeof child === "string") output.add(child);
-  } else if (value && typeof value === "object") {
-    for (const [childKey, child] of Object.entries(value))
-      extractFileCandidates(child, childKey, output);
-  }
-  return [...output];
 };
 
 const editPattern = (data: Record<string, unknown>, files: string[]): string | undefined => {
@@ -205,6 +183,10 @@ export class EvidenceRuntimeSignalCollector implements RuntimeSignalCollector {
     state: CollectorState,
     observation: Extract<RuntimeObservation, { type: "AGENT_EVENT" }>,
   ): void {
+    // Adopt the freshest incrementally-grown snapshot before computing edges, so newly touched
+    // files that have since been scope-indexed contribute real resolved relations instead of
+    // being invisible to cross-module-edge detection.
+    if (observation.repository) state.repository = structuredClone(observation.repository);
     const repositoryFiles = new Set(state.repository.files.map(normalizeFile));
     const files = extractFileCandidates(observation.event.data)
       .map((candidate) => findRepositoryFile(candidate, repositoryFiles))
@@ -309,6 +291,7 @@ export class EvidenceRuntimeSignalCollector implements RuntimeSignalCollector {
     state: CollectorState,
     observation: Extract<RuntimeObservation, { type: "DIFF_CAPTURED" }>,
   ): void {
+    if (observation.repository) state.repository = structuredClone(observation.repository);
     const lookup = moduleLookup(state.repository);
     const repositoryFiles = new Set(state.repository.files.map(normalizeFile));
     const edgeCountBefore = meaningfulCrossModuleEdges(
