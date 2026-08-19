@@ -43,6 +43,9 @@ const record = (modelCost: number | null, verifiedSuccess = true): TelemetryReco
   stabilizationInvalidations: 0,
   contextExpansion: 0,
   verifiedSuccess,
+  budgetMode: "ADVISORY",
+  budgetLimitUsd: null,
+  budgetExhausted: false,
   timestamp: new Date().toISOString(),
 });
 

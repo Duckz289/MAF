@@ -4,7 +4,7 @@ All routes are versioned under `/api/v1`.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
-| `POST` | `/runs` | Create an asynchronous run |
+| `POST` | `/runs` | Create an asynchronous run; accepts an optional `budget: { mode, limitUsd }` |
 | `GET` | `/runs` | List operational summaries for all runs |
 | `GET` | `/runs/:id` | Inspect one run |
 | `GET` | `/runs/:id/events` | Stream SSE lifecycle events; `follow=false` returns a snapshot |
@@ -36,3 +36,10 @@ streams use standard SSE `id`, `event`, and JSON `data` fields.
 `POST /runs/:id/mode` remains an operator compatibility surface. Its values are persisted as
 `EXTERNAL_HINT` evidence; collector-derived deterministic signals take precedence at the next
 checkpoint. Unknown model cost is serialized as `null`, never inferred from a hard-coded price.
+
+Budget: `BudgetAllocated` and `CostEstimated` events are emitted on the run's event stream at
+creation — `BudgetAllocated.allocation` is `null` when no budget was configured (not `$0`), and
+`CostEstimated.estimate` is `null` (not a guess) when there is no prior verified-success telemetry
+to anchor a range to. A `HARD` budget that cannot fund even the first agent session results in the
+run going straight to `PAUSED` with a `BUDGET_EXHAUSTED` recovery capsule, inspectable via
+`GET /runs/:id/recovery-capsule`, without ever starting an agent.

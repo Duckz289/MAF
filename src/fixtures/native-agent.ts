@@ -158,10 +158,12 @@ const runTask = async (input: FixtureInput): Promise<void> => {
       path: input.task.verification.expectedFile,
     });
   }
+  const reportedCostMatch = input.task.prompt.match(/report execution cost:(-?\d+(?:\.\d+)?)/iu);
   emit("usage", {
     inputTokens: Math.ceil(input.context.length / 4),
     outputTokens: 48,
     cachedTokens: 0,
+    ...(reportedCostMatch ? { costUsd: Number(reportedCostMatch[1]) } : {}),
   });
   emit("complete", { changedFiles: ["agent-output.md"] });
 };

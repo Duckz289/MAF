@@ -89,6 +89,12 @@ export class NativeCliAdapter implements AgentAdapter {
       ended: false,
     };
     this.sessions.set(id, session);
+    // A write to stdin after the child has already exited (or is exiting) can surface as an
+    // asynchronous EPIPE error EVENT on the stream, not a synchronous throw from write() — an
+    // unhandled 'error' event on a stream crashes the whole process. send()/updatePolicy() below
+    // already handle a synchronous throw; this handles the asynchronous one, since by the time it
+    // fires the process is already gone and there is nothing actionable left to do.
+    child.stdin.on("error", () => {});
     const lines = createInterface({ input: child.stdout });
     lines.on("line", (line) => {
       try {

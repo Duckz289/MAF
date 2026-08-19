@@ -15,6 +15,7 @@ flowchart LR
   RUN --> TELEMETRY[TelemetrySink]
   RUN --> SIGNALS[RuntimeSignalCollector]
   RUN --> RECOVERY[Recovery plane: classify, capsule, pause, resume]
+  RUN --> BUDGET[Budget authority + circuit breaker]
   AGENT --> ACP[ACP SDK]
   AGENT --> CLI[Native CLI]
   SANDBOX --> WORKTREE[Local Git worktree]
@@ -182,6 +183,73 @@ Explicitly not implemented, stated rather than overclaimed: automatic reload/res
 runs after a server process restart (capsules persist across a restart when using the PostgreSQL
 store; nothing yet re-triggers resume automatically), and provider/model failover beyond a new
 session on the same configured adapter (only one native adapter is wired today).
+
+## Budget authority
+
+`src/domain/budget.ts` is pure domain logic. A task may carry an optional `budget: { mode, limitUsd }`;
+absent means fully permissive — nothing to enforce, and every authorization check trivially passes.
+`computeAllocation` splits a configured limit into `execution`/`verification`/`recovery` reserves
+(default 60/25/15%) so a runaway execution can never consume the money reserved for mandatory
+verification or bounded recovery; `authorizeSpend` checks one category's remaining reserve against
+its recorded spend (mapped from the existing `CostBreakdown` fields — no new cost tracking was
+needed). `ADVISORY` mode never blocks, only reports an overrun; `HARD` mode blocks once a category's
+reserve is exhausted. An unconfigured budget or an unauthorized-but-advisory spend is reported as
+`null`/`false`, never as `$0` or a silent pass.
+
+`RunService` enforces three gates: before the very first agent session (refuses to start at all —
+the M4C "do not execute" strategy — if even the execution reserve cannot fund it, going straight to
+a `BudgetExhaustedError`-classified capsule and `PAUSED`), before each bounded repair attempt
+(stops repairing — never upgrades the last verification result, so budget reduces scope without
+ever silently reducing trust), and before each bounded recovery retry (skips the retry rather than
+spending on it). `estimateFromHistory` produces a bounded cost range anchored to prior
+cost-per-verified-success telemetry, with `MEDIUM` confidence — genuinely `null` (not a guess) when
+no history exists yet. `BudgetAllocated` and `CostEstimated` events are emitted at run creation so
+this is inspectable without a dedicated API surface.
+
+Not yet implemented: literal request-level interception for CLI-spawned native agents (their own
+provider calls happen inside the child process, outside MAF's process boundary — orchestration-level
+gating, described above, is what is actually enforceable for this execution model); project-level
+(cross-run, cumulative) budgets — today's budget is per-run only, matching the milestone's stated
+minimum.
+
+Cost accounting itself still ultimately depends on `costUsd` the agent process self-reports in its
+`usage` events — the same trust boundary M3 already applies to agent-reported error text applies
+here too, and enforcement (this milestone) is what actually gives that number teeth. A reported
+value is sanitized before being trusted: negative, non-finite, or implausibly large (over
+`maxPlausibleSingleEventCostUsd`, currently $1,000) single-event costs are rejected rather than
+applied (visible via an `ImplausibleCostIgnored` event), which closes the two concrete abuse
+shapes a bad value can cause — driving spend negative, or forcing an immediate self-inflicted
+pause. It does **not** close, and cannot without an independently metered provider gateway, an
+agent that simply always under-reports (e.g. always claims near-zero) to keep a HARD budget from
+ever triggering. A poisoned cost figure also feeds `costPerVerifiedSuccess()` and therefore
+`estimateFromHistory`'s range for future runs.
+
+## Provider circuit breaker
+
+`src/domain/circuit-breaker.ts`'s `ProviderCircuitBreaker` is deterministic threshold-and-cooldown
+arithmetic — no model is ever consulted to judge provider health. States are `HEALTHY`, `DEGRADED`
+(past a failure threshold but still attempting), `OPEN_CIRCUIT` (fast-fails every attempt),
+`HALF_OPEN` (exactly one bounded probe attempt allowed once the cooldown elapses). `RunService`
+checks `canAttempt()` before every agent-session attempt (initial or retry) and refuses immediately
+— without ever calling the adapter — when the circuit is open, so an obviously failing provider is
+not retried into the ground. Only provider/network-shaped failure classifications
+(`PROVIDER_TRANSIENT`, `PROVIDER_DEGRADED`, `RATE_LIMIT`, `NETWORK_FAILURE`) count against a
+provider's health — agent-code-quality or verification failures are a different concern with a
+different owner and never affect the breaker. One breaker instance is shared across all runs in a
+process, so a provider that just failed for a previous run starts the next run already `DEGRADED`.
+A HALF_OPEN probe's outcome always releases its slot one way or the other — via `recordOutcome()`
+when it's provider-health-relevant, or `releaseProbe()` when it isn't — so an ordinary agent
+failure landing mid-probe can never permanently wedge the circuit open.
+
+Honest applicability: because M3's `AgentReportedFailure` classifies every agent-reported error as
+`AGENT_FAILURE` regardless of its text (agent output is never trusted to self-classify), a real
+provider outage that a CLI-spawned native agent encounters *inside its own process* surfaces to
+MAF as an ordinary agent error, not a provider-classified one — the breaker never sees it. In the
+one-adapter-today reality, the breaker is genuinely exercised only by failures the harness/adapter
+layer itself raises (e.g. `agent.start()` throwing before any agent process even exists to report
+from). It is real, tested, and will matter as soon as a harness-mediated provider path (e.g. a
+`ModelGateway`-backed adapter) exists; it does not yet protect against a real outage a CLI agent
+silently absorbs and reports as its own failure.
 
 ## Durable state
 

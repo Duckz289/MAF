@@ -52,6 +52,8 @@ export interface Task {
   createdAt: string;
   verification: VerificationSpec;
   signals?: RuntimeSignals;
+  /** Absent means no budget was requested for this run — fully permissive, nothing to enforce. */
+  budget?: { mode: "ADVISORY" | "HARD"; limitUsd: number };
 }
 
 export interface VerificationSpec {

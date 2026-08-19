@@ -16,6 +16,18 @@ import type {
   TelemetrySink,
   VerifierPort,
 } from "../domain/ports";
+import {
+  authorizeSpend,
+  BudgetExhaustedError,
+  computeAllocation,
+  defaultBudgetReservationPolicy,
+  estimateFromHistory,
+  sanitizeReportedCost,
+  type BudgetAllocation,
+  type BudgetCategory,
+  type BudgetReservationPolicy,
+} from "../domain/budget";
+import { ProviderCircuitBreaker, ProviderCircuitOpenError } from "../domain/circuit-breaker";
 import { AdaptiveModeController, type ModeDecision } from "../domain/mode-controller";
 import {
   defaultEnforcementPolicy,
@@ -38,6 +50,7 @@ import {
   type Artifact,
   type Event,
   type ExecutionMode,
+  type FailureClassification,
   type ModeEnforcementMethod,
   type RecoveryCapsule,
   type Run,
@@ -61,6 +74,7 @@ export interface CreateRunRequest {
   model?: string | undefined;
   provider?: string | undefined;
   credentialReferences?: string[] | undefined;
+  budget?: { mode: "ADVISORY" | "HARD"; limitUsd: number } | undefined;
 }
 
 export interface RunSummary extends Run {
@@ -119,6 +133,8 @@ interface RunServiceDependencies {
   repairPolicy?: Partial<VerificationRepairPolicy>;
   enforcementPolicy?: Partial<EnforcementPolicy>;
   recoveryPolicy?: Partial<RecoveryPolicy>;
+  budgetReservationPolicy?: Partial<BudgetReservationPolicy>;
+  circuitBreaker?: ProviderCircuitBreaker;
 }
 
 export interface VerificationRepairPolicy {
@@ -167,6 +183,8 @@ interface ActiveRunState {
   pendingPolicy?: PendingModeEnforcement | undefined;
   policyRestartsUsed: number;
   recoveryAttemptsUsed: number;
+  /** True once any budget authorization check for this run has denied a spend. For telemetry. */
+  budgetExhaustedObserved: boolean;
   transitionState: TransitionState;
   /**
    * The single live Run object the execute loop reads and writes. External callers (the
@@ -194,12 +212,22 @@ const newTransitionState = (): TransitionState => ({
   safeRestarts: 0,
 });
 
+/** Failure classes that reflect provider/network health, not agent code quality. */
+const providerRelatedClassifications = new Set<FailureClassification>([
+  "PROVIDER_TRANSIENT",
+  "PROVIDER_DEGRADED",
+  "RATE_LIMIT",
+  "NETWORK_FAILURE",
+]);
+
 export class RunService {
   private readonly active = new Map<string, ActiveRunState>();
   private readonly modeController: AdaptiveModeController;
   private readonly repairPolicy: VerificationRepairPolicy;
   private readonly enforcementPolicy: EnforcementPolicy;
   private readonly recoveryPolicy: RecoveryPolicy;
+  private readonly budgetReservationPolicy: BudgetReservationPolicy;
+  private readonly circuitBreaker: ProviderCircuitBreaker;
   /** Blocks new run creation while true (Emergency Stop). Existing evidence is never touched. */
   private emergencyStopped = false;
 
@@ -208,12 +236,22 @@ export class RunService {
     this.repairPolicy = { ...defaultVerificationRepairPolicy, ...dependencies.repairPolicy };
     this.enforcementPolicy = { ...defaultEnforcementPolicy, ...dependencies.enforcementPolicy };
     this.recoveryPolicy = { ...defaultRecoveryPolicy, ...dependencies.recoveryPolicy };
+    this.budgetReservationPolicy = {
+      ...defaultBudgetReservationPolicy,
+      ...dependencies.budgetReservationPolicy,
+    };
+    this.circuitBreaker = dependencies.circuitBreaker ?? new ProviderCircuitBreaker();
     if (this.repairPolicy.maxRepairAttempts < 0)
       throw new Error("Maximum repair attempts cannot be negative");
     if (this.enforcementPolicy.maxPolicyRestarts < 0)
       throw new Error("Maximum policy restarts cannot be negative");
     if (this.recoveryPolicy.maxRecoveryAttempts < 0)
       throw new Error("Maximum recovery attempts cannot be negative");
+    const shareSum =
+      this.budgetReservationPolicy.executionShare +
+      this.budgetReservationPolicy.verificationShare +
+      this.budgetReservationPolicy.recoveryShare;
+    if (Math.abs(shareSum - 1) > 1e-6) throw new Error("Budget reservation shares must sum to 1");
   }
 
   async create(request: CreateRunRequest): Promise<Run> {
@@ -229,6 +267,7 @@ export class RunService {
       createdAt: now,
       verification: request.verification ?? {},
       ...(request.signals ? { signals: request.signals } : {}),
+      ...(request.budget ? { budget: request.budget } : {}),
     };
     const initialMode = this.modeController.initial(request.mode);
     const run: Run = {
@@ -257,11 +296,27 @@ export class RunService {
       agent: run.agent,
       model: run.model,
     });
+    const allocation = computeAllocation(
+      task.budget ?? { mode: "ADVISORY", limitUsd: null },
+      this.budgetReservationPolicy,
+    );
+    await this.event(run.id, "BudgetAllocated", {
+      mode: task.budget?.mode ?? "ADVISORY",
+      configured: task.budget !== undefined,
+      allocation,
+    });
+    // A bounded range anchored to prior verified-success cost, never a fabricated point figure;
+    // genuinely null (not $0) when no telemetry history exists yet to anchor it to.
+    const costEstimate = estimateFromHistory(
+      await this.dependencies.telemetry.costPerVerifiedSuccess(),
+    );
+    await this.event(run.id, "CostEstimated", { estimate: costEstimate });
     this.active.set(run.id, {
       cancelled: false,
       sessionActive: false,
       policyRestartsUsed: 0,
       recoveryAttemptsUsed: 0,
+      budgetExhaustedObserved: false,
       transitionState: newTransitionState(),
       run,
     });
@@ -455,6 +510,7 @@ export class RunService {
       sessionActive: false,
       policyRestartsUsed: 0,
       recoveryAttemptsUsed: 0,
+      budgetExhaustedObserved: false,
       transitionState: newTransitionState(),
       run,
     });
@@ -623,6 +679,14 @@ export class RunService {
       if (securityBoundary) await this.event(run.id, "AgentSecurityBoundary", securityBoundary);
       const capabilities = await this.dependencies.agent.capabilities();
       await this.refreshContext(run, task, sandbox, contextState);
+
+      const allocation = computeAllocation(
+        task.budget ?? { mode: "ADVISORY", limitUsd: null },
+        this.budgetReservationPolicy,
+      );
+      const budgetMode = task.budget?.mode ?? "ADVISORY";
+      this.requireExecutionBudget(run, allocation, budgetMode, "before starting the first session");
+
       let sessionResult = await this.runGovernedSession(
         run,
         task,
@@ -656,6 +720,11 @@ export class RunService {
           attempt: verificationAttempts,
           candidateId: candidate.id,
         });
+        // Deliberately unconditional: M4C requires budget to never silently reduce required
+        // trust, so verification always runs regardless of the "verification" reserve's state —
+        // there is no budget gate here, by design. (The current CommandVerifier is $0 per run
+        // either way; the "verification" allocation exists for a future costed verifier, at which
+        // point this comment is the reminder that it still must never be skipped for budget.)
         verification = await this.dependencies.verifier.verify(run, task, sandbox, candidate.diff);
         verification.attempt = verificationAttempts;
         verification.candidateId = candidate.id;
@@ -682,13 +751,34 @@ export class RunService {
         const worseState =
           previousVerification !== undefined &&
           verificationSeverity(verification) > verificationSeverity(previousVerification);
-        if (repairAttempts >= this.repairPolicy.maxRepairAttempts || worseState) {
+        const repairAuthorization = authorizeSpend(
+          allocation,
+          this.spentByCategory(run),
+          "execution",
+          budgetMode,
+        );
+        if (
+          repairAttempts >= this.repairPolicy.maxRepairAttempts ||
+          worseState ||
+          !repairAuthorization.authorized
+        ) {
+          if (!repairAuthorization.authorized) {
+            const active = this.active.get(run.id);
+            if (active) active.budgetExhaustedObserved = true;
+          }
+          // Budget may reduce scope (stop repairing here) but must never silently upgrade this
+          // candidate's trust — the last verification result stands exactly as it is.
           await this.event(run.id, "VerificationRepairStopped", {
-            reason: worseState ? "verification-state-worsened" : "repair-limit-reached",
+            reason: !repairAuthorization.authorized
+              ? "budget-exhausted"
+              : worseState
+                ? "verification-state-worsened"
+                : "repair-limit-reached",
             verificationAttempts,
             repairAttempts,
             maxRepairAttempts: this.repairPolicy.maxRepairAttempts,
             candidateId: candidate.id,
+            ...(!repairAuthorization.authorized ? { budget: repairAuthorization } : {}),
           });
           break;
         }
@@ -783,6 +873,9 @@ export class RunService {
           stabilizationInvalidations: Number(signalValues?.stabilizationInvalidations?.value ?? 0),
           contextExpansion: Number(signalValues?.contextExpansion?.value ?? 0),
           verifiedSuccess: run.verificationState === "VERIFIED",
+          budgetMode: task.budget?.mode ?? "ADVISORY",
+          budgetLimitUsd: task.budget?.limitUsd ?? null,
+          budgetExhausted: this.active.get(run.id)?.budgetExhaustedObserved ?? false,
           timestamp: run.completedAt,
         });
       } catch (telemetryError) {
@@ -799,6 +892,8 @@ export class RunService {
         run.updatedAt = run.completedAt;
         const classification = classifyFailure(error, {
           agentReported: error instanceof AgentReportedFailure,
+          budgetExhausted: error instanceof BudgetExhaustedError,
+          circuitOpen: error instanceof ProviderCircuitOpenError,
         });
         try {
           const capsule = await this.captureRecoveryCapsule(
@@ -926,10 +1021,29 @@ export class RunService {
     message: string,
     resumeFrom?: AgentSession,
   ): Promise<{ session: AgentSession; modelCostReported: boolean; restartRequested: boolean }> {
+    const allocation = computeAllocation(
+      task.budget ?? { mode: "ADVISORY", limitUsd: null },
+      this.budgetReservationPolicy,
+    );
+    const budgetMode = task.budget?.mode ?? "ADVISORY";
     let attemptResumeFrom = resumeFrom;
+    // The first attempt is whatever the caller requested (initial session, repair, or a policy
+    // restart continuation) and its cost lands in "execution". Any FURTHER attempt within this
+    // same call only happens because a bounded recovery retry was decided below, so its cost is
+    // real recovery spend and must land in the "recovery" category the reservation protects.
+    let costCategory: BudgetCategory = "execution";
     for (;;) {
+      // Refuse before even trying an obviously failing provider, rather than calling it again.
+      if (!this.circuitBreaker.canAttempt(run.provider)) {
+        throw new ProviderCircuitOpenError(
+          `Provider circuit is open for ${run.provider}: too many consecutive failures`,
+        );
+      }
+      if (this.circuitBreaker.state(run.provider) === "HALF_OPEN") {
+        this.circuitBreaker.beginAttempt(run.provider);
+      }
       try {
-        return await this.runAgentAttempt(
+        const result = await this.runAgentAttempt(
           run,
           task,
           sandbox,
@@ -937,19 +1051,50 @@ export class RunService {
           credentialReferences,
           message,
           attemptResumeFrom,
+          costCategory,
         );
+        this.circuitBreaker.recordOutcome(run.provider, true);
+        return result;
       } catch (error) {
+        // A circuit-open refusal is never itself worth retrying — the very next loop iteration
+        // would hit the identical refusal, since nothing about the provider has changed. It was
+        // never a real attempt, so there is no probe slot to release either.
+        if (error instanceof ProviderCircuitOpenError) throw error;
         const active = this.active.get(run.id);
         if (active?.cancelled) throw error;
         const classification = classifyFailure(error, {
           agentReported: error instanceof AgentReportedFailure,
         });
-        if (
-          !active ||
-          !isAutoRetryable(classification) ||
-          active.recoveryAttemptsUsed >= this.recoveryPolicy.maxRecoveryAttempts
-        ) {
-          throw error;
+        // Provider health tracks provider/network-shaped failures specifically, not agent-code
+        // quality or verification outcomes — those are different concerns with different owners.
+        // Every attempt must resolve its HALF_OPEN probe slot one way or the other (recordOutcome
+        // or releaseProbe) — leaving it consumed forever would permanently wedge the circuit open.
+        if (providerRelatedClassifications.has(classification)) {
+          this.circuitBreaker.recordOutcome(run.provider, false);
+        } else {
+          this.circuitBreaker.releaseProbe(run.provider);
+        }
+        const budgetAuthorization = authorizeSpend(
+          allocation,
+          this.spentByCategory(run),
+          "recovery",
+          budgetMode,
+        );
+        if (!active || active.cancelled) throw error;
+        if (!isAutoRetryable(classification)) throw error;
+        if (active.recoveryAttemptsUsed >= this.recoveryPolicy.maxRecoveryAttempts) throw error;
+        if (!budgetAuthorization.authorized) {
+          active.budgetExhaustedObserved = true;
+          // Throw a BudgetExhaustedError rather than re-throwing the original error: the ORIGINAL
+          // failure was auto-retryable and budget is the actual reason no further retry happens,
+          // so the durable capsule's recoveryReason must say BUDGET_EXHAUSTED, not misattribute
+          // the stop to whatever transient thing triggered this retry decision in the first place.
+          throw new BudgetExhaustedError(
+            `Recovery budget exhausted after a ${classification} failure (allocated ` +
+              `$${budgetAuthorization.allocated?.toFixed(4)}, spent ` +
+              `$${budgetAuthorization.spent.toFixed(4)}). Original error: ` +
+              `${error instanceof Error ? error.message : String(error)}`,
+          );
         }
         active.recoveryAttemptsUsed += 1;
         await this.event(run.id, "RecoveryAttempted", {
@@ -960,6 +1105,7 @@ export class RunService {
           strategy: "NEW_BOUNDED_SESSION",
         });
         attemptResumeFrom = undefined;
+        costCategory = "recovery";
       }
     }
   }
@@ -972,6 +1118,7 @@ export class RunService {
     credentialReferences: string[],
     message: string,
     resumeFrom?: AgentSession,
+    costCategory: BudgetCategory = "execution",
   ): Promise<{ session: AgentSession; modelCostReported: boolean; restartRequested: boolean }> {
     const session =
       resumeFrom?.nativeSessionId !== undefined
@@ -1005,15 +1152,30 @@ export class RunService {
           run.usage.input += Number(agentEvent.data.inputTokens ?? 0);
           run.usage.output += Number(agentEvent.data.outputTokens ?? 0);
           run.usage.cached += Number(agentEvent.data.cachedTokens ?? 0);
-          if (typeof agentEvent.data.costUsd === "number") {
+          const sanitizedCost = sanitizeReportedCost(agentEvent.data.costUsd);
+          if (sanitizedCost !== null) {
             modelCostReported = true;
-            run.cost.model += agentEvent.data.costUsd;
+            // Recovery-retry attempts attribute their cost to the "recovery" reserve rather than
+            // "execution" so that category's budget authorization reflects real spend instead of
+            // always seeing zero. All other attempts (initial session, repair) are execution cost.
+            if (costCategory === "recovery") run.cost.recovery += sanitizedCost;
+            else run.cost.model += sanitizedCost;
             run.cost.total =
               run.cost.model +
               run.cost.sandbox +
               run.cost.verification +
               run.cost.retry +
               run.cost.recovery;
+          } else if (agentEvent.data.costUsd !== undefined) {
+            // Agent output is a proposal, never silently trusted — a negative, non-finite, or
+            // implausibly large single-event cost is rejected rather than applied. This does not
+            // (and cannot, without independent metering) stop an agent from under-reporting its
+            // own cost to keep bypassing a HARD budget; it closes the two concrete abuse shapes a
+            // self-reported number can otherwise cause: decrementing spend below zero, or forcing
+            // an immediate self-inflicted pause by claiming an absurd cost.
+            await this.event(run.id, "ImplausibleCostIgnored", {
+              reported: agentEvent.data.costUsd,
+            });
           }
         }
         if (agentEvent.type === "policy") {
@@ -1428,6 +1590,36 @@ export class RunService {
     ].join("\n\n");
   }
 
+  /** Maps the existing CostBreakdown fields onto budget categories: nothing new to track. */
+  private spentByCategory(run: Run): Record<BudgetCategory, number> {
+    return {
+      execution: run.cost.model + run.cost.sandbox,
+      verification: run.cost.verification,
+      recovery: run.cost.recovery + run.cost.retry,
+    };
+  }
+
+  /**
+   * Refuses to start a new agent session at all when even the execution reserve cannot fund it —
+   * the M4C "do not execute" strategy. Throws BudgetExhaustedError, which execute()'s outer catch
+   * turns into a durable capsule and PAUSED rather than ever starting an agent the budget cannot
+   * support.
+   */
+  private requireExecutionBudget(
+    run: Run,
+    allocation: BudgetAllocation | null,
+    mode: "ADVISORY" | "HARD",
+    when: string,
+  ): void {
+    const authorization = authorizeSpend(allocation, this.spentByCategory(run), "execution", mode);
+    if (!authorization.authorized) {
+      throw new BudgetExhaustedError(
+        `Execution budget exhausted ${when}: allocated $${authorization.allocated?.toFixed(4)}, ` +
+          `spent $${authorization.spent.toFixed(4)}`,
+      );
+    }
+  }
+
   /**
    * Builds and captures the durable, model-independent recovery evidence for a run that hit an
    * unhandled failure. Best-effort revision resolution (git rev-parse) never blocks or fails the
@@ -1447,6 +1639,15 @@ export class RunService {
       this.dependencies.projectBrain.list(task.repositoryPath, task.revision, ["FACT", "DECISION"]),
     ]);
     const resolvedRevision = sandbox ? await this.resolveRevision(sandbox.path) : undefined;
+    const allocation = computeAllocation(
+      task.budget ?? { mode: "ADVISORY", limitUsd: null },
+      this.budgetReservationPolicy,
+    );
+    const spent = this.spentByCategory(run);
+    const remainingBudget =
+      allocation === null
+        ? null
+        : allocation.total - (spent.execution + spent.verification + spent.recovery);
     return buildRecoveryCapsule({
       runId: run.id,
       task,
@@ -1464,6 +1665,7 @@ export class RunService {
       knowledge,
       recoveryReason: classification,
       recoveryDetail: detail,
+      remainingBudget,
     });
   }
 

@@ -24,6 +24,17 @@ interface RunEvent {
   id: string;
   type: string;
   timestamp: string;
+  data?: unknown;
+}
+
+interface BudgetAllocatedData {
+  mode: "ADVISORY" | "HARD";
+  configured: boolean;
+  allocation: { execution: number; verification: number; recovery: number; total: number } | null;
+}
+
+interface CostEstimatedData {
+  estimate: { low: number; high: number; confidence: string; basis: string } | null;
 }
 
 const useStyles = makeStyles({
@@ -150,6 +161,12 @@ export function RunPage({
       })
       .catch(() => setEvents([]));
   }, [run]);
+  const budgetAllocated = events.find((event) => event.type === "BudgetAllocated")?.data as
+    | BudgetAllocatedData
+    | undefined;
+  const costEstimated = events.find((event) => event.type === "CostEstimated")?.data as
+    | CostEstimatedData
+    | undefined;
   if (!run)
     return (
       <EmptyState
@@ -369,6 +386,36 @@ export function RunPage({
                 </Text>
                 <Text>{run.modeExplanation.latestSnapshotId ?? "Chưa có snapshot"}</Text>
               </div>
+              <div className={styles.fact}>
+                <Text className={styles.quiet} size={200}>
+                  Ngân sách
+                </Text>
+                <Text>
+                  {!budgetAllocated || !budgetAllocated.configured
+                    ? "Chưa cấu hình (không giới hạn)"
+                    : budgetAllocated.mode === "HARD"
+                      ? `Giới hạn cứng — $${budgetAllocated.allocation?.total.toFixed(2)}`
+                      : `Khuyến nghị — $${budgetAllocated.allocation?.total.toFixed(2)}`}
+                </Text>
+              </div>
+              {costEstimated?.estimate ? (
+                <div className={styles.fact}>
+                  <Text className={styles.quiet} size={200}>
+                    Ước tính chi phí ({costEstimated.estimate.confidence})
+                  </Text>
+                  <Text>
+                    ${costEstimated.estimate.low.toFixed(2)} – $
+                    {costEstimated.estimate.high.toFixed(2)}
+                  </Text>
+                </div>
+              ) : (
+                <div className={styles.fact}>
+                  <Text className={styles.quiet} size={200}>
+                    Ước tính chi phí
+                  </Text>
+                  <Text>Chưa đủ dữ liệu lịch sử</Text>
+                </div>
+              )}
               <div>
                 <Text weight="semibold">Tín hiệu runtime</Text>
                 {Object.entries(run.modeExplanation.latestSignals).length ? (

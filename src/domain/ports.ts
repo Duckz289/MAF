@@ -342,6 +342,10 @@ export interface TelemetryRecord {
   stabilizationInvalidations: number;
   contextExpansion: number;
   verifiedSuccess: boolean;
+  budgetMode: "ADVISORY" | "HARD";
+  /** null when no budget was configured for this run — unknown, not zero. */
+  budgetLimitUsd: number | null;
+  budgetExhausted: boolean;
   timestamp: string;
 }
 

@@ -62,6 +62,12 @@ const createRunSchema = z.object({
   model: z.string().optional(),
   provider: z.string().optional(),
   credentialReferences: z.array(z.string().startsWith("credential://")).max(20).optional(),
+  budget: z
+    .object({
+      mode: z.enum(["ADVISORY", "HARD"]),
+      limitUsd: z.number().nonnegative(),
+    })
+    .optional(),
 });
 
 const transitionSchema = z.object({

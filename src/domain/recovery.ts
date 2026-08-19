@@ -44,6 +44,10 @@ export interface FailureContext {
    * agent merely claimed.
    */
   agentReported?: boolean;
+  /** True when a HARD budget category was exhausted — a harness-determined, definitive fact. */
+  budgetExhausted?: boolean;
+  /** True when a provider's circuit breaker refused the attempt before it was even made. */
+  circuitOpen?: boolean;
 }
 
 const patternClassification: Array<[RegExp, FailureClassification]> = [
@@ -68,6 +72,8 @@ export const classifyFailure = (
   context: FailureContext = {},
 ): FailureClassification => {
   if (context.cancelled) return "USER_INTERRUPT";
+  if (context.budgetExhausted) return "BUDGET_EXHAUSTED";
+  if (context.circuitOpen) return "PROVIDER_DEGRADED";
   if (context.agentReported) return "AGENT_FAILURE";
   const message = error instanceof Error ? error.message : String(error);
   for (const [pattern, classification] of patternClassification) {
@@ -187,6 +193,8 @@ export interface RecoveryCapsuleInput {
   knowledge: KnowledgeRecord[];
   recoveryReason: FailureClassification;
   recoveryDetail: string;
+  /** Caller-computed (budget.ts owns the arithmetic); null when no budget was configured. */
+  remainingBudget?: number | null | undefined;
   now?: string;
 }
 
@@ -219,7 +227,7 @@ export const buildRecoveryCapsule = (input: RecoveryCapsuleInput): RecoveryCapsu
     desiredMode: input.desiredMode,
     effectiveMode: input.effectiveMode,
     costSpent: input.costSpent,
-    remainingBudget: null,
+    remainingBudget: input.remainingBudget ?? null,
     candidateLineage: lineage,
     strongestCandidateId: strongest?.id,
     latestVerification: summarizeVerification(latestVerification),

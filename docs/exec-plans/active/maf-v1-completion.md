@@ -8,7 +8,7 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 - Start branch: `adaptive-harness/runtime-signals-v0.1` at `357ab60` (clean tree).
 - Baseline validation (2026-08-19): `format:check`, `lint`, `typecheck`, `test` (49 passing),
   `build` (server + UI), `compose:check`, `smoke` — all PASS.
-- Current milestone: M3 — Recovery Plane.
+- Current milestone: M4 — Budget Authority and Cost Control.
 
 ## Confirmed repository facts
 
@@ -32,8 +32,8 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 |---|-----------|--------|--------|
 | M1 | Execution policy enforcement | DONE (VERIFIED) | 459e710 |
 | M2 | Scalable incremental project graph | DONE (VERIFIED) | 5cd71ed |
-| M3 | Recovery plane (3A–3D) | DONE (VERIFIED) | (pending local commit) |
-| M4 | Budget authority (4A–4E) | NOT STARTED | |
+| M3 | Recovery plane (3A–3D) | DONE (VERIFIED) | 937dede |
+| M4 | Budget authority (4A–4E) | DONE (VERIFIED) | (pending local commit) |
 | M5 | Task risk profiler + assurance planner | NOT STARTED | |
 | M6 | Quality governance (6A–6B) | NOT STARTED | |
 | M7 | Architecture governance + debt delta | NOT STARTED | |
@@ -312,6 +312,87 @@ the retry-with-new-session path stays within the same agent), and circuit breake
   `compose:check`, `smoke` — all PASS. (One `smoke` flake was traced to an unrelated orphaned
   `dist/node/server/main.js` process left running on port 4310 from earlier in this session, not a
   regression — killed, and smoke was stable across repeated runs afterward.)
+
+## M4 validation log
+
+- `src/domain/budget.ts` (pure): `BudgetMode`/`BudgetCategory`/`BudgetPolicy`/
+  `BudgetReservationPolicy`/`computeAllocation`/`authorizeSpend`/`CostEstimate`/
+  `estimateFromHistory`/`BudgetExhaustedError`. `src/domain/circuit-breaker.ts` (pure):
+  `ProviderCircuitBreaker`/`ProviderCircuitOpenError`, deterministic threshold-and-cooldown state
+  machine (HEALTHY/DEGRADED/OPEN_CIRCUIT/HALF_OPEN), no model ever consulted.
+- `RunService` gates: (1) before the first agent session — refuses to start at all
+  (`BudgetExhaustedError` → capsule → `PAUSED`, `BUDGET_EXHAUSTED`) if even the execution reserve
+  cannot fund it; (2) before each bounded repair attempt — stops repairing without ever upgrading
+  the last verification result; (3) before each bounded recovery retry — skips the retry. A
+  `ProviderCircuitBreaker` (one instance shared across all runs in a process) gates every
+  agent-session attempt and is updated only from provider/network-shaped failure classifications,
+  never from agent-code-quality or verification failures.
+- `typecheck`, `format:check`, `lint`, `test` (108 passing: 17 new — 10 pure unit tests for
+  budget/circuit-breaker math and edge cases including the "failed HALF_OPEN probe must reset the
+  cooldown, not retry immediately" case; 5 new RunService integration tests proving the wiring
+  actually works end-to-end — refuses to start on an exhausted HARD budget, stops repairing on
+  mid-run exhaustion without upgrading trust, ADVISORY never blocks, unconfigured budget stays
+  fully permissive, and a circuit that opens during one run genuinely refuses the next run's first
+  attempt without ever calling the broken agent again), `build`, `compose:check`, `smoke` — PASS.
+- Found and fixed one unrelated latent bug while validating: `NativeCliAdapter.updatePolicy`
+  (and implicitly `send`) could crash the whole process with an unhandled `EPIPE` error *event* on
+  a child's stdin stream (write-after-exit), which a synchronous `try/catch` around `.write()`
+  cannot catch — this is a stream-level async error, not a thrown exception. Fixed by attaching a
+  swallowing `'error'` listener to the stdin stream at session start; there is nothing actionable
+  left to do once the child has already exited. Verified stable across repeated full-suite runs
+  before and after the fix.
+- Fresh-context review (independent subagent, diff-only, no primed conclusion) found 5 MATERIAL
+  issues, all fixed before commit —
+  1. **Circuit breaker could be permanently wedged open.** `beginAttempt()` consumed the single
+     HALF_OPEN probe slot, but the slot was only ever released by `recordOutcome()`, which was
+     only called for provider-related failure classifications. A probe that failed for any OTHER
+     reason (e.g. `AGENT_FAILURE`) left `halfOpenTrialInFlight` permanently `true` — a process-wide,
+     self-inflicted denial of service for that provider until restart, since one breaker instance
+     is shared across all runs. Fixed by adding `releaseProbe()`, called whenever an attempt's
+     outcome isn't provider-health-relevant, so the slot is always resolved one way or the other.
+     Proven by a unit test that first reproduces the exact wedge (no release call at all → stuck
+     forever) and a second test proving `releaseProbe()` fixes it.
+  2. **The "recovery" budget category never reflected real spend.** Only `run.cost.model` was ever
+     incremented (from agent-reported cost); `run.cost.recovery`/`retry` stayed 0 forever, so the
+     recovery-retry budget gate could only ever fire from a *static* zero allocation, never from
+     actually accumulated retry cost. Fixed by threading a cost category through the attempt
+     pipeline: the first attempt in a governed session is "execution"; any further attempt within
+     the same call is a bounded recovery retry and its reported cost now lands in
+     `run.cost.recovery`. Proven by an integration test with a "fails once, succeeds on retry"
+     fixture scenario asserting the retry's cost lands in `cost.recovery`, not `cost.model`. (The
+     "verification" category is deliberately never gated — CommandVerifier is genuinely $0 today,
+     and M4C requires verification to never be skippable for budget reasons in the first place;
+     this is now an explicit code comment at the call site rather than an unexplained absence.)
+  3. **A budget-denied recovery retry mislabeled the capsule's recovery reason.** The code
+     re-threw the *original* underlying error (e.g. a transient failure) rather than indicating
+     budget was the actual reason no further retry happened, so `RecoveryCapsule.recoveryReason`
+     showed the original failure's classification instead of `BUDGET_EXHAUSTED`. Fixed by throwing
+     a `BudgetExhaustedError` (preserving the original error's text and classification in its
+     message) specifically when budget — not attempt count, not non-retryability — is what stopped
+     the retry. Also fixed `buildRecoveryCapsule`'s `remainingBudget`, which was hardcoded to
+     `null` unconditionally even when a budget was configured; now computed from the actual
+     allocation and spend at capsule-capture time. Proven by an integration test asserting
+     `recoveryReason === "BUDGET_EXHAUSTED"`, the original classification preserved in
+     `recoveryDetail`, and `remainingBudget` being a real number.
+  4. **Agent-reported cost was trusted with no bounds.** `costUsd` is fully agent-controlled data;
+     with no validation, a negative value could drive spend below zero (permanently bypassing a
+     HARD budget for that direction), and an absurd value could force an immediate self-inflicted
+     pause. Fixed with `sanitizeReportedCost` (negative, non-finite, or over a $1,000
+     single-event ceiling is rejected — never applied, never clamped to a different number — with
+     an honest `ImplausibleCostIgnored` event). Documented as a partial mitigation only: it cannot
+     stop an agent that always under-reports near zero, which would require independent metering
+     out of scope for this milestone — stated explicitly in `ARCHITECTURE.md` rather than
+     overclaimed. Proven by unit tests for the sanitizer and an integration test asserting an
+     implausible value is ignored and `cost.model` stays untouched.
+  5. **`ARCHITECTURE.md` overclaimed the circuit breaker's real-world reach.** Because M3's
+     `AgentReportedFailure` always classifies agent-reported errors as `AGENT_FAILURE` (never a
+     provider category), a real provider outage a CLI-spawned native agent absorbs internally and
+     reports as its own failure never reaches the breaker — it is only genuinely exercised by
+     harness/adapter-level throws (e.g. `agent.start()` itself failing) in today's single-adapter
+     reality. Added an explicit "honest applicability" paragraph rather than letting the section
+     read as though it protects against real CLI-agent-absorbed provider outages today.
+- Re-validated after fixes: `typecheck`, `test` (118 passing), `format:check`, `lint`, `build`,
+  `compose:check`, `smoke` — all PASS.
 
 ## Blockers
 
