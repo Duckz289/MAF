@@ -8,7 +8,7 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 - Start branch: `adaptive-harness/runtime-signals-v0.1` at `357ab60` (clean tree).
 - Baseline validation (2026-08-19): `format:check`, `lint`, `typecheck`, `test` (49 passing),
   `build` (server + UI), `compose:check`, `smoke` — all PASS.
-- Current milestone: M4 — Budget Authority and Cost Control.
+- Current milestone: M6 — Quality Governance.
 
 ## Confirmed repository facts
 
@@ -33,8 +33,8 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 | M1 | Execution policy enforcement | DONE (VERIFIED) | 459e710 |
 | M2 | Scalable incremental project graph | DONE (VERIFIED) | 5cd71ed |
 | M3 | Recovery plane (3A–3D) | DONE (VERIFIED) | 937dede |
-| M4 | Budget authority (4A–4E) | DONE (VERIFIED) | (pending local commit) |
-| M5 | Task risk profiler + assurance planner | NOT STARTED | |
+| M4 | Budget authority (4A–4E) | DONE (VERIFIED) | 0994fa7 |
+| M5 | Task risk profiler + assurance planner | DONE (VERIFIED) | (pending local commit) |
 | M6 | Quality governance (6A–6B) | NOT STARTED | |
 | M7 | Architecture governance + debt delta | NOT STARTED | |
 | M8 | Security assurance (8A–8B) | NOT STARTED | |
@@ -392,6 +392,108 @@ the retry-with-new-session path stays within the same agent), and circuit breake
      reality. Added an explicit "honest applicability" paragraph rather than letting the section
      read as though it protects against real CLI-agent-absorbed provider outages today.
 - Re-validated after fixes: `typecheck`, `test` (118 passing), `format:check`, `lint`, `build`,
+  `compose:check`, `smoke` — all PASS.
+
+## M5 design (Task Risk Profiler and Assurance Planner)
+
+Confirmed starting point: `qualityPreference` already exists as a UI-only display string
+(`ProjectPreferences.qualityPreference` in `src/application/project-registry.ts`) — never wired to
+`Task`/`Run`, never consulted anywhere. This is the exact "displayed, not enforced" gap M5A closes,
+mirroring M4's budget gap.
+
+Scope for this pass (deliberately bounded — M5 profiles risk and plans assurance; the actual
+security/performance/architecture verifiers the plan calls for are M7–M9's job, not built yet):
+1. `src/domain/risk.ts`: `RiskDimension` (the ten dimensions from the roadmap: ReasoningDifficulty,
+   CodeCoupling, BlastRadius, ArchitectureSensitivity, DebtRisk, SecuritySensitivity,
+   PerformanceSensitivity, OperationalSensitivity, NetworkBoundaryChanges, DataConsistencyRisk), a
+   `RiskVector` (one `{level, provenance, evidence}` per dimension — never collapsed into a scalar),
+   and `deriveRiskVector(evidence)` — deterministic path-pattern and module-graph rules (reusing
+   M2's `moduleOwnership`/`packageOwnership`/relations), never a model call. Dimensions without
+   reliable deterministic evidence today (`DebtRisk` — M7A doesn't exist yet; `ReasoningDifficulty`
+   — genuinely not knowable ahead of time) are honestly `LOW`-confidence/`HEURISTIC` or explicitly
+   marked insufficient evidence, never fabricated as confident.
+2. `Task.qualityPreference?: "FAST"|"BALANCED"|"HIGH"|"CRITICAL"` (M5A), defaulting to `BALANCED`.
+   Wired through `CreateRunRequest` the same way M4's `budget` field was.
+3. `src/domain/assurance.ts`: `AssuranceCheck` (`CORRECTNESS`, `INTEGRATION`, `ARCHITECTURE`,
+   `SECURITY`, `PERFORMANCE`, `CONCURRENCY`, `RESILIENCE`, `INDEPENDENT_REVIEW`) and
+   `buildAssurancePlan(riskVector, qualityPreference)` — a deterministic rule table (not every
+   check for every task) that also records, per check, a human-readable reason it either IS or is
+   NOT required, satisfying the "explain what will be checked, why, and what is not required"
+   requirement directly in the data structure.
+4. `RunService` computes risk/assurance twice: once from the context builder's selected
+   `initialFiles`/`initialModules` right after context is built (a pre-execution estimate — the
+   only thing available before any diff exists), and again from the actual `candidate.diff` once a
+   candidate exists (ground truth, refining the estimate). Both are emitted as `RiskProfiled` /
+   `AssurancePlanned` events so the plan is inspectable evidence, not a hidden internal value.
+   Wiring the plan into actual verification gates is explicitly M6–M10's job — this milestone does
+   not add new gates, only the evidence-backed decision of what a future gate should check.
+
+## M5 validation log
+
+- `src/domain/risk.ts` (pure): `RiskDimension`/`RiskLevel`/`RiskProvenance`/`RiskValue`/
+  `RiskVector`/`RiskEvidenceInput`/`deriveRiskVector`/`countCrossModuleEdges`. `src/domain/
+  assurance.ts` (pure): `QualityPreference`/`AssuranceCheck`/`AssurancePlan`/`buildAssurancePlan`.
+  Neither ever calls a model; both are pure functions of their inputs.
+- `Task.qualityPreference` and `CreateRunRequest.qualityPreference` wired through the same optional,
+  omit-when-absent pattern M4's `budget` field used; `src/server/app.ts`'s `createRunSchema` gained
+  a matching `qualityPreference` zod field.
+- `RunService.assessRisk` computes and emits `RiskProfiled`/`AssurancePlanned` twice per run: once
+  right after `ContextBuilt`, from `context.initialFiles` against the enriched snapshot (pre-execution
+  estimate); again from `captureCandidate`'s actual `diff.changedFiles` (ground truth), skipped only
+  when a diff touches nothing. `crossModuleEdgeCount` is computed from the live snapshot's
+  `relations`/`moduleOwnership` at each call, not cached from context-build time, so the
+  diff-captured pass reflects any graph growth since.
+- `typecheck`, `format:check`, `lint`, `test` (137 passing: 16 new pure unit tests for
+  risk/assurance — deriveRiskVector always returns all ten dimensions, honestly marks
+  ReasoningDifficulty/DebtRisk as INSUFFICIENT_EVIDENCE, flags security/data-sensitive paths
+  DETERMINISTIC, marks unmatched path-pattern dimensions HEURISTIC rather than falsely confident,
+  buildAssurancePlan requires INDEPENDENT_REVIEW only at HIGH security + CRITICAL preference,
+  explains every check whether required or not, is deterministic for identical inputs; 3 new
+  RunService integration tests — a security-path-scoped task produces a DETERMINISTIC-provenance
+  HIGH SecuritySensitivity pre-execution estimate and a plan requiring SECURITY with a reason
+  mentioning "auth"; the diff-captured refinement genuinely differs from the pre-execution estimate
+  when the actual diff touches different files (proves the two-stage design is real, not the same
+  value emitted twice); qualityPreference defaults to BALANCED when omitted and threads CRITICAL
+  through to both the event data and the resulting plan), `build`, `compose:check`, `smoke` — PASS.
+- Fresh-context review (independent subagent, diff-only plus full-repo read access, no primed
+  conclusion; it independently executed `deriveRiskVector`/`buildAssurancePlan` with crafted inputs
+  rather than only reading code) found 2 MATERIAL and 1 MINOR issue, all fixed before commit —
+  1. **`CodeCoupling`/`BlastRadius`/`ArchitectureSensitivity` claimed `DETERMINISTIC` even when the
+     touched files had zero coverage in `moduleOwnership`/`packageOwnership`.** Those maps only
+     cover files M2's indexer actually parses as source (`isSourceFile` in `project-brain.ts`) — a
+     migration `.sql`, Dockerfile, or CI workflow path is legitimately absent from both, not merely
+     "0 modules". A migration- or infra-only diff was getting a confidently `DETERMINISTIC` "LOW
+     coupling/architecture risk" verdict that was actually "no visibility at all" — which then
+     silently suppressed the `ARCHITECTURE`/`INTEGRATION` assurance checks for exactly the kind of
+     change the profiler exists to flag. Fixed with a `coverageProvenance` helper: full ownership
+     coverage stays `DETERMINISTIC`, partial coverage degrades to `HEURISTIC`, zero coverage
+     becomes `INSUFFICIENT_EVIDENCE` — applied to `CodeCoupling`/`BlastRadius` (via
+     module/package ownership respectively) and `ArchitectureSensitivity` (via module ownership,
+     since its cross-module-edge evidence is only as good as that same coverage). Evidence text
+     now states explicitly how many touched files have no ownership evidence when degraded. Proven
+     by two new unit tests: a migration-only diff (zero coverage) marks all three
+     `INSUFFICIENT_EVIDENCE`; a mixed source+migration diff (partial coverage) marks the module/
+     package dimensions `HEURISTIC` rather than `DETERMINISTIC`.
+  2. **`OperationalSensitivity` was computed with real deterministic evidence in `risk.ts` (docker/
+     deploy/infra/CI path patterns) but never referenced anywhere in `buildAssurancePlan`** — unlike
+     `ReasoningDifficulty`/`DebtRisk`, which are explicitly and honestly excluded, this dimension
+     had zero effect on the resulting plan despite carrying real signal, silently wasting a
+     dimension the profiler already computes correctly. Fixed by folding `OperationalSensitivity`
+     into the `RESILIENCE` check's requirement (alongside `NetworkBoundaryChanges` and `CRITICAL`
+     preference) with its own reason text — an operational/deploy-sensitive change is exactly the
+     kind of change `RESILIENCE` (production-boundary failure modes) exists to catch. Proven by a
+     new unit test: a `HIGH` `OperationalSensitivity` vector requires `RESILIENCE` with a reason
+     mentioning "deploy".
+  3. **MINOR:** two test titles in `tests/assurance.test.ts` overclaimed coverage — one titled
+     "security and resilience" never asserted resilience; one titled "HIGH/CRITICAL quality
+     preference" only ever exercised `CRITICAL`. Investigating the second surfaced a real,
+     previously-untested behavioral asymmetry: a `HIGH` (not `CRITICAL`) preference alone expands
+     only `INTEGRATION`, not `SECURITY`/`RESILIENCE` — deliberate (forcing every `HIGH`-preference
+     task through a security check regardless of actual risk would defeat "a small, low-risk change
+     gets a small plan"), but previously unverified by any test. Split into accurately-titled tests
+     and added one asserting the `HIGH`-only behavior explicitly, plus a dedicated
+     `OperationalSensitivity`-drives-`RESILIENCE` test for finding 2.
+- Re-validated after fixes: `typecheck`, `test` (141 passing), `format:check`, `lint`, `build`,
   `compose:check`, `smoke` — all PASS.
 
 ## Blockers

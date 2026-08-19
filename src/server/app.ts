@@ -68,6 +68,7 @@ const createRunSchema = z.object({
       limitUsd: z.number().nonnegative(),
     })
     .optional(),
+  qualityPreference: z.enum(["FAST", "BALANCED", "HIGH", "CRITICAL"]).optional(),
 });
 
 const transitionSchema = z.object({

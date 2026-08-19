@@ -27,6 +27,7 @@ import {
   type BudgetCategory,
   type BudgetReservationPolicy,
 } from "../domain/budget";
+import { buildAssurancePlan, type QualityPreference } from "../domain/assurance";
 import { ProviderCircuitBreaker, ProviderCircuitOpenError } from "../domain/circuit-breaker";
 import { AdaptiveModeController, type ModeDecision } from "../domain/mode-controller";
 import {
@@ -42,6 +43,7 @@ import {
   isAutoRetryable,
   verificationSeverity,
 } from "../domain/recovery";
+import { countCrossModuleEdges, deriveRiskVector } from "../domain/risk";
 import { redactSensitiveData } from "../domain/security";
 import { extractFileCandidates, findRepositoryFile, normalizeFile } from "./file-candidates";
 import {
@@ -75,6 +77,7 @@ export interface CreateRunRequest {
   provider?: string | undefined;
   credentialReferences?: string[] | undefined;
   budget?: { mode: "ADVISORY" | "HARD"; limitUsd: number } | undefined;
+  qualityPreference?: QualityPreference | undefined;
 }
 
 export interface RunSummary extends Run {
@@ -268,6 +271,7 @@ export class RunService {
       verification: request.verification ?? {},
       ...(request.signals ? { signals: request.signals } : {}),
       ...(request.budget ? { budget: request.budget } : {}),
+      ...(request.qualityPreference ? { qualityPreference: request.qualityPreference } : {}),
     };
     const initialMode = this.modeController.initial(request.mode);
     const run: Run = {
@@ -654,6 +658,9 @@ export class RunService {
         filesTruncated: enrichedSnapshot.filesTruncated,
         scopeTruncated: enrichedSnapshot.scopeTruncated,
       });
+      // Pre-execution estimate: the only thing available before any diff exists. Refined once a
+      // candidate's actual diff exists (see captureCandidate) — see the M5 design note.
+      await this.assessRisk(run, task, enrichedSnapshot, context.initialFiles, "pre-execution");
 
       // The collector rejects re-initializing a run it already has state for (an invariant, not
       // an oversight — see EvidenceRuntimeSignalCollector.observe). A same-process resume shares
@@ -1482,7 +1489,45 @@ export class RunService {
       diff,
       ...(grown ? { repository: contextState.snapshot } : {}),
     });
+    // Ground truth refinement: the actual changed files, now that a diff exists.
+    if (diff.changedFiles.length > 0) {
+      await this.assessRisk(run, task, contextState.snapshot, diff.changedFiles, "diff-captured");
+    }
     return { id, artifact, diff, attempt };
+  }
+
+  /**
+   * Computes a risk vector + assurance plan from the best currently-available estimate of touched
+   * files and emits both as inspectable evidence, never a hidden internal value. Called from two
+   * points: context-built scope (pre-execution estimate, before any diff exists) and the actual
+   * diff's changed files (ground truth, refining the estimate) — see the M5 design note in the
+   * program ledger. Deterministic given its inputs; never calls a model.
+   */
+  private async assessRisk(
+    run: Run,
+    task: Task,
+    snapshot: RepositorySnapshot,
+    files: string[],
+    stage: "pre-execution" | "diff-captured",
+  ): Promise<void> {
+    const riskVector = deriveRiskVector({
+      files,
+      moduleOwnership: snapshot.moduleOwnership,
+      packageOwnership: snapshot.packageOwnership,
+      crossModuleEdgeCount: countCrossModuleEdges(
+        snapshot.relations,
+        snapshot.moduleOwnership,
+        files,
+      ),
+    });
+    const qualityPreference = task.qualityPreference ?? "BALANCED";
+    const assurancePlan = buildAssurancePlan(riskVector, qualityPreference);
+    await this.event(run.id, "RiskProfiled", { stage, files: files.length, riskVector });
+    await this.event(run.id, "AssurancePlanned", {
+      stage,
+      qualityPreference,
+      plan: assurancePlan,
+    });
   }
 
   /**

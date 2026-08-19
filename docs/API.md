@@ -4,7 +4,7 @@ All routes are versioned under `/api/v1`.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
-| `POST` | `/runs` | Create an asynchronous run; accepts an optional `budget: { mode, limitUsd }` |
+| `POST` | `/runs` | Create an asynchronous run; accepts an optional `budget: { mode, limitUsd }` and `qualityPreference` (`FAST`/`BALANCED`/`HIGH`/`CRITICAL`, defaults to `BALANCED`) |
 | `GET` | `/runs` | List operational summaries for all runs |
 | `GET` | `/runs/:id` | Inspect one run |
 | `GET` | `/runs/:id/events` | Stream SSE lifecycle events; `follow=false` returns a snapshot |
@@ -43,3 +43,13 @@ creation — `BudgetAllocated.allocation` is `null` when no budget was configure
 to anchor a range to. A `HARD` budget that cannot fund even the first agent session results in the
 run going straight to `PAUSED` with a `BUDGET_EXHAUSTED` recovery capsule, inspectable via
 `GET /runs/:id/recovery-capsule`, without ever starting an agent.
+
+Risk and assurance: `RiskProfiled` and `AssurancePlanned` events are emitted twice on the run's
+event stream, tagged `stage: "pre-execution"` (right after context is built, from the initially
+selected scope) and `stage: "diff-captured"` (once a candidate's actual diff exists, refining the
+estimate with ground truth). `RiskProfiled.riskVector` always carries all ten dimensions, each with
+a `level` and a `provenance` (`DETERMINISTIC`/`HEURISTIC`/`INSUFFICIENT_EVIDENCE` — never a guessed
+value presented as fact). `AssurancePlanned.plan` lists `required`/`notRequired` checks with a
+`reasons` entry for every check. No check listed as required is actually run yet — see
+ARCHITECTURE.md's "Task risk profiler and assurance planner" section for what this does and does
+not wire up today.

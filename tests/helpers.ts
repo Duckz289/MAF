@@ -63,6 +63,20 @@ export const createAdaptiveFixtureRepository = async (): Promise<FixtureReposito
   return fixture;
 };
 
+export const createSecuritySensitiveFixtureRepository = async (): Promise<FixtureRepository> => {
+  const fixture = await createFixtureRepository();
+  const target = path.join(fixture.path, "src/domain/auth-service.ts");
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(
+    target,
+    "export const authenticateSession = (token: string): boolean => token.length > 0;\n",
+    "utf8",
+  );
+  await runProcess("git", ["add", "."], { cwd: fixture.path });
+  await runProcess("git", ["commit", "-m", "auth fixture"], { cwd: fixture.path });
+  return fixture;
+};
+
 export const createMonorepoFixtureRepository = async (): Promise<FixtureRepository> => {
   const fixture = await createFixtureRepository();
   const files: Record<string, string> = {

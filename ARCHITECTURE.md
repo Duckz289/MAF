@@ -251,6 +251,57 @@ from). It is real, tested, and will matter as soon as a harness-mediated provide
 `ModelGateway`-backed adapter) exists; it does not yet protect against a real outage a CLI agent
 silently absorbs and reports as its own failure.
 
+## Task risk profiler and assurance planner
+
+`src/domain/risk.ts` derives a `RiskVector` — ten independent dimensions
+(`ReasoningDifficulty`, `CodeCoupling`, `BlastRadius`, `ArchitectureSensitivity`, `DebtRisk`,
+`SecuritySensitivity`, `PerformanceSensitivity`, `OperationalSensitivity`, `NetworkBoundaryChanges`,
+`DataConsistencyRisk`), never a collapsed scalar score. Each dimension carries a `level`
+(`LOW`/`MEDIUM`/`HIGH`) and a `provenance`: `DETERMINISTIC` when derived from real repository
+evidence (distinct modules/packages touched via M2's ownership maps, resolved cross-module
+`IMPORTS` edges via M2's relations graph, a path-pattern match), `HEURISTIC` when only a weaker
+path-pattern proxy is available and nothing matched (so the honest default is "probably not", not
+a guessed level), and `INSUFFICIENT_EVIDENCE` for the two dimensions (`ReasoningDifficulty`,
+`DebtRisk`) that have no deterministic source yet at all — reported as such rather than guessed.
+`CodeCoupling`/`BlastRadius`/`ArchitectureSensitivity` specifically degrade their own provenance
+(`coverageProvenance` in risk.ts) based on how many touched files actually have module/package
+ownership entries: full coverage stays `DETERMINISTIC`, partial coverage degrades to `HEURISTIC`,
+and zero coverage (e.g. a migration- or infra-only diff, since M2's ownership maps only cover
+parsed source files) becomes `INSUFFICIENT_EVIDENCE` — a confident "LOW" would otherwise
+misrepresent having no visibility as having checked and found nothing. No model is ever called to
+assess risk.
+
+`src/domain/assurance.ts`'s `buildAssurancePlan` compiles a `RiskVector` plus the task's
+`qualityPreference` (`FAST`/`BALANCED`/`HIGH`/`CRITICAL`, defaulting to `BALANCED`) into an
+`AssurancePlan`: a deterministic rule table (not a model call) deciding which of eight checks
+(`CORRECTNESS`, `INTEGRATION`, `ARCHITECTURE`, `SECURITY`, `PERFORMANCE`, `CONCURRENCY`,
+`RESILIENCE`, `INDEPENDENT_REVIEW`) are required, with a reason recorded for every check —
+required or not, never silent. `CORRECTNESS` is always required (the existing trusted-verifier
+baseline every candidate already goes through); higher risk or a higher quality preference expands
+the required set (`RESILIENCE` is required by either `NetworkBoundaryChanges` or
+`OperationalSensitivity` reaching `MEDIUM`, not network-boundary evidence alone); `INDEPENDENT_REVIEW`
+only becomes required when `SecuritySensitivity` is `HIGH` *and* the preference is `CRITICAL` — the
+M5A rule that a high-risk author must not be the sole judge of its own high-risk work. `HIGH` and
+`CRITICAL` preferences are deliberately not treated identically everywhere: `HIGH` alone expands
+only `INTEGRATION`, while `SECURITY`/`RESILIENCE` expand only at `CRITICAL` — forcing every
+`HIGH`-preference task through a security check regardless of actual risk would defeat "a small,
+low-risk change gets a small plan."
+
+`RunService` computes and emits both twice per run, as `RiskProfiled`/`AssurancePlanned` events so
+the plan is inspectable evidence, never a hidden internal value: once right after `ContextBuilt`,
+from the context builder's selected `initialFiles` (a pre-execution estimate — the only thing
+available before any diff exists), and again from the actual diff's `changedFiles` after
+`captureCandidate` resolves one (ground truth, refining the estimate with what was actually
+touched rather than what was expected to be).
+
+Not yet implemented: wiring the plan's required checks to actual verifiers. M5 only decides what
+SHOULD be checked and why; `SECURITY`, `PERFORMANCE`, `ARCHITECTURE`, `CONCURRENCY`, `RESILIENCE`,
+and `INDEPENDENT_REVIEW` are not yet backed by real checkers — that is M6-M10's job. A plan
+requiring `SECURITY` today does not cause a security scan to run; it only records, with evidence,
+that one should. `ReasoningDifficulty` and `DebtRisk` remain `INSUFFICIENT_EVIDENCE` for every run
+until a real source exists (`DebtRisk` is the stated target of the M7A roadmap milestone; nothing
+is planned yet for `ReasoningDifficulty`).
+
 ## Durable state
 
 PostgreSQL stores tasks, runs, events, artifacts, verifications, mode transitions, project knowledge,

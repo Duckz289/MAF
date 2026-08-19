@@ -54,6 +54,8 @@ export interface Task {
   signals?: RuntimeSignals;
   /** Absent means no budget was requested for this run — fully permissive, nothing to enforce. */
   budget?: { mode: "ADVISORY" | "HARD"; limitUsd: number };
+  /** Absent defaults to BALANCED. Not "which model to use" — shapes assurance depth (see M5A). */
+  qualityPreference?: "FAST" | "BALANCED" | "HIGH" | "CRITICAL";
 }
 
 export interface VerificationSpec {
