@@ -37,6 +37,29 @@ export const createFixtureRepository = async (): Promise<FixtureRepository> => {
   };
 };
 
+export const createAdaptiveFixtureRepository = async (): Promise<FixtureRepository> => {
+  const fixture = await createFixtureRepository();
+  const modules: Record<string, string> = {
+    "frontend/image.ts":
+      'import { loadMedia } from "../api/media";\nexport const renderImage = loadMedia;\n',
+    "api/media.ts":
+      'import { resolveMedia } from "../storage/resolver";\nexport const loadMedia = resolveMedia;\n',
+    "storage/resolver.ts":
+      'import { canReadMedia } from "../auth/permissions";\nexport const resolveMedia = (): boolean => canReadMedia();\n',
+    "auth/permissions.ts": "export const canReadMedia = (): boolean => true;\n",
+  };
+  for (const [file, source] of Object.entries(modules)) {
+    const target = path.join(fixture.path, file);
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, source, "utf8");
+  }
+  await runProcess("git", ["add", "."], { cwd: fixture.path });
+  await runProcess("git", ["commit", "-m", "adaptive dependency fixture"], {
+    cwd: fixture.path,
+  });
+  return fixture;
+};
+
 export const waitFor = async <T>(
   read: () => Promise<T>,
   complete: (value: T) => boolean,

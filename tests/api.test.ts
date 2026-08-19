@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp, type AppRuntime } from "../src/server/app";
+import { createAdaptiveFixtureRepository, type FixtureRepository } from "./helpers";
 
 let runtime: AppRuntime | undefined;
+const fixtures: FixtureRepository[] = [];
 afterEach(async () => {
   await runtime?.close();
   runtime = undefined;
+  await Promise.all(fixtures.splice(0).map((fixture) => fixture.cleanup()));
 });
 
 describe("control API", () => {
@@ -49,5 +52,38 @@ describe("control API", () => {
       url: "/api/v1/telemetry/cost-per-verified-success",
     });
     expect(metric.json()).toEqual({ value: null, currency: "USD" });
+  });
+
+  it("explains runtime-derived mode transitions through versioned resources", async () => {
+    const fixture = await createAdaptiveFixtureRepository();
+    fixtures.push(fixture);
+    runtime = await createApp();
+    const created = await runtime.app.inject({
+      method: "POST",
+      url: "/api/v1/runs",
+      payload: {
+        prompt: "Fix image rendering in frontend",
+        repositoryPath: fixture.path,
+        verification: { expectedFile: "agent-output.md" },
+      },
+    });
+    expect(created.statusCode).toBe(202);
+    const runId = created.json().id as string;
+    await runtime.runs.waitForIdle(runId);
+    const explanation = await runtime.app.inject({
+      method: "GET",
+      url: `/api/v1/runs/${runId}/mode-explanation`,
+    });
+    expect(explanation.statusCode).toBe(200);
+    expect(explanation.json()).toMatchObject({
+      mode: "SOLO_NATIVE",
+      timeline: [{ from: "GUIDED", to: "SOLO_NATIVE" }],
+    });
+    const signals = await runtime.app.inject({
+      method: "GET",
+      url: `/api/v1/runs/${runId}/runtime-signals`,
+    });
+    expect(signals.statusCode).toBe(200);
+    expect(signals.json().length).toBeGreaterThan(3);
   });
 });

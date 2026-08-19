@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { InMemoryProjectBrain, LocalRepositoryIndex } from "../src/infrastructure/project-brain";
-import { createFixtureRepository } from "./helpers";
+import {
+  InMemoryProjectBrain,
+  LocalRepositoryIndex,
+  OptionalCodebaseMemoryIndex,
+} from "../src/infrastructure/project-brain";
+import { createAdaptiveFixtureRepository, createFixtureRepository } from "./helpers";
 
 describe("Project Brain", () => {
   it("rejects evidence-free facts", async () => {
@@ -54,6 +58,27 @@ describe("Project Brain", () => {
         "const $A = $B",
       );
       expect(matches.some((match) => match.startsWith("index.ts:"))).toBe(true);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("resolves local import edges and reports optional MCP fallback honestly", async () => {
+    const fixture = await createAdaptiveFixtureRepository();
+    try {
+      const local = new LocalRepositoryIndex();
+      const snapshot = await local.index(fixture.path, "HEAD");
+      expect(snapshot.relations).toContainEqual({
+        from: "frontend/image.ts",
+        to: "api/media.ts",
+        kind: "IMPORTS",
+      });
+      const optional = new OptionalCodebaseMemoryIndex(local);
+      expect(optional.status()).toMatchObject({
+        capability: "OPTIONAL_PORT",
+        active: false,
+        fallbackEngine: "local-deterministic-index",
+      });
     } finally {
       await fixture.cleanup();
     }

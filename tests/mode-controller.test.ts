@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { AdaptiveModeController } from "../src/domain/mode-controller";
-import { emptyCost, emptyUsage, type Run } from "../src/domain/types";
+import { emptyCost, emptyUsage, type Run, type RuntimeSignalSnapshot } from "../src/domain/types";
 
 const run = (): Run => ({
   id: "run-1",
@@ -44,5 +44,39 @@ describe("AdaptiveModeController", () => {
       mechanicalRemainingWork: true,
     });
     expect(decision?.to).toBe("STRICT");
+  });
+
+  it("prevents rapid reversal and treats STRICT as a terminal narrowing mode", () => {
+    const controller = new AdaptiveModeController();
+    const snapshot: RuntimeSignalSnapshot = {
+      id: "snapshot",
+      runId: "run",
+      sequence: 4,
+      checkpoint: "agent-tool",
+      timestamp: "2026-08-19T00:00:00.000Z",
+      signals: {
+        scopeStabilized: {
+          value: true,
+          source: "scope-stability-policy",
+          provenance: "HEURISTIC",
+          reliability: "MEDIUM",
+          evidenceIds: ["scope"],
+          timestamp: "2026-08-19T00:00:00.000Z",
+        },
+        mechanicalRemainingWork: {
+          value: true,
+          source: "mechanical-work-policy",
+          provenance: "HEURISTIC",
+          reliability: "MEDIUM",
+          evidenceIds: ["mechanical"],
+          timestamp: "2026-08-19T00:00:00.000Z",
+        },
+      },
+      evidence: [],
+    };
+    expect(
+      controller.decide("SOLO_NATIVE", snapshot, { lastTransitionSequence: 3 }),
+    ).toBeUndefined();
+    expect(controller.decide("STRICT", { dependencyExpansion: 20 })).toBeUndefined();
   });
 });
