@@ -1,7 +1,12 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { AgentAdapter, AgentSession, AgentStartInput } from "../domain/ports";
-import type { AgentCapabilities, AgentEvent, AgentSecurityBoundary } from "../domain/types";
+import type {
+  AgentCapabilities,
+  AgentEvent,
+  AgentSecurityBoundary,
+  ExecutionPolicyUpdate,
+} from "../domain/types";
 
 interface ProcessSession extends AgentSession {
   process: ChildProcessWithoutNullStreams;
@@ -30,6 +35,8 @@ const defaultCapabilities: AgentCapabilities = {
   contextManagement: true,
   streaming: true,
   resumeSession: false,
+  livePolicyUpdate: false,
+  safeSessionRestart: false,
   oauthAuth: true,
   apiKeyAuth: true,
   extensions: {},
@@ -69,7 +76,7 @@ export class NativeCliAdapter implements AgentAdapter {
         TEMP: process.env.TEMP,
         TMP: process.env.TMP,
         HARNESS_RUN_ID: input.run.id,
-        HARNESS_MODE: input.run.executionMode,
+        HARNESS_MODE: input.run.effectiveMode,
         ...this.config.environment,
       },
     });
@@ -142,6 +149,17 @@ export class NativeCliAdapter implements AgentAdapter {
   async cancel(session: AgentSession): Promise<void> {
     const active = this.requireSession(session.id);
     active.process.kill("SIGTERM");
+  }
+
+  async updatePolicy(session: AgentSession, update: ExecutionPolicyUpdate): Promise<boolean> {
+    const active = this.requireSession(session.id);
+    if (active.ended || active.process.stdin.destroyed) return false;
+    try {
+      active.process.stdin.write(`${JSON.stringify({ type: "policy_update", ...update })}\n`);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async resume(): Promise<AgentSession> {

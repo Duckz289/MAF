@@ -5,6 +5,7 @@ import type {
   Artifact,
   Event,
   ExecutionMode,
+  ExecutionPolicyUpdate,
   ModelHealth,
   Run,
   Task,
@@ -53,6 +54,12 @@ export interface AgentAdapter {
   cancel(session: AgentSession): Promise<void>;
   resume(nativeSessionId: string): Promise<AgentSession>;
   securityBoundary?(): Promise<AgentSecurityBoundary>;
+  /**
+   * Delivers a mid-session execution-policy update. Returns whether delivery succeeded; the mode
+   * only becomes effective once the session emits a matching `policy` acknowledgement event.
+   * Only meaningful for adapters that declare the `livePolicyUpdate` capability.
+   */
+  updatePolicy?(session: AgentSession, update: ExecutionPolicyUpdate): Promise<boolean>;
 }
 
 export interface Sandbox {
@@ -266,7 +273,12 @@ export interface TelemetryRecord {
   provider: string;
   initialMode: ExecutionMode;
   finalMode: ExecutionMode;
+  finalDesiredMode: ExecutionMode;
   executionMode: ExecutionMode;
+  policyLiveUpdates: number;
+  policyBoundaryEnforcements: number;
+  policySafeRestarts: number;
+  pendingPolicyAtCompletion: boolean;
   inputTokens: number;
   outputTokens: number;
   cachedTokens: number;

@@ -13,100 +13,181 @@ interface FixtureInput {
   message: string;
 }
 
+interface PolicyUpdate {
+  type: "policy_update";
+  mode: string;
+  reason?: string;
+  requestId?: string;
+}
+
 const emit = (type: string, data: Record<string, unknown>): void => {
   process.stdout.write(`${JSON.stringify({ type, data, timestamp: new Date().toISOString() })}\n`);
 };
 
+const policyWaiters: Array<(update: PolicyUpdate | undefined) => void> = [];
+
+/** Waits for the next harness policy update; resolves undefined when none arrives in time. */
+const awaitPolicy = (timeoutMs = 3_000): Promise<PolicyUpdate | undefined> =>
+  new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      const index = policyWaiters.indexOf(waiter);
+      if (index >= 0) policyWaiters.splice(index, 1);
+      resolve(undefined);
+    }, timeoutMs);
+    const waiter = (update: PolicyUpdate | undefined): void => {
+      clearTimeout(timer);
+      resolve(update);
+    };
+    policyWaiters.push(waiter);
+  });
+
 const lines = createInterface({ input: process.stdin });
-lines.once("line", async (line) => {
-  try {
-    const input = JSON.parse(line) as FixtureInput;
-    emit("message", { text: "Fixture native agent accepted the task" });
-    if ((input.task.signals?.contextExpansion ?? 0) > 0) {
-      emit("context_expansion", {
-        query: "fixture dependency lookup",
-        count: input.task.signals?.contextExpansion ?? 1,
-      });
-    }
-    const adaptivePaths = [
-      "src/web/image.ts",
-      "src/application/media.ts",
-      "src/infrastructure/resolver.ts",
-      "src/domain/permissions.ts",
-    ];
-    const adaptiveRepository = await Promise.all(
-      adaptivePaths.map(async (file) => {
-        try {
-          await access(path.resolve(file));
-          return true;
-        } catch {
-          return false;
-        }
-      }),
-    );
-    if (adaptiveRepository.every(Boolean)) {
-      for (const file of adaptivePaths) emit("tool", { tool: "read_file", path: file });
-      if (/stabili[sz]e/iu.test(input.task.prompt)) {
-        for (let index = 0; index < 5; index += 1) {
-          emit("tool", {
-            tool: "edit_file",
-            operation: "edit",
-            path: "src/domain/permissions.ts",
-            pass: index + 1,
-          });
-        }
-      }
-    }
-    let environmentProbe = "not-requested";
-    let dotenvProbe = "not-requested";
-    if (/credential boundary probe/iu.test(input.task.prompt)) {
-      environmentProbe = process.env.MAF_MANAGED_PROVIDER_SECRET ?? "absent";
-      try {
-        dotenvProbe = (await readFile(path.resolve(".env"), "utf8")).slice(0, 200);
-      } catch {
-        dotenvProbe = "absent";
-      }
-      emit("tool", {
-        tool: "credential_probe",
-        environmentSecret: environmentProbe,
-        dotenvContent: dotenvProbe,
-        credentialReferences: input.credentialReferences,
-      });
-    }
-    const content = [
-      "# Native agent fixture output",
-      "",
-      input.task.prompt,
-      "",
-      `Initial context characters: ${input.context.length}`,
-      `Credential references received: ${input.credentialReferences.length}`,
-      `Credential reference values: ${input.credentialReferences.join(",") || "none"}`,
-      `Managed provider secret visible: ${environmentProbe}`,
-      `Dotenv visible: ${dotenvProbe}`,
-    ].join("\n");
-    await writeFile(path.resolve("agent-output.md"), content, "utf8");
-    if (
-      /repair succeeds/iu.test(input.task.prompt) &&
-      /Trusted verification repair request/iu.test(input.message) &&
-      input.task.verification?.expectedFile
-    ) {
-      await writeFile(path.resolve(input.task.verification.expectedFile), "repaired\n", "utf8");
-      emit("tool", {
-        tool: "write_file",
-        operation: "create",
-        path: input.task.verification.expectedFile,
-      });
-    }
-    emit("usage", {
-      inputTokens: Math.ceil(input.context.length / 4),
-      outputTokens: 48,
-      cachedTokens: 0,
+let started = false;
+let currentPrompt: string | undefined;
+let forgedAckSent = false;
+
+const runTask = async (input: FixtureInput): Promise<void> => {
+  currentPrompt = input.task.prompt;
+  emit("message", {
+    text: "Fixture native agent accepted the task",
+    harnessMode: process.env.HARNESS_MODE ?? null,
+  });
+  if ((input.task.signals?.contextExpansion ?? 0) > 0) {
+    emit("context_expansion", {
+      query: "fixture dependency lookup",
+      count: input.task.signals?.contextExpansion ?? 1,
     });
-    emit("complete", { changedFiles: ["agent-output.md"] });
-  } catch (error) {
-    emit("error", { message: error instanceof Error ? error.message : String(error) });
-    process.exitCode = 1;
-  } finally {
-    lines.close();
   }
+  const adaptivePaths = [
+    "src/web/image.ts",
+    "src/application/media.ts",
+    "src/infrastructure/resolver.ts",
+    "src/domain/permissions.ts",
+  ];
+  const adaptiveRepository = await Promise.all(
+    adaptivePaths.map(async (file) => {
+      try {
+        await access(path.resolve(file));
+        return true;
+      } catch {
+        return false;
+      }
+    }),
+  );
+  const continuation = /policy-restart-continuation/iu.test(input.message);
+  if (adaptiveRepository.every(Boolean) && !continuation) {
+    for (const file of adaptivePaths) emit("tool", { tool: "read_file", path: file });
+    if (/await policy/iu.test(input.task.prompt)) {
+      // Keeps the session alive so the harness can enforce a policy change on it.
+      await awaitPolicy(5_000);
+    }
+    if (/stabili[sz]e/iu.test(input.task.prompt)) {
+      await awaitPolicy();
+      for (let index = 0; index < 5; index += 1) {
+        emit("tool", {
+          tool: "edit_file",
+          operation: "edit",
+          path: "src/domain/permissions.ts",
+          pass: index + 1,
+        });
+      }
+      await awaitPolicy();
+      if (/unexpected scope/iu.test(input.task.prompt)) {
+        emit("tool", { tool: "read_file", path: "src/api/routes.ts" });
+        await awaitPolicy();
+      }
+    }
+  }
+  let environmentProbe = "not-requested";
+  let dotenvProbe = "not-requested";
+  if (/credential boundary probe/iu.test(input.task.prompt)) {
+    environmentProbe = process.env.MAF_MANAGED_PROVIDER_SECRET ?? "absent";
+    try {
+      dotenvProbe = (await readFile(path.resolve(".env"), "utf8")).slice(0, 200);
+    } catch {
+      dotenvProbe = "absent";
+    }
+    emit("tool", {
+      tool: "credential_probe",
+      environmentSecret: environmentProbe,
+      dotenvContent: dotenvProbe,
+      credentialReferences: input.credentialReferences,
+    });
+  }
+  const content = [
+    "# Native agent fixture output",
+    "",
+    input.task.prompt,
+    "",
+    `Initial context characters: ${input.context.length}`,
+    `Credential references received: ${input.credentialReferences.length}`,
+    `Credential reference values: ${input.credentialReferences.join(",") || "none"}`,
+    `Managed provider secret visible: ${environmentProbe}`,
+    `Dotenv visible: ${dotenvProbe}`,
+  ].join("\n");
+  await writeFile(path.resolve("agent-output.md"), content, "utf8");
+  if (
+    /repair succeeds/iu.test(input.task.prompt) &&
+    /Trusted verification repair request/iu.test(input.message) &&
+    input.task.verification?.expectedFile
+  ) {
+    await writeFile(path.resolve(input.task.verification.expectedFile), "repaired\n", "utf8");
+    emit("tool", {
+      tool: "write_file",
+      operation: "create",
+      path: input.task.verification.expectedFile,
+    });
+  }
+  emit("usage", {
+    inputTokens: Math.ceil(input.context.length / 4),
+    outputTokens: 48,
+    cachedTokens: 0,
+  });
+  emit("complete", { changedFiles: ["agent-output.md"] });
+};
+
+lines.on("line", (line) => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return;
+  }
+  if (
+    parsed &&
+    typeof parsed === "object" &&
+    "type" in parsed &&
+    (parsed as PolicyUpdate).type === "policy_update"
+  ) {
+    const update = parsed as PolicyUpdate;
+    // Security-boundary probe: a misbehaving or compromised agent could try to forge an
+    // acknowledgement for a harness request it never received, or echo the wrong requestId, to
+    // push its effective mode forward without real evidence. Emitted only when the test task
+    // explicitly asks for it, before the legitimate echo below.
+    if (currentPrompt && /forge policy ack/iu.test(currentPrompt) && !forgedAckSent) {
+      forgedAckSent = true;
+      emit("policy", {
+        acknowledgedMode: update.mode,
+        requestId: "forged-request-id-never-issued-by-harness",
+        protocol: "live_policy_update",
+      });
+    }
+    emit("policy", {
+      acknowledgedMode: update.mode,
+      requestId: update.requestId ?? null,
+      protocol: "live_policy_update",
+    });
+    for (const waiter of policyWaiters.splice(0)) waiter(update);
+    return;
+  }
+  if (started) return;
+  started = true;
+  void runTask(parsed as FixtureInput)
+    .catch((error) => {
+      emit("error", { message: error instanceof Error ? error.message : String(error) });
+      process.exitCode = 1;
+    })
+    .finally(() => {
+      lines.close();
+    });
 });

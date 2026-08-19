@@ -343,10 +343,23 @@ export function RunPage({
               </Text>
               <div className={styles.fact}>
                 <Text className={styles.quiet} size={200}>
-                  Execution mode
+                  Execution mode (effective)
                 </Text>
-                <Text>{run.executionMode}</Text>
+                <Text>{run.effectiveMode ?? run.executionMode}</Text>
               </div>
+              {run.desiredMode && run.desiredMode !== run.effectiveMode ? (
+                <div className={styles.fact}>
+                  <Text className={styles.quiet} size={200}>
+                    Desired mode (not yet enforced)
+                  </Text>
+                  <Text>
+                    {run.desiredMode}
+                    {run.modeExplanation.pendingEnforcement
+                      ? ` — pending ${run.modeExplanation.pendingEnforcement.method}`
+                      : ""}
+                  </Text>
+                </div>
+              ) : null}
               <div className={styles.fact}>
                 <Text className={styles.quiet} size={200}>
                   Snapshot ID
@@ -377,6 +390,7 @@ export function RunPage({
                     <div className={styles.signal} key={`${transition.timestamp}-${transition.to}`}>
                       <Text size={200}>
                         {transition.from} sang {transition.to}
+                        {transition.enforcement ? ` (${transition.enforcement})` : ""}
                       </Text>
                       <Text className={styles.quiet} size={200}>
                         {transition.reason}

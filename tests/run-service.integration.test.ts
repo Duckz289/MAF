@@ -39,6 +39,7 @@ const harness = (sandboxRoot: string, agent?: AgentAdapter) => {
           pathToFileURL(path.resolve("node_modules/tsx/dist/loader.mjs")).href,
           path.resolve("src/fixtures/native-agent.ts"),
         ],
+        capabilities: { livePolicyUpdate: true },
       }),
     sandbox: new LocalWorktreeSandbox(sandboxRoot, "none"),
     verifier: new CommandVerifier(),

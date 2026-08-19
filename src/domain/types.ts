@@ -1,5 +1,33 @@
 export type ExecutionMode = "STRICT" | "GUIDED" | "SOLO_NATIVE";
 
+/** Ascending execution freedom. Used to classify transitions as tightening or broadening. */
+const executionFreedomOrder: Record<ExecutionMode, number> = {
+  STRICT: 0,
+  GUIDED: 1,
+  SOLO_NATIVE: 2,
+};
+
+export type ModeTransitionDirection = "TIGHTENING" | "BROADENING";
+
+export const modeTransitionDirection = (
+  from: ExecutionMode,
+  to: ExecutionMode,
+): ModeTransitionDirection =>
+  executionFreedomOrder[to] < executionFreedomOrder[from] ? "TIGHTENING" : "BROADENING";
+
+/**
+ * How a desired execution-mode change was actually enforced on execution.
+ * - LIVE_UPDATE: the running session acknowledged a policy update.
+ * - SAFE_RESTART: the session was restarted from the existing workspace under the new policy.
+ * - DEFERRED_BOUNDARY: applied at the next safe execution boundary after a session ended.
+ * - SESSION_BOUNDARY: no session was active; the next session starts under the new policy.
+ */
+export type ModeEnforcementMethod =
+  | "LIVE_UPDATE"
+  | "SAFE_RESTART"
+  | "DEFERRED_BOUNDARY"
+  | "SESSION_BOUNDARY";
+
 export type VerificationState =
   | "PROPOSED"
   | "VERIFYING"
@@ -31,7 +59,12 @@ export interface Run {
   id: string;
   taskId: string;
   state: RunState;
+  /** Compatibility mirror of {@link Run.effectiveMode}. Never reflects unenforced desired state. */
   executionMode: ExecutionMode;
+  /** The mode the adaptive policy wants. May differ from effectiveMode until enforced. */
+  desiredMode: ExecutionMode;
+  /** The mode actually enforced on the current/next agent session, backed by evidence. */
+  effectiveMode: ExecutionMode;
   verificationState: VerificationState;
   agent: string;
   model: string;
@@ -61,6 +94,22 @@ export interface ModeChangedData {
   to: ExecutionMode;
   reason: string;
   evidence: Record<string, unknown>;
+  signalSnapshotId?: string;
+  evidenceIds?: string[];
+  /** Present on enforcement events; absent only on legacy records. */
+  enforcement?: {
+    method: ModeEnforcementMethod;
+    evidence: Record<string, unknown>;
+  };
+}
+
+export interface ModeChangeRequestedData {
+  fromDesired: ExecutionMode;
+  toDesired: ExecutionMode;
+  effectiveMode: ExecutionMode;
+  reason: string;
+  evidence: Record<string, unknown>;
+  plannedEnforcement: ModeEnforcementMethod;
   signalSnapshotId?: string;
   evidenceIds?: string[];
 }
@@ -191,15 +240,26 @@ export interface AgentCapabilities {
   contextManagement: boolean;
   streaming: boolean;
   resumeSession: boolean;
+  /** The running session accepts mid-session execution-policy updates and acknowledges them. */
+  livePolicyUpdate: boolean;
+  /** The agent can be safely restarted from the existing workspace under a new policy. */
+  safeSessionRestart: boolean;
   oauthAuth: boolean;
   apiKeyAuth: boolean;
   extensions: Record<string, boolean>;
 }
 
 export interface AgentEvent {
-  type: "message" | "tool" | "usage" | "context_expansion" | "complete" | "error";
+  type: "message" | "tool" | "usage" | "context_expansion" | "policy" | "complete" | "error";
   data: Record<string, unknown>;
   timestamp: string;
+}
+
+/** Payload delivered to a live session when the harness changes the execution policy. */
+export interface ExecutionPolicyUpdate {
+  mode: ExecutionMode;
+  reason: string;
+  requestId: string;
 }
 
 export const emptyCost = (): CostBreakdown => ({

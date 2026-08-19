@@ -11,7 +11,7 @@ All routes are versioned under `/api/v1`.
 | `GET` | `/runs/:id/artifacts` | Inspect captured artifacts |
 | `GET` | `/runs/:id/verifications` | Inspect trusted verification attempts and candidate lineage |
 | `GET` | `/runs/:id/runtime-signals` | Inspect bounded signal-snapshot history and provenance |
-| `GET` | `/runs/:id/mode-explanation` | Explain the current mode and transition timeline |
+| `GET` | `/runs/:id/mode-explanation` | Explain desired vs effective mode, pending enforcement, and the enforced transition timeline |
 | `POST` | `/runs/:id/cancel` | Cancel a live run |
 | `POST` | `/runs/:id/mode` | Record an explicit evidence-backed mode transition |
 | `GET/POST` | `/missions` | List or create mission trees |

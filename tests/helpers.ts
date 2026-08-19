@@ -49,6 +49,7 @@ export const createAdaptiveFixtureRepository = async (): Promise<FixtureReposito
     "src/infrastructure/resolver.ts":
       'import { canReadMedia } from "../domain/permissions";\nexport const resolveMedia = (): boolean => canReadMedia();\n',
     "src/domain/permissions.ts": "export const canReadMedia = (): boolean => true;\n",
+    "src/api/routes.ts": "export const routes: string[] = [];\n",
   };
   for (const [file, source] of Object.entries(modules)) {
     const target = path.join(fixture.path, file);

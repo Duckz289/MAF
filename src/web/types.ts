@@ -18,11 +18,22 @@ export interface Run {
   cost: { total: number };
   task: string;
   currentPhase: string;
+  desiredMode: "STRICT" | "GUIDED" | "SOLO_NATIVE";
+  effectiveMode: "STRICT" | "GUIDED" | "SOLO_NATIVE";
   modeExplanation: {
     reason: string;
+    desiredMode: string;
+    effectiveMode: string;
+    pendingEnforcement?: { toDesired: string; method: string; requestedAt: string };
     latestSnapshotId?: string;
     latestSignals: Record<string, { value: number | boolean; source: string; reliability: string }>;
-    timeline: Array<{ from: string; to: string; reason: string; timestamp: string }>;
+    timeline: Array<{
+      from: string;
+      to: string;
+      reason: string;
+      timestamp: string;
+      enforcement?: string;
+    }>;
   };
   operationalStatus: string;
 }

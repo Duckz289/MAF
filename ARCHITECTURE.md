@@ -61,17 +61,43 @@ The fixture agents prove the native CLI and ACP paths without external credentia
 
 ## Adaptive modes
 
-- `STRICT`: narrow deterministic execution after scope stabilization.
-- `GUIDED`: default compact starting context with unrestricted native repository search.
-- `SOLO_NATIVE`: coherent native investigation for uncertain or highly coupled work.
+- `STRICT`: narrow deterministic execution after scope stabilization — bounded initial scope,
+  minimal context, suited to mechanical known-scope work.
+- `GUIDED`: default compact verified starting context with unrestricted native repository search.
+- `SOLO_NATIVE`: coherent native investigation for uncertain or highly coupled work; MAF remains
+  outside as observer/controller/verifier.
 
-Every transition is a persisted `ModeChanged` event with `from`, `to`, `reason`, structured evidence,
-the triggering signal-snapshot ID, evidence IDs, and timestamp. Signals include dependency and
-context expansion, touched modules, resolved cross-module import edges, changed files, verification
-failure history, uncertainty, scope stabilization, and mechanical remaining work. `STRICT` is
-reversible when deltas from its entry snapshot invalidate stabilization. Three observations of
-cooldown block immediate re-narrowing or cumulative-signal escalation after a transition; explicit
-new evidence may still leave `STRICT` immediately.
+### Desired versus effective mode
+
+A run tracks `desiredMode` (what the adaptive policy wants) separately from `effectiveMode` (what
+is actually enforced on the current or next agent session). `executionMode` is a compatibility
+mirror of `effectiveMode` and never shows unenforced desired state. Decisions are computed against
+the desired mode; enforcement moves the effective mode only with evidence:
+
+- `ModeChangeRequested` records intent with the planned enforcement strategy.
+- `ModeChanged` records enforcement with `enforcement.method` and evidence.
+
+Enforcement strategies (deterministic planner in `src/domain/policy-enforcement.ts`):
+
+1. `SESSION_BOUNDARY` — no session is active; the next session starts under the new policy,
+   with a context rebuilt for the new mode (`ContextRebuilt`).
+2. `LIVE_UPDATE` — the agent declares `livePolicyUpdate`; the harness delivers a policy update to
+   the running session and the mode becomes effective only after the session emits a matching
+   `policy` acknowledgement event.
+3. `SAFE_RESTART` — only for broadening transitions while a session is active, only when the agent
+   declares `safeSessionRestart`, and bounded by `maxPolicyRestarts`; the session is restarted from
+   the existing workspace with a rebuilt context and a continuation message.
+4. `DEFERRED_BOUNDARY` — everything else; the change applies at the next safe execution boundary.
+   Tightening transitions never restart a running session.
+
+Every enforcement is a persisted `ModeChanged` event with `from`, `to`, `reason`, structured
+evidence, enforcement method + evidence, the triggering signal-snapshot ID, evidence IDs, and
+timestamp. Signals include dependency and context expansion, touched modules, resolved
+cross-module import edges, changed files, verification failure history, uncertainty, scope
+stabilization, and mechanical remaining work. `STRICT` is reversible when deltas from its entry
+snapshot invalidate stabilization. Three observations of cooldown block immediate re-narrowing or
+cumulative-signal escalation after a transition; explicit new evidence may still leave `STRICT`
+immediately.
 
 ## Project Brain
 

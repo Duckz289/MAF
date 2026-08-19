@@ -23,7 +23,15 @@ const run = (overrides: Partial<Run> = {}): Run => ({
   cost: { total: 0 },
   task: "Fix authorization",
   currentPhase: "Agent execution",
-  modeExplanation: { reason: "Initial mode", latestSignals: {}, timeline: [] },
+  desiredMode: "GUIDED",
+  effectiveMode: "GUIDED",
+  modeExplanation: {
+    reason: "Initial mode",
+    desiredMode: "GUIDED",
+    effectiveMode: "GUIDED",
+    latestSignals: {},
+    timeline: [],
+  },
   operationalStatus: "RUNNING",
   ...overrides,
 });

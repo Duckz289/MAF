@@ -178,7 +178,11 @@ export const createApp = async (): Promise<AppRuntime> => {
             ? { maxBudgetUsd: Number(process.env.CLAUDE_MAX_BUDGET_USD) }
             : {}),
         })
-      : new NativeCliAdapter(agentCommand);
+      : new NativeCliAdapter({
+          ...agentCommand,
+          // The bundled fixture agent implements the live policy-update protocol.
+          capabilities: { livePolicyUpdate: true },
+        });
   const sandboxRoot = path.resolve(
     process.env.SANDBOX_ROOT ?? path.join(process.cwd(), ".adaptive-harness", "worktrees"),
   );

@@ -9,6 +9,18 @@ import type {
   Verification,
 } from "../../domain/types";
 
+/**
+ * Defensive fallback for payloads written before migration 004 backfilled desiredMode/
+ * effectiveMode into the jsonb payload. The migration is the primary fix; this keeps hydration
+ * honest (mirroring the known executionMode, never inventing a different value) if it ever runs
+ * against a row the migration missed.
+ */
+const hydrateRunPayload = (payload: Run): Run => ({
+  ...payload,
+  desiredMode: payload.desiredMode ?? payload.executionMode,
+  effectiveMode: payload.effectiveMode ?? payload.executionMode,
+});
+
 export class PostgresRunStore implements RunStore {
   constructor(private readonly pool: Pool) {}
 
@@ -30,13 +42,16 @@ export class PostgresRunStore implements RunStore {
 
   async createRun(run: Run): Promise<void> {
     await this.pool.query(
-      `INSERT INTO runs(id, task_id, state, execution_mode, verification_state, payload, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      `INSERT INTO runs(id, task_id, state, execution_mode, desired_mode, effective_mode,
+                        verification_state, payload, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
       [
         run.id,
         run.taskId,
         run.state,
         run.executionMode,
+        run.desiredMode,
+        run.effectiveMode,
         run.verificationState,
         run,
         run.createdAt,
@@ -47,8 +62,18 @@ export class PostgresRunStore implements RunStore {
 
   async updateRun(run: Run): Promise<void> {
     await this.pool.query(
-      `UPDATE runs SET state=$2, execution_mode=$3, verification_state=$4, payload=$5, updated_at=$6 WHERE id=$1`,
-      [run.id, run.state, run.executionMode, run.verificationState, run, run.updatedAt],
+      `UPDATE runs SET state=$2, execution_mode=$3, desired_mode=$4, effective_mode=$5,
+              verification_state=$6, payload=$7, updated_at=$8 WHERE id=$1`,
+      [
+        run.id,
+        run.state,
+        run.executionMode,
+        run.desiredMode,
+        run.effectiveMode,
+        run.verificationState,
+        run,
+        run.updatedAt,
+      ],
     );
   }
 
@@ -56,14 +81,15 @@ export class PostgresRunStore implements RunStore {
     const result = await this.pool.query<{ payload: Run }>("SELECT payload FROM runs WHERE id=$1", [
       id,
     ]);
-    return result.rows[0]?.payload;
+    const payload = result.rows[0]?.payload;
+    return payload ? hydrateRunPayload(payload) : undefined;
   }
 
   async listRuns(): Promise<Run[]> {
     const result = await this.pool.query<{ payload: Run }>(
       "SELECT payload FROM runs ORDER BY created_at DESC LIMIT 500",
     );
-    return result.rows.map((row) => row.payload);
+    return result.rows.map((row) => hydrateRunPayload(row.payload));
   }
 
   async appendEvent(event: Event<unknown>): Promise<void> {
@@ -82,12 +108,13 @@ export class PostgresRunStore implements RunStore {
           evidence: unknown;
           signalSnapshotId?: string;
           evidenceIds?: string[];
+          enforcement?: { method?: string };
         };
         await client.query(
           `INSERT INTO mode_transitions(
              id, run_id, from_mode, to_mode, reason, evidence, timestamp,
-             signal_snapshot_id, evidence_ids
-           ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+             signal_snapshot_id, evidence_ids, enforcement_method
+           ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
           [
             event.id,
             event.runId,
@@ -98,6 +125,7 @@ export class PostgresRunStore implements RunStore {
             event.timestamp,
             data.signalSnapshotId ?? null,
             JSON.stringify(data.evidenceIds ?? []),
+            data.enforcement?.method ?? null,
           ],
         );
       }
