@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.adaptive-harness/
+.env
+*.log
+coverage/
+.codebase-memory/
+*.tsbuildinfo
