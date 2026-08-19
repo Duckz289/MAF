@@ -13,6 +13,7 @@ flowchart LR
   RUN --> BRAIN[ProjectBrain and RepositoryIndex]
   RUN --> VERIFY[VerifierPort]
   RUN --> TELEMETRY[TelemetrySink]
+  RUN --> SIGNALS[RuntimeSignalCollector]
   AGENT --> ACP[ACP SDK]
   AGENT --> CLI[Native CLI]
   SANDBOX --> WORKTREE[Local Git worktree]
@@ -34,10 +35,13 @@ or `src/server`. This keeps use cases testable with in-memory adapters.
 3. `LocalWorktreeSandbox` creates a detached Git worktree at the requested revision.
 4. `RepositoryIndex` and `ProjectBrain` build a small task-specific context.
 5. A capability-preserving `AgentAdapter` runs the native agent.
-6. The harness captures its diff and artifacts.
-7. `CommandVerifier` moves the output through `VERIFYING` to `VERIFIED` or `QUARANTINED`.
-8. Telemetry records cost, tokens, retry, latency, mode, changed files, and verification.
-9. Worktree retention is applied and `SandboxFinalized` is emitted.
+6. `RuntimeSignalCollector` updates evidence snapshots at context, tool-event, diff, and verification
+   checkpoints; the controller may change mode without altering the agent's native planning loop.
+7. The harness captures its diff and artifacts.
+8. `CommandVerifier` moves the output through `VERIFYING` to `VERIFIED` or `QUARANTINED`.
+9. Telemetry records cost, tokens, retry, latency, mode, changed files, verification, and adaptive
+   signal dimensions.
+10. Worktree retention is applied and `SandboxFinalized` is emitted.
 
 Downstream mission nodes can consume only `VERIFIED` outputs.
 
@@ -47,6 +51,8 @@ Downstream mission nodes can consume only `VERIFIED` outputs.
   streamed updates and session identity. File callbacks are constrained to the sandbox path.
 - `NativeCliAdapter` runs any NDJSON-capable native CLI without normalizing away its planning or
   context loop.
+- `ClaudeCodeAdapter` consumes Claude Code's native stream-json output and preserves reported usage,
+  cost, tool events, and cancellation.
 - `APIAgentAdapter` is the API-agent extension point.
 
 The fixture agents prove the native CLI and ACP paths without external credentials.
@@ -57,22 +63,26 @@ The fixture agents prove the native CLI and ACP paths without external credentia
 - `GUIDED`: default compact starting context with unrestricted native repository search.
 - `SOLO_NATIVE`: coherent native investigation for uncertain or highly coupled work.
 
-Every transition is a persisted `ModeChanged` event with `from`, `to`, `reason`, `evidence`, and
-timestamp. Initial deterministic signals include dependency expansion, touched modules, root-cause
-uncertainty, verifier failures, context expansion, cross-module edges, and scope stabilization.
+Every transition is a persisted `ModeChanged` event with `from`, `to`, `reason`, structured evidence,
+the triggering signal-snapshot ID, evidence IDs, and timestamp. Signals include dependency and
+context expansion, touched modules, resolved cross-module import edges, changed files, verification
+failure history, uncertainty, scope stabilization, and mechanical remaining work. A cooldown blocks
+immediate narrowing after broadening; `STRICT` is terminal for V0.
 
 ## Project Brain
 
 `ProjectBrain` separates `FACT`, `INFERENCE`, `EVIDENCE`, and `DECISION`. A fact without evidence is
 rejected. Records from a different source revision become `STALE`. The default index builds file,
-symbol, import-relation, module-map, and digest evidence. `CodebaseMemoryMcpIndex` is an optional
-host-owned adapter and falls back deterministically when its executable is unavailable.
+symbol, resolved local import-relation, module-map, and digest evidence.
+`OptionalCodebaseMemoryIndex` is an explicitly inactive optional port until a configured MCP/service
+transport exists; its status exposes the deterministic local fallback and never claims a hidden
+daemon connection.
 
 ## Durable state
 
 PostgreSQL stores tasks, runs, events, artifacts, verifications, mode transitions, project knowledge,
-credentials references, telemetry, user/session records, and mission graph state. Tests use
-in-memory ports. The migration is in `migrations/001_initial.sql`.
+credential references, telemetry, runtime-signal snapshots, user/session records, and mission graph
+state. Tests use in-memory ports. Numbered migrations live under `migrations/` and run in order.
 
 ## Mission tree and project graph
 

@@ -18,6 +18,14 @@ A mode value without its reason cannot be debugged or benchmarked. `ModeChanged`
 first-class event with evidence. Deterministic signals come first; a future model may propose a
 transition, but the accepted decision must still be persisted.
 
+## Runtime signal provenance
+
+The controller consumes immutable snapshots, not mutable request fields. Deterministic measurements
+win over external hints, while heuristic and agent-inference values retain their lower reliability
+labels. A cross-module edge counts only when the local repository index resolves a unique import
+between different modules and both endpoint files are involved in the observed scope. Snapshot and
+evidence IDs link each decision to the observations that caused it.
+
 ## Why graph, mission, and trust are separate
 
 Repository relations change how code knowledge flows. Mission dependencies change how work flows.

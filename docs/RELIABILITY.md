@@ -34,8 +34,16 @@ Every diff artifact has a SHA-256 digest. Mode changes contain evidence. Reposit
 evidence and become stale across revisions. Failed runs retain enough evidence to diagnose without
 trusting an agent's completion message.
 
+Runtime-signal history is persisted per run, while each snapshot bounds its evidence payload to the
+50 most recent records. Scope stabilization requires five consecutive meaningful observations
+without dependency or context expansion. Mechanical remaining work additionally requires at least
+two equivalent edit patterns. Verification failures come from stored verifier results, so a
+caller-provided count cannot override them. Broadening enters a three-observation cooldown before
+narrowing, and `STRICT` cannot oscillate back in V0.
+
 ## Tested paths
 
 Automated tests cover VERIFIED, QUARANTINED, CLI native execution, ACP native execution, adaptive
-mode changes, worktree cleanup, fact staleness, verified-only mission gating, API control, and SSE.
+mode changes, stable and expanding scopes, false stabilization, anti-oscillation, worktree cleanup,
+fact staleness, verified-only mission gating, API control, signal-explanation endpoints, and SSE.
 The production-bundle smoke test repeats both outcomes against in-memory and PostgreSQL adapters.
