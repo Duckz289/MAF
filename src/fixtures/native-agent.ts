@@ -48,6 +48,26 @@ let forgedAckSent = false;
 
 const runTask = async (input: FixtureInput): Promise<void> => {
   currentPrompt = input.task.prompt;
+  // Recovery-plane probes: a persistent marker file (survives across process restarts in the
+  // same preserved workspace, unlike in-memory state) lets these simulate "fails once, then
+  // succeeds on retry/resume" without any harness-side test hook.
+  if (/simulate transient failure once/iu.test(input.task.prompt)) {
+    const marker = path.resolve(".recovery-marker");
+    const alreadyAttempted = await access(marker)
+      .then(() => true)
+      .catch(() => false);
+    if (!alreadyAttempted) {
+      await writeFile(marker, "attempted\n", "utf8");
+      emit("error", { message: "ECONNRESET calling provider" });
+      process.exitCode = 1;
+      return;
+    }
+  }
+  if (/simulate credential failure/iu.test(input.task.prompt)) {
+    emit("error", { message: "Invalid API key: authentication failed" });
+    process.exitCode = 1;
+    return;
+  }
   emit("message", {
     text: "Fixture native agent accepted the task",
     harnessMode: process.env.HARNESS_MODE ?? null,

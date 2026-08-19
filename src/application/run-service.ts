@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import path from "node:path";
 import type {
   AgentAdapter,
@@ -22,6 +23,13 @@ import {
   type EnforcementPolicy,
   type PendingModeEnforcement,
 } from "../domain/policy-enforcement";
+import {
+  AgentReportedFailure,
+  buildRecoveryCapsule,
+  classifyFailure,
+  isAutoRetryable,
+  verificationSeverity,
+} from "../domain/recovery";
 import { redactSensitiveData } from "../domain/security";
 import { extractFileCandidates, findRepositoryFile, normalizeFile } from "./file-candidates";
 import {
@@ -31,6 +39,7 @@ import {
   type Event,
   type ExecutionMode,
   type ModeEnforcementMethod,
+  type RecoveryCapsule,
   type Run,
   type RuntimeSignals,
   type RuntimeSignalSnapshot,
@@ -39,6 +48,7 @@ import {
   type VerificationSpec,
 } from "../domain/types";
 import { LocalWorktreeSandbox } from "../infrastructure/local-worktree";
+import { runProcess } from "../infrastructure/process-utils";
 
 export interface CreateRunRequest {
   prompt: string;
@@ -62,7 +72,14 @@ export interface RunSummary extends Run {
   modeTransitions: number;
   signalSnapshots: number;
   modeExplanation: ModeExplanation;
-  operationalStatus: "QUEUED" | "RUNNING" | "STUCK" | "VERIFIED" | "FAILED" | "CANCELLED";
+  operationalStatus:
+    | "QUEUED"
+    | "RUNNING"
+    | "STUCK"
+    | "VERIFIED"
+    | "PAUSED"
+    | "FAILED"
+    | "CANCELLED";
 }
 
 export interface ModeExplanation {
@@ -101,6 +118,7 @@ interface RunServiceDependencies {
   modeController?: AdaptiveModeController;
   repairPolicy?: Partial<VerificationRepairPolicy>;
   enforcementPolicy?: Partial<EnforcementPolicy>;
+  recoveryPolicy?: Partial<RecoveryPolicy>;
 }
 
 export interface VerificationRepairPolicy {
@@ -113,6 +131,15 @@ export const defaultVerificationRepairPolicy: VerificationRepairPolicy = {
   maxRepairAttempts: 1,
   maxVerifierOutputChars: 12_000,
   maxDiffPreviewChars: 12_000,
+};
+
+export interface RecoveryPolicy {
+  /** Bound on automatic new-session retries for auto-retryable failure classes per run. */
+  maxRecoveryAttempts: number;
+}
+
+export const defaultRecoveryPolicy: RecoveryPolicy = {
+  maxRecoveryAttempts: 1,
 };
 
 interface TransitionState {
@@ -139,6 +166,7 @@ interface ActiveRunState {
   sessionActive: boolean;
   pendingPolicy?: PendingModeEnforcement | undefined;
   policyRestartsUsed: number;
+  recoveryAttemptsUsed: number;
   transitionState: TransitionState;
   /**
    * The single live Run object the execute loop reads and writes. External callers (the
@@ -171,18 +199,27 @@ export class RunService {
   private readonly modeController: AdaptiveModeController;
   private readonly repairPolicy: VerificationRepairPolicy;
   private readonly enforcementPolicy: EnforcementPolicy;
+  private readonly recoveryPolicy: RecoveryPolicy;
+  /** Blocks new run creation while true (Emergency Stop). Existing evidence is never touched. */
+  private emergencyStopped = false;
 
   constructor(private readonly dependencies: RunServiceDependencies) {
     this.modeController = dependencies.modeController ?? new AdaptiveModeController();
     this.repairPolicy = { ...defaultVerificationRepairPolicy, ...dependencies.repairPolicy };
     this.enforcementPolicy = { ...defaultEnforcementPolicy, ...dependencies.enforcementPolicy };
+    this.recoveryPolicy = { ...defaultRecoveryPolicy, ...dependencies.recoveryPolicy };
     if (this.repairPolicy.maxRepairAttempts < 0)
       throw new Error("Maximum repair attempts cannot be negative");
     if (this.enforcementPolicy.maxPolicyRestarts < 0)
       throw new Error("Maximum policy restarts cannot be negative");
+    if (this.recoveryPolicy.maxRecoveryAttempts < 0)
+      throw new Error("Maximum recovery attempts cannot be negative");
   }
 
   async create(request: CreateRunRequest): Promise<Run> {
+    if (this.emergencyStopped) {
+      throw new Error("New runs are blocked: an emergency stop is active");
+    }
     const now = new Date().toISOString();
     const task: Task = {
       id: crypto.randomUUID(),
@@ -224,9 +261,23 @@ export class RunService {
       cancelled: false,
       sessionActive: false,
       policyRestartsUsed: 0,
+      recoveryAttemptsUsed: 0,
       transitionState: newTransitionState(),
       run,
     });
+    // Re-check immediately before starting execution, with no `await` in between: an emergency
+    // stop synchronously iterates `this.active` the instant it is called, so a stop that lands
+    // while this method was suspended on the awaits above (before the run existed in `this.active`
+    // to be swept up) would otherwise let a "new agent" start after the operator was told the stop
+    // had already taken effect. This closes that window without needing any lock.
+    if (this.emergencyStopped) {
+      await this.cancel(run.id);
+      // execute() never ran, so its finally block (the only other place that clears an entry)
+      // never will either — clear it here or this run would leak in `this.active` forever and
+      // waitForIdle() would hang on it indefinitely.
+      this.active.delete(run.id);
+      return structuredClone(run);
+    }
     void this.execute(run, task, request.credentialReferences ?? []);
     return run;
   }
@@ -330,6 +381,124 @@ export class RunService {
     return structuredClone(run);
   }
 
+  /**
+   * Explicitly resumes a PAUSED run from its durable RecoveryCapsule. Detects revision conflict
+   * (M3C) before trusting prior evidence: the sandbox worktree stays frozen at whatever commit it
+   * was created from, so the conflict to detect is the SOURCE repository's target revision (e.g.
+   * a floating "HEAD") moving on while the run was paused — comparing the frozen worktree to
+   * itself would never observe that drift.
+   */
+  async resume(id: string, credentialReferences: string[] = []): Promise<Run> {
+    if (this.emergencyStopped) {
+      throw new Error("Cannot resume runs: an emergency stop is active");
+    }
+    const run = await this.requireRun(id);
+    if (run.state !== "PAUSED") throw new Error(`Run ${id} is not paused (state: ${run.state})`);
+    const capsule = await this.dependencies.store.getRecoveryCapsule(id);
+    if (!capsule) throw new Error(`No recovery capsule is stored for run ${id}`);
+    const task = await this.dependencies.store.getTask(run.taskId);
+    if (!task) throw new Error(`Unknown task for run ${id}`);
+    if (!capsule.workspacePath) {
+      throw new Error(`Recovery capsule for run ${id} has no preserved workspace to resume`);
+    }
+    if (!existsSync(capsule.workspacePath)) {
+      // Most commonly SANDBOX_RETENTION=none, which deletes every sandbox on cleanup regardless
+      // of outcome — the recovery plane requires a non-"none" retention policy to be meaningful.
+      // Fail with a clear, specific cause rather than an opaque filesystem/git error deep inside
+      // the next execute() attempt.
+      throw new Error(
+        `Cannot resume run ${id}: the preserved workspace ${capsule.workspacePath} no longer ` +
+          "exists. This usually means SANDBOX_RETENTION=none, which deletes every sandbox " +
+          "regardless of outcome and is incompatible with resuming a paused run.",
+      );
+    }
+    const currentSourceRevision = await this.resolveRevision(
+      capsule.repositoryPath,
+      capsule.requestedRevision,
+    );
+    if (capsule.resolvedRevision === undefined || currentSourceRevision === undefined) {
+      // Unknown stays unknown: an inconclusive check (a transient git failure at capture or
+      // resume time) must never be silently treated as "no conflict" — that is exactly the
+      // "blindly resume on stale ground" failure mode M3C exists to prevent.
+      await this.event(id, "ResumeRefused", {
+        reason: "REVISION_UNKNOWN",
+        capsuleRevisionKnown: capsule.resolvedRevision !== undefined,
+        currentRevisionKnown: currentSourceRevision !== undefined,
+      });
+      throw new Error(
+        `Refusing to resume run ${id}: could not verify whether the repository's ` +
+          `${capsule.requestedRevision} has changed since the capsule was captured`,
+      );
+    }
+    if (capsule.resolvedRevision !== currentSourceRevision) {
+      await this.event(id, "ResumeRefused", {
+        reason: "REVISION_CONFLICT",
+        capsuleRevision: capsule.resolvedRevision,
+        currentSourceRevision,
+      });
+      throw new Error(
+        `Refusing to resume run ${id}: the repository's ${capsule.requestedRevision} moved from ` +
+          `${capsule.resolvedRevision} to ${currentSourceRevision} while this run was paused`,
+      );
+    }
+    const sandbox: Sandbox = {
+      id: run.id,
+      path: capsule.workspacePath,
+      repositoryPath: capsule.repositoryPath,
+      revision: capsule.requestedRevision,
+    };
+    run.state = "RUNNING";
+    run.updatedAt = new Date().toISOString();
+    await this.dependencies.store.updateRun(run);
+    this.active.set(run.id, {
+      cancelled: false,
+      sessionActive: false,
+      policyRestartsUsed: 0,
+      recoveryAttemptsUsed: 0,
+      transitionState: newTransitionState(),
+      run,
+    });
+    // Same closed-window re-check as create(): no `await` between here and kicking off execute().
+    if (this.emergencyStopped) {
+      await this.cancel(run.id);
+      this.active.delete(run.id);
+      return structuredClone(run);
+    }
+    void this.execute(run, task, credentialReferences, sandbox);
+    return structuredClone(run);
+  }
+
+  async recoveryCapsule(id: string): Promise<RecoveryCapsule | undefined> {
+    await this.requireRun(id);
+    return this.dependencies.store.getRecoveryCapsule(id);
+  }
+
+  /**
+   * Cancels every active run and blocks new run creation until resumeNewRuns() is called, while
+   * preserving worktrees, checkpoints, evidence, and candidate lineage. Never deletes anything —
+   * emergency stop is a pause, not a wipe. Cancellation is bounded by the same guarantee cancel()
+   * already has: a session already inside agent.start()/send() (before any event has arrived)
+   * finishes that call before the cancellation is observed and acted on in the event loop; it is
+   * not a hard kill of an in-flight provider request.
+   */
+  async emergencyStop(): Promise<{ cancelledRunIds: string[] }> {
+    this.emergencyStopped = true;
+    const cancelledRunIds: string[] = [];
+    for (const id of [...this.active.keys()]) {
+      await this.cancel(id);
+      cancelledRunIds.push(id);
+    }
+    return { cancelledRunIds };
+  }
+
+  resumeNewRuns(): void {
+    this.emergencyStopped = false;
+  }
+
+  isEmergencyStopped(): boolean {
+    return this.emergencyStopped;
+  }
+
   async transition(
     id: string,
     to: ExecutionMode,
@@ -353,7 +522,12 @@ export class RunService {
     return structuredClone(run);
   }
 
-  private async execute(run: Run, task: Task, credentialReferences: string[]): Promise<void> {
+  private async execute(
+    run: Run,
+    task: Task,
+    credentialReferences: string[],
+    resumeSandbox?: Sandbox,
+  ): Promise<void> {
     const started = performance.now();
     const initialMode = run.effectiveMode;
     const activeState = this.active.get(run.id);
@@ -362,21 +536,25 @@ export class RunService {
     let sandbox: Sandbox | undefined;
     try {
       run.state = "RUNNING";
-      run.startedAt = new Date().toISOString();
-      run.updatedAt = run.startedAt;
+      run.startedAt = run.startedAt ?? new Date().toISOString();
+      run.updatedAt = new Date().toISOString();
       await this.dependencies.store.updateRun(run);
-      await this.event(run.id, "RunStarted", {});
+      await this.event(run.id, resumeSandbox ? "RunResumed" : "RunStarted", {});
 
-      sandbox = await this.dependencies.sandbox.create(run.id, task.repositoryPath, task.revision);
+      sandbox =
+        resumeSandbox ??
+        (await this.dependencies.sandbox.create(run.id, task.repositoryPath, task.revision));
       const active = this.active.get(run.id);
       if (active) active.sandbox = sandbox;
       run.sandboxPath = sandbox.path;
       await this.dependencies.store.updateRun(run);
-      await this.event(run.id, "SandboxStarted", {
-        provider: "LocalWorktree",
-        path: sandbox.path,
-        revision: sandbox.revision,
-      });
+      if (!resumeSandbox) {
+        await this.event(run.id, "SandboxStarted", {
+          provider: "LocalWorktree",
+          path: sandbox.path,
+          revision: sandbox.revision,
+        });
+      }
 
       await this.dependencies.projectBrain.markStale(task.repositoryPath, task.revision);
       // Cheap full pass: file list plus path-derived package/module ownership, no content read.
@@ -421,16 +599,25 @@ export class RunService {
         scopeTruncated: enrichedSnapshot.scopeTruncated,
       });
 
-      await this.observeAndDecide(run, {
-        runId: run.id,
-        type: "INITIAL_CONTEXT",
-        timestamp: new Date().toISOString(),
-        checkpoint: "context-built",
-        repository: enrichedSnapshot,
-        initialFiles: context.initialFiles,
-        initialModules: context.initialModules,
-        ...(task.signals ? { externalHints: task.signals } : {}),
-      });
+      // The collector rejects re-initializing a run it already has state for (an invariant, not
+      // an oversight — see EvidenceRuntimeSignalCollector.observe). A same-process resume shares
+      // the same collector instance and therefore already has state from before the pause; only
+      // a genuinely fresh run (or a resume in a fresh process, where nothing has been observed
+      // yet) needs INITIAL_CONTEXT. Checking "does state already exist" rather than a resume-only
+      // flag also means this stays correct in either case.
+      const existingSignalState = await this.dependencies.runtimeSignals.latest(run.id);
+      if (!existingSignalState) {
+        await this.observeAndDecide(run, {
+          runId: run.id,
+          type: "INITIAL_CONTEXT",
+          timestamp: new Date().toISOString(),
+          checkpoint: "context-built",
+          repository: enrichedSnapshot,
+          initialFiles: context.initialFiles,
+          initialModules: context.initialModules,
+          ...(task.signals ? { externalHints: task.signals } : {}),
+        });
+      }
 
       const securityBoundary = await this.dependencies.agent.securityBoundary?.();
       if (securityBoundary) await this.event(run.id, "AgentSecurityBoundary", securityBoundary);
@@ -494,7 +681,7 @@ export class RunService {
         );
         const worseState =
           previousVerification !== undefined &&
-          this.verificationSeverity(verification) > this.verificationSeverity(previousVerification);
+          verificationSeverity(verification) > verificationSeverity(previousVerification);
         if (repairAttempts >= this.repairPolicy.maxRepairAttempts || worseState) {
           await this.event(run.id, "VerificationRepairStopped", {
             reason: worseState ? "verification-state-worsened" : "repair-limit-reached",
@@ -606,13 +793,41 @@ export class RunService {
     } catch (error) {
       const latest = await this.dependencies.store.getRun(run.id);
       if (latest?.state !== "CANCELLED") {
-        run.state = "FAILED";
         run.verificationState = run.verificationState === "VERIFYING" ? "QUARANTINED" : "FAILED";
         run.error = error instanceof Error ? error.message : String(error);
         run.completedAt = new Date().toISOString();
         run.updatedAt = run.completedAt;
-        await this.dependencies.store.updateRun(run);
-        await this.event(run.id, "RunFailed", { error: run.error });
+        const classification = classifyFailure(error, {
+          agentReported: error instanceof AgentReportedFailure,
+        });
+        try {
+          const capsule = await this.captureRecoveryCapsule(
+            run,
+            task,
+            sandbox,
+            classification,
+            run.error,
+          );
+          await this.dependencies.store.saveRecoveryCapsule(capsule);
+          run.state = "PAUSED";
+          await this.dependencies.store.updateRun(run);
+          await this.event(run.id, "RunPaused", {
+            recoveryReason: classification,
+            error: run.error,
+            strongestCandidateId: capsule.strongestCandidateId ?? null,
+            workspacePreserved: Boolean(sandbox),
+          });
+        } catch (capsuleError) {
+          // Capsule-building is the last resort's last resort — if even that fails, fall back to
+          // a bare FAILED rather than claim PAUSED (resumable) without any recovery evidence.
+          run.state = "FAILED";
+          await this.dependencies.store.updateRun(run);
+          await this.event(run.id, "RunFailed", {
+            error: run.error,
+            recoveryCapsuleError:
+              capsuleError instanceof Error ? capsuleError.message : String(capsuleError),
+          });
+        }
       }
     } finally {
       if (sandbox) {
@@ -644,7 +859,7 @@ export class RunService {
     message: string,
     resumeFrom?: AgentSession,
   ): Promise<{ session: AgentSession; modelCostReported: boolean }> {
-    let result = await this.runAgentAttempt(
+    let result = await this.runAgentAttemptWithRecovery(
       run,
       task,
       sandbox,
@@ -679,7 +894,7 @@ export class RunService {
         "policy-restart-continuation: continue the interrupted work in the same workspace.",
         message,
       ].join("\n");
-      result = await this.runAgentAttempt(
+      result = await this.runAgentAttemptWithRecovery(
         run,
         task,
         sandbox,
@@ -691,6 +906,62 @@ export class RunService {
     }
     await this.applyPendingAtBoundary(run, "agent-session-ended");
     return { session: result.session, modelCostReported };
+  }
+
+  /**
+   * Wraps a single agent attempt with bounded automatic recovery. Only failure classes with a
+   * real chance of succeeding on retry without new input (provider hiccups, transient network
+   * failures, an agent process that crashed) are retried, and only up to `maxRecoveryAttempts`
+   * per run — everything else propagates so execute()'s outer catch can build a durable
+   * RecoveryCapsule and pause the run for explicit resume rather than spending budget on a retry
+   * that will not fix the underlying cause. A retry always starts a brand-new session; resuming
+   * into a session that just failed would carry forward whatever caused the failure.
+   */
+  private async runAgentAttemptWithRecovery(
+    run: Run,
+    task: Task,
+    sandbox: Sandbox,
+    contextState: ContextState,
+    credentialReferences: string[],
+    message: string,
+    resumeFrom?: AgentSession,
+  ): Promise<{ session: AgentSession; modelCostReported: boolean; restartRequested: boolean }> {
+    let attemptResumeFrom = resumeFrom;
+    for (;;) {
+      try {
+        return await this.runAgentAttempt(
+          run,
+          task,
+          sandbox,
+          contextState,
+          credentialReferences,
+          message,
+          attemptResumeFrom,
+        );
+      } catch (error) {
+        const active = this.active.get(run.id);
+        if (active?.cancelled) throw error;
+        const classification = classifyFailure(error, {
+          agentReported: error instanceof AgentReportedFailure,
+        });
+        if (
+          !active ||
+          !isAutoRetryable(classification) ||
+          active.recoveryAttemptsUsed >= this.recoveryPolicy.maxRecoveryAttempts
+        ) {
+          throw error;
+        }
+        active.recoveryAttemptsUsed += 1;
+        await this.event(run.id, "RecoveryAttempted", {
+          classification,
+          attempt: active.recoveryAttemptsUsed,
+          maxRecoveryAttempts: this.recoveryPolicy.maxRecoveryAttempts,
+          error: error instanceof Error ? error.message : String(error),
+          strategy: "NEW_BOUNDED_SESSION",
+        });
+        attemptResumeFrom = undefined;
+      }
+    }
   }
 
   private async runAgentAttempt(
@@ -775,7 +1046,8 @@ export class RunService {
           });
         }
         if (agentEvent.type === "error") {
-          throw new Error(String(agentEvent.data.message ?? "Agent failed"));
+          // Agent-supplied text, never harness-authored — see AgentReportedFailure.
+          throw new AgentReportedFailure(String(agentEvent.data.message ?? "Agent failed"));
         }
         if (this.active.get(run.id)?.pendingPolicy?.method === "SAFE_RESTART") {
           restartRequested = true;
@@ -1156,11 +1428,52 @@ export class RunService {
     ].join("\n\n");
   }
 
-  private verificationSeverity(verification: Verification): number {
-    if (verification.state === "VERIFIED") return 0;
-    if (verification.state === "QUARANTINED") return 1;
-    if (verification.state === "FAILED") return 2;
-    return 3;
+  /**
+   * Builds and captures the durable, model-independent recovery evidence for a run that hit an
+   * unhandled failure. Best-effort revision resolution (git rev-parse) never blocks or fails the
+   * capsule itself — an unresolved revision is recorded as unknown, never guessed.
+   */
+  private async captureRecoveryCapsule(
+    run: Run,
+    task: Task,
+    sandbox: Sandbox | undefined,
+    classification: ReturnType<typeof classifyFailure>,
+    detail: string,
+  ): Promise<RecoveryCapsule> {
+    const [artifacts, verifications, latestSignalSnapshot, knowledge] = await Promise.all([
+      this.dependencies.store.listArtifacts(run.id),
+      this.dependencies.store.listVerifications(run.id),
+      this.dependencies.runtimeSignals.latest(run.id),
+      this.dependencies.projectBrain.list(task.repositoryPath, task.revision, ["FACT", "DECISION"]),
+    ]);
+    const resolvedRevision = sandbox ? await this.resolveRevision(sandbox.path) : undefined;
+    return buildRecoveryCapsule({
+      runId: run.id,
+      task,
+      agent: run.agent,
+      model: run.model,
+      provider: run.provider,
+      desiredMode: run.desiredMode,
+      effectiveMode: run.effectiveMode,
+      costSpent: run.cost,
+      workspacePath: sandbox?.path,
+      resolvedRevision,
+      artifacts,
+      verifications,
+      latestSignalSnapshot,
+      knowledge,
+      recoveryReason: classification,
+      recoveryDetail: detail,
+    });
+  }
+
+  private async resolveRevision(cwd: string, ref = "HEAD"): Promise<string | undefined> {
+    try {
+      const result = await runProcess("git", ["rev-parse", ref], { cwd, timeoutMs: 5_000 });
+      return result.exitCode === 0 ? result.stdout.trim() : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private async event(runId: string, type: string, data: unknown): Promise<void> {

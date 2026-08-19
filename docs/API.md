@@ -14,6 +14,11 @@ All routes are versioned under `/api/v1`.
 | `GET` | `/runs/:id/mode-explanation` | Explain desired vs effective mode, pending enforcement, and the enforced transition timeline |
 | `POST` | `/runs/:id/cancel` | Cancel a live run |
 | `POST` | `/runs/:id/mode` | Record an explicit evidence-backed mode transition |
+| `GET` | `/runs/:id/recovery-capsule` | Inspect the durable recovery capsule for a paused/failed run, if one was captured |
+| `POST` | `/runs/:id/resume` | Explicitly resume a `PAUSED` run from its capsule; refuses on source-revision conflict |
+| `POST` | `/system/emergency-stop` | Cancel all active runs and block new run creation; preserves all evidence |
+| `POST` | `/system/resume-new-runs` | Lift an emergency stop |
+| `GET` | `/system/status` | Whether an emergency stop is currently active |
 | `GET/POST` | `/missions` | List or create mission trees |
 | `POST` | `/missions/:id/split` | Split independent workstreams |
 | `POST` | `/missions/:id/merge` | Merge verified branches |

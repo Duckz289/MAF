@@ -170,7 +170,8 @@ export function RunPage({
   };
   const currentIndex = phaseIndex(run);
   const phases = ["Hiểu kho mã", "Điều tra", "Triển khai", "Xác minh"];
-  const needsAttention = run.state === "FAILED" || run.operationalStatus === "STUCK";
+  const needsAttention =
+    run.state === "FAILED" || run.state === "PAUSED" || run.operationalStatus === "STUCK";
   return (
     <>
       <Button
@@ -296,9 +297,11 @@ export function RunPage({
               </Text>
             </div>
             {run.error ? (
-              <MessageBar intent="error">
+              <MessageBar intent={run.state === "PAUSED" ? "warning" : "error"}>
                 <MessageBarBody>
-                  Tác vụ không hoàn tất xác minh.
+                  {run.state === "PAUSED"
+                    ? "Tác vụ đã tạm dừng an toàn — trạng thái khôi phục đã được lưu và có thể tiếp tục."
+                    : "Tác vụ không hoàn tất xác minh."}
                   <details>
                     <summary>Chi tiết kỹ thuật</summary>
                     {run.error}

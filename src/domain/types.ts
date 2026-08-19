@@ -36,7 +36,12 @@ export type VerificationState =
   | "FAILED"
   | "CANCELLED";
 
-export type RunState = "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
+/**
+ * PAUSED means a durable RecoveryCapsule was captured for this run's failure — the workspace and
+ * all evidence are preserved and the run can be explicitly resumed. It carries strictly more
+ * information than a bare FAILED and is used whenever recovery evidence was successfully built.
+ */
+export type RunState = "QUEUED" | "RUNNING" | "PAUSED" | "COMPLETED" | "FAILED" | "CANCELLED";
 export type ModelHealth = "HEALTHY" | "DEGRADED" | "BROKEN";
 
 export interface Task {
@@ -213,6 +218,71 @@ export const signalValues = (snapshot: RuntimeSignalSnapshot): RuntimeSignals =>
   Object.fromEntries(
     Object.entries(snapshot.signals).map(([name, signal]) => [name, signal?.value]),
   ) as RuntimeSignals;
+
+/**
+ * Why an unhandled execution failure occurred. Deterministic pattern-matched from the error and
+ * known context; defaults honestly to UNKNOWN_FAILURE rather than guessing. VERIFICATION_FAILURE
+ * is reserved for future gating use — the existing bounded repair loop already handles ordinary
+ * verifier failures without reaching this classifier.
+ */
+export type FailureClassification =
+  | "PROVIDER_TRANSIENT"
+  | "PROVIDER_DEGRADED"
+  | "RATE_LIMIT"
+  | "NETWORK_FAILURE"
+  | "CREDENTIAL_FAILURE"
+  | "AGENT_FAILURE"
+  | "VERIFICATION_FAILURE"
+  | "ENVIRONMENT_FAILURE"
+  | "BUDGET_EXHAUSTED"
+  | "USER_INTERRUPT"
+  | "REVISION_CONFLICT"
+  | "UNKNOWN_FAILURE";
+
+export interface CandidateLineageEntry {
+  id: string;
+  attempt: number;
+  parentCandidateId: string | null;
+  artifactId: string;
+  digest?: string | undefined;
+  verification?: { id: string; state: VerificationState; attempt?: number } | undefined;
+}
+
+/**
+ * A model-independent, structurally-typed snapshot of everything needed to recover or resume a
+ * failed run. Never carries hidden chain-of-thought — only already-structured, already-persisted
+ * evidence (verified facts/decisions, verification results, runtime-signal snapshot IDs, candidate
+ * lineage) that existed before the capsule was built.
+ */
+export interface RecoveryCapsule {
+  runId: string;
+  taskId: string;
+  goal: string;
+  repositoryPath: string;
+  /** The revision string the task requested (e.g. "HEAD" or a floating ref). */
+  requestedRevision: string;
+  /** The exact commit the sandbox actually resolved at capsule-creation time, if known. */
+  resolvedRevision?: string | undefined;
+  workspacePath?: string | undefined;
+  agent: string;
+  model: string;
+  provider: string;
+  desiredMode: ExecutionMode;
+  effectiveMode: ExecutionMode;
+  costSpent: CostBreakdown;
+  /** UNKNOWN (null) until a budget authority exists (see the M4 roadmap milestone). */
+  remainingBudget: number | null;
+  candidateLineage: CandidateLineageEntry[];
+  strongestCandidateId?: string | undefined;
+  latestVerification?: { id: string; state: VerificationState; attempt?: number } | undefined;
+  latestSignalSnapshotId?: string | undefined;
+  /** Statements only — already evidence-backed FACT/DECISION records, never raw model reasoning. */
+  verifiedFacts: string[];
+  decisions: string[];
+  recoveryReason: FailureClassification;
+  recoveryDetail: string;
+  createdAt: string;
+}
 
 export type CredentialBoundaryCapability =
   | "REFERENCE_ONLY"

@@ -1,6 +1,6 @@
 export type Navigate = (path: string) => void;
 
-export type RunState = "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
+export type RunState = "QUEUED" | "RUNNING" | "PAUSED" | "COMPLETED" | "FAILED" | "CANCELLED";
 
 export interface Run {
   id: string;

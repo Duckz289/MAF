@@ -8,7 +8,7 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 - Start branch: `adaptive-harness/runtime-signals-v0.1` at `357ab60` (clean tree).
 - Baseline validation (2026-08-19): `format:check`, `lint`, `typecheck`, `test` (49 passing),
   `build` (server + UI), `compose:check`, `smoke` — all PASS.
-- Current milestone: M2 — Scalable Incremental Project Graph.
+- Current milestone: M3 — Recovery Plane.
 
 ## Confirmed repository facts
 
@@ -31,8 +31,8 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 | # | Milestone | Status | Commit |
 |---|-----------|--------|--------|
 | M1 | Execution policy enforcement | DONE (VERIFIED) | 459e710 |
-| M2 | Scalable incremental project graph | DONE (VERIFIED) | (pending local commit) |
-| M3 | Recovery plane (3A–3D) | NOT STARTED | |
+| M2 | Scalable incremental project graph | DONE (VERIFIED) | 5cd71ed |
+| M3 | Recovery plane (3A–3D) | DONE (VERIFIED) | (pending local commit) |
 | M4 | Budget authority (4A–4E) | NOT STARTED | |
 | M5 | Task risk profiler + assurance planner | NOT STARTED | |
 | M6 | Quality governance (6A–6B) | NOT STARTED | |
@@ -236,6 +236,82 @@ Explicitly deferred and will be stated as NOT IMPLEMENTED rather than overclaime
 resume after a server restart (capsules are persisted, but nothing yet reloads/resumes a `PAUSED`
 run after process restart), true provider/model failover (only one native adapter is wired today —
 the retry-with-new-session path stays within the same agent), and circuit breakers (M4E).
+
+## M3 validation log
+
+- Initial pass: `typecheck`, `format:check`, `lint`, `test` (80 passing: 11 new unit tests for
+  `src/domain/recovery.ts` — classifyFailure pattern coverage, isAutoRetryable boundary,
+  candidateLineage/strongestCandidate never letting a worse later attempt hide a stronger earlier
+  one, buildRecoveryCapsule never containing anything beyond known structured fields; 5 new
+  integration tests — bounded auto-retry with a fresh session and no capsule when recovery
+  succeeds, capsule capture + PAUSED on a non-retryable failure, resume from a preserved worktree
+  completing verified, resume refused on source-revision conflict, emergency stop cancelling
+  active runs / blocking new creation / preserving evidence / lifting cleanly), `build`,
+  `compose:check`, `smoke` — all PASS.
+- A real bug was found and fixed during implementation (not by the external review — caught by the
+  resume integration test itself): `EvidenceRuntimeSignalCollector.observe()` throws if asked to
+  initialize `INITIAL_CONTEXT` for a runId it already has state for. Same-process `resume()` hit
+  this immediately since the collector instance is shared. Fixed by checking
+  `runtimeSignals.latest(run.id)` before emitting `INITIAL_CONTEXT` — skip it if state already
+  exists (same-process resume), do the full init otherwise (a genuinely fresh run, or a
+  hypothetical resume in a fresh process where nothing has been observed yet).
+- A design correction was made before writing tests: the first revision-conflict draft compared
+  the sandbox worktree's own HEAD to itself before vs. after pausing — which can never detect
+  drift, since nothing touches the worktree between capture and resume. Corrected to compare the
+  capsule's captured sandbox HEAD against a fresh resolution of the requested revision in the
+  *source* repository at resume time — the scenario that actually matters ("the branch moved on
+  while this run sat paused").
+- Fresh-context review (independent subagent, diff-only, no primed conclusion) found 6 MATERIAL
+  issues, all fixed before commit —
+  1. `classifyFailure` pattern-matched agent-supplied error text (an `error` AgentEvent's
+     `message`, entirely agent-controlled) into the full failure taxonomy, including
+     `CREDENTIAL_FAILURE`/`NETWORK_FAILURE`/etc. and even the harness's own `"Run cancelled"`
+     sentinel — letting agent output silently masquerade as harness-determined ground truth in the
+     durable `RecoveryCapsule`, and letting an agent dodge capsule capture by claiming
+     `USER_INTERRUPT`. Fixed with a new `AgentReportedFailure` marker class and a `agentReported`
+     context flag: any agent-reported error is now always `AGENT_FAILURE` regardless of its text
+     (already auto-retryable and bounded, so no capability was lost — only the false-ground-truth
+     problem was closed). Proven by a regression test using a deliberately
+     credential-failure-shaped agent message and a unit test enumerating every taxonomy category.
+  2. `resume()` never checked `emergencyStopped`, so a paused run could be explicitly resumed
+     (spawning a new agent session and provider spend) during an active emergency stop. Fixed with
+     the same guard `create()` already had.
+  3. `create()`/`resume()` raced `emergencyStop()`: both do several awaited store/event calls
+     before registering the run in `this.active`, so a stop that landed during that window
+     couldn't see the run in its cancellation sweep, and the run would still start its first agent
+     session after the stop had already returned to its caller. Fixed by re-checking
+     `emergencyStopped` immediately before the (synchronous, non-awaited) kick-off of `execute()`
+     — closing the window with no lock needed. Proven by a regression test that wraps the store to
+     trigger `emergencyStop()` at exactly that race window and asserts no agent session started.
+  4. Recovery's usefulness silently depended on `SANDBOX_RETENTION` (with `=none` the sandbox is
+     deleted immediately, so `resume()` would fail with an opaque filesystem/git error deep inside
+     the next attempt). Fixed: `resume()` now checks the workspace exists on disk first and fails
+     with a specific, actionable message naming the likely cause; documented in
+     `docs/RELIABILITY.md`.
+  5. The revision-conflict check only fired when both the capsule's and the freshly-resolved
+     revision were known; a `resolveRevision` failure at either capture or resume time (both
+     already best-effort/error-swallowing by design) silently degraded to "no conflict",
+     the exact "blindly resume on stale ground" failure mode M3C exists to prevent. Fixed:
+     an inconclusive check now refuses resume (`REVISION_UNKNOWN`) rather than proceeding —
+     unknown stays unknown. Proven by a test that removes a capsule's `resolvedRevision` after
+     capture and asserts refusal.
+  6. `ARCHITECTURE.md`/`docs/RELIABILITY.md` claimed "a failed later repair can never cause an
+     earlier better-verified candidate to be forgotten" without qualification — true only for
+     candidate identity/verification-result metadata (which is durably preserved), not full diff
+     content (only a 12,000-character preview is persisted outside the worktree, and the worktree
+     itself reflects only the latest attempt). Softened to state the metadata-level guarantee
+     precisely and note that physical workspace rollback is not implemented.
+  Also addressed as a minor from the same review: `emergencyStop()`'s doc comment overstated its
+  cancellation guarantee ("cancels active spending where safely possible") relative to the actual
+  (pre-existing, shared with `cancel()`) mechanism, which cannot interrupt a session already inside
+  `agent.start()`/`send()` before its first event arrives — reworded to state that bound honestly.
+  Not fixed (documented as a known limitation rather than addressed): a same-process resume reuses
+  in-memory runtime-signal history, while a resume in a fresh process re-seeds it from empty since
+  that history is not itself persisted — noted in `docs/RELIABILITY.md`.
+- Re-validated after fixes: `typecheck`, `test` (86 passing), `format:check`, `lint`, `build`,
+  `compose:check`, `smoke` — all PASS. (One `smoke` flake was traced to an unrelated orphaned
+  `dist/node/server/main.js` process left running on port 4310 from earlier in this session, not a
+  regression — killed, and smoke was stable across repeated runs afterward.)
 
 ## Blockers
 

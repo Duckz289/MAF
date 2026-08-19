@@ -3,6 +3,7 @@ import type { RunStore } from "../../domain/ports";
 import type {
   Artifact,
   Event,
+  RecoveryCapsule,
   Run,
   RuntimeSignalSnapshot,
   Task,
@@ -238,5 +239,25 @@ export class PostgresRunStore implements RunStore {
       [runId],
     );
     return result.rows;
+  }
+
+  async saveRecoveryCapsule(capsule: RecoveryCapsule): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO recovery_capsules(run_id, recovery_reason, payload, created_at, updated_at)
+       VALUES($1, $2, $3, $4, $4)
+       ON CONFLICT (run_id) DO UPDATE SET
+         recovery_reason = EXCLUDED.recovery_reason,
+         payload = EXCLUDED.payload,
+         updated_at = EXCLUDED.updated_at`,
+      [capsule.runId, capsule.recoveryReason, capsule, capsule.createdAt],
+    );
+  }
+
+  async getRecoveryCapsule(runId: string): Promise<RecoveryCapsule | undefined> {
+    const result = await this.pool.query<{ payload: RecoveryCapsule }>(
+      "SELECT payload FROM recovery_capsules WHERE run_id=$1",
+      [runId],
+    );
+    return result.rows[0]?.payload;
   }
 }

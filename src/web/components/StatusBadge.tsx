@@ -17,7 +17,7 @@ const statusAppearance = (status: string): { color: BadgeColor; icon: ReactEleme
     return { color: "success", icon: <CheckmarkCircle20Regular /> };
   if (status === "FAILED" || status === "STUCK" || status === "ERROR")
     return { color: "danger", icon: <ErrorCircle20Regular /> };
-  if (status === "UNAVAILABLE" || status === "AUTHENTICATION_REQUIRED")
+  if (status === "UNAVAILABLE" || status === "AUTHENTICATION_REQUIRED" || status === "PAUSED")
     return { color: "warning", icon: <DismissCircle20Regular /> };
   if (status === "RUNNING" || status === "QUEUED")
     return { color: "informative", icon: <Clock20Regular /> };

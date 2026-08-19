@@ -7,6 +7,7 @@ import type {
   ExecutionMode,
   ExecutionPolicyUpdate,
   ModelHealth,
+  RecoveryCapsule,
   Run,
   Task,
   TokenUsage,
@@ -30,6 +31,9 @@ export interface RunStore {
   listVerifications(runId: string): Promise<Verification[]>;
   addSignalSnapshot(snapshot: RuntimeSignalSnapshot): Promise<void>;
   listSignalSnapshots(runId: string): Promise<RuntimeSignalSnapshot[]>;
+  /** Durable, model-independent recovery state. Overwrites any prior capsule for the same run. */
+  saveRecoveryCapsule(capsule: RecoveryCapsule): Promise<void>;
+  getRecoveryCapsule(runId: string): Promise<RecoveryCapsule | undefined>;
 }
 
 export interface AgentStartInput {

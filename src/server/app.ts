@@ -70,6 +70,10 @@ const transitionSchema = z.object({
   evidence: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])),
 });
 
+const resumeSchema = z.object({
+  credentialReferences: z.array(z.string().startsWith("credential://")).max(20).optional(),
+});
+
 const projectSchema = z.object({
   name: z.string().trim().min(1).max(120),
   repositoryPath: z.string().trim().min(1).max(4_000),
@@ -270,6 +274,35 @@ export const createApp = async (): Promise<AppRuntime> => {
     const body = transitionSchema.parse(request.body);
     return runs.transition(request.params.id, body.to, body.reason, body.evidence);
   });
+  app.get<{ Params: { id: string } }>(
+    "/api/v1/runs/:id/recovery-capsule",
+    async (request, reply) => {
+      const capsule = await runs.recoveryCapsule(request.params.id);
+      return capsule ? capsule : reply.code(404).send({ error: "RECOVERY_CAPSULE_NOT_FOUND" });
+    },
+  );
+  app.post<{ Params: { id: string }; Body: { credentialReferences?: string[] } }>(
+    "/api/v1/runs/:id/resume",
+    async (request, reply) => {
+      const body = resumeSchema.parse(request.body ?? {});
+      try {
+        return await runs.resume(request.params.id, body.credentialReferences ?? []);
+      } catch (error) {
+        return reply.code(409).send({
+          error: "RESUME_REFUSED",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+  );
+  app.post("/api/v1/system/emergency-stop", async () => runs.emergencyStop());
+  app.post("/api/v1/system/resume-new-runs", async () => {
+    runs.resumeNewRuns();
+    return { emergencyStopped: runs.isEmergencyStopped() };
+  });
+  app.get("/api/v1/system/status", async () => ({
+    emergencyStopped: runs.isEmergencyStopped(),
+  }));
   app.get<{ Params: { id: string }; Querystring: { after?: string; follow?: string } }>(
     "/api/v1/runs/:id/events",
     async (request, reply) => {

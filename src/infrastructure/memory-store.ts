@@ -2,6 +2,7 @@ import type { RunStore } from "../domain/ports";
 import type {
   Artifact,
   Event,
+  RecoveryCapsule,
   Run,
   RuntimeSignalSnapshot,
   Task,
@@ -15,6 +16,7 @@ export class InMemoryRunStore implements RunStore {
   private readonly artifactsByRun = new Map<string, Artifact[]>();
   private readonly verificationsByRun = new Map<string, Verification[]>();
   private readonly signalSnapshotsByRun = new Map<string, RuntimeSignalSnapshot[]>();
+  private readonly recoveryCapsulesByRun = new Map<string, RecoveryCapsule>();
 
   async createTask(task: Task): Promise<void> {
     this.tasks.set(task.id, structuredClone(task));
@@ -89,5 +91,14 @@ export class InMemoryRunStore implements RunStore {
     return (this.signalSnapshotsByRun.get(runId) ?? []).map((snapshot) =>
       structuredClone(snapshot),
     );
+  }
+
+  async saveRecoveryCapsule(capsule: RecoveryCapsule): Promise<void> {
+    this.recoveryCapsulesByRun.set(capsule.runId, structuredClone(capsule));
+  }
+
+  async getRecoveryCapsule(runId: string): Promise<RecoveryCapsule | undefined> {
+    const capsule = this.recoveryCapsulesByRun.get(runId);
+    return capsule ? structuredClone(capsule) : undefined;
   }
 }
