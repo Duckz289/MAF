@@ -84,6 +84,8 @@ export interface RepositorySnapshot {
   symbols: Array<{ name: string; kind: string; file: string; line: number }>;
   relations: Array<{ from: string; to: string; kind: string }>;
   moduleMap: Record<string, string[]>;
+  moduleOwnership: Record<string, string>;
+  moduleRoots: string[];
   evidence: Array<{ uri: string; digest: string }>;
 }
 
@@ -253,6 +255,8 @@ export interface TelemetryRecord {
   agent: string;
   model: string;
   provider: string;
+  initialMode: ExecutionMode;
+  finalMode: ExecutionMode;
   executionMode: ExecutionMode;
   inputTokens: number;
   outputTokens: number;
@@ -268,12 +272,17 @@ export interface TelemetryRecord {
   verificationType: string;
   verificationState: string;
   modeTransitions: number;
+  strictReexpansions: number;
   signalSnapshots: number;
   latestSignalSnapshotId?: string;
   dependencyExpansion: number;
   touchedModules: number;
   crossModuleEdges: number;
   verifierFailures: number;
+  verificationAttempts: number;
+  repairAttempts: number;
+  moduleCountObserved: number;
+  stabilizationInvalidations: number;
   contextExpansion: number;
   verifiedSuccess: boolean;
   timestamp: string;

@@ -11,8 +11,8 @@ and cancellation use `FAILED` and `CANCELLED`. Mission dependencies accept only 
 BEGIN
 create detached worktree
 run native agent
-capture diff and artifact digest
-verify
+capture attempt-linked candidate diff and artifact digest
+verify (at most twice with one bounded repair)
 emit VERIFIED or QUARANTINED
 apply retention
 emit SandboxFinalized
@@ -35,15 +35,22 @@ evidence and become stale across revisions. Failed runs retain enough evidence t
 trusting an agent's completion message.
 
 Runtime-signal history is persisted per run, while each snapshot bounds its evidence payload to the
-50 most recent records. Scope stabilization requires five consecutive meaningful observations
-without dependency or context expansion. Mechanical remaining work additionally requires at least
-two equivalent edit patterns. Verification failures come from stored verifier results, so a
-caller-provided count cannot override them. Broadening enters a three-observation cooldown before
-narrowing, and `STRICT` cannot oscillate back in V0.
+50 most recent records. Scope stabilization requires five consecutive meaningful observations with
+stable file/module/dependency scope, bounded edit targets, and no unresolved verifier failure.
+Mechanical remaining work additionally requires at least two equivalent edit patterns, bounded
+targets, and low uncertainty. Verification failures come from stored verifier results, so a
+caller-provided count cannot override them. A three-observation cooldown blocks immediate narrowing
+and cumulative-signal escalation, while explicit new evidence can invalidate and leave `STRICT`.
+
+The repair policy defaults to one repair and two total verification attempts. Verifier output and
+diff previews sent to repair are each capped at 12,000 characters. Every attempt is stored with a
+candidate ID; candidate artifacts record their parent. Exhaustion or a worse verification state
+stops the loop and retains `QUARANTINED` evidence. An agent completion message never changes trust.
 
 ## Tested paths
 
 Automated tests cover VERIFIED, QUARANTINED, CLI native execution, ACP native execution, adaptive
-mode changes, stable and expanding scopes, false stabilization, anti-oscillation, worktree cleanup,
+mode changes, reversible `STRICT`, stable and invalidated scopes, bounded repair, retry exhaustion,
+trusted repair success, false stabilization, anti-oscillation, worktree cleanup,
 fact staleness, verified-only mission gating, API control, signal-explanation endpoints, and SSE.
 The production-bundle smoke test repeats both outcomes against in-memory and PostgreSQL adapters.

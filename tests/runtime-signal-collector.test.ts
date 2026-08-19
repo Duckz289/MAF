@@ -5,19 +5,46 @@ import type { AgentEvent, RuntimeSignals, Verification } from "../src/domain/typ
 
 const repository: RepositorySnapshot = {
   revision: "fixture",
-  files: ["frontend/image.ts", "api/media.ts", "storage/resolver.ts", "auth/permissions.ts"],
+  files: [
+    "src/web/image.ts",
+    "src/application/media.ts",
+    "src/application/controller.ts",
+    "src/infrastructure/resolver.ts",
+    "src/domain/permissions.ts",
+  ],
   symbols: [],
   relations: [
-    { from: "frontend/image.ts", to: "api/media.ts", kind: "IMPORTS" },
-    { from: "api/media.ts", to: "storage/resolver.ts", kind: "IMPORTS" },
-    { from: "storage/resolver.ts", to: "auth/permissions.ts", kind: "IMPORTS" },
+    { from: "src/web/image.ts", to: "src/application/media.ts", kind: "IMPORTS" },
+    {
+      from: "src/application/controller.ts",
+      to: "src/application/media.ts",
+      kind: "IMPORTS",
+    },
+    {
+      from: "src/application/media.ts",
+      to: "src/infrastructure/resolver.ts",
+      kind: "IMPORTS",
+    },
+    {
+      from: "src/infrastructure/resolver.ts",
+      to: "src/domain/permissions.ts",
+      kind: "IMPORTS",
+    },
   ],
   moduleMap: {
-    frontend: ["frontend/image.ts"],
-    api: ["api/media.ts"],
-    storage: ["storage/resolver.ts"],
-    auth: ["auth/permissions.ts"],
+    "src/web": ["src/web/image.ts"],
+    "src/application": ["src/application/media.ts", "src/application/controller.ts"],
+    "src/infrastructure": ["src/infrastructure/resolver.ts"],
+    "src/domain": ["src/domain/permissions.ts"],
   },
+  moduleOwnership: {
+    "src/web/image.ts": "src/web",
+    "src/application/media.ts": "src/application",
+    "src/application/controller.ts": "src/application",
+    "src/infrastructure/resolver.ts": "src/infrastructure",
+    "src/domain/permissions.ts": "src/domain",
+  },
+  moduleRoots: [],
   evidence: [],
 };
 
@@ -34,8 +61,8 @@ const initialize = (
     checkpoint: "context-built",
     timestamp,
     repository,
-    initialFiles: ["frontend/image.ts"],
-    initialModules: ["frontend"],
+    initialFiles: ["src/web/image.ts"],
+    initialModules: ["src/web"],
     ...(externalHints ? { externalHints } : {}),
   });
 
@@ -64,9 +91,9 @@ describe("EvidenceRuntimeSignalCollector", () => {
     const collector = new EvidenceRuntimeSignalCollector();
     const runId = crypto.randomUUID();
     await initialize(collector, runId);
-    await observeTool(collector, runId, "api/media.ts");
-    await observeTool(collector, runId, "storage/resolver.ts");
-    const snapshot = await observeTool(collector, runId, "auth/permissions.ts");
+    await observeTool(collector, runId, "src/application/media.ts");
+    await observeTool(collector, runId, "src/infrastructure/resolver.ts");
+    const snapshot = await observeTool(collector, runId, "src/domain/permissions.ts");
 
     expect(snapshot.signals.touchedModules?.value).toBe(4);
     expect(snapshot.signals.dependencyExpansion?.value).toBe(3);
@@ -80,13 +107,15 @@ describe("EvidenceRuntimeSignalCollector", () => {
     const collector = new EvidenceRuntimeSignalCollector({
       stabilizationWindow: 5,
       minimumMechanicalEdits: 2,
+      maxMechanicalTargets: 3,
+      maximumMechanicalUncertainty: 0.5,
     });
     const runId = crypto.randomUUID();
     await initialize(collector, runId);
-    await observeTool(collector, runId, "api/media.ts");
+    await observeTool(collector, runId, "src/application/media.ts");
     for (let index = 0; index < 4; index += 1)
-      await observeTool(collector, runId, "api/media.ts", "edit_file");
-    const snapshot = await observeTool(collector, runId, "api/media.ts", "edit_file");
+      await observeTool(collector, runId, "src/application/media.ts", "edit_file");
+    const snapshot = await observeTool(collector, runId, "src/application/media.ts", "edit_file");
 
     expect(snapshot.signals.scopeStabilized).toMatchObject({
       value: true,
@@ -101,8 +130,8 @@ describe("EvidenceRuntimeSignalCollector", () => {
     const runId = crypto.randomUUID();
     await initialize(collector, runId);
     for (let index = 0; index < 4; index += 1)
-      await observeTool(collector, runId, "frontend/image.ts", "edit_file");
-    const snapshot = await observeTool(collector, runId, "api/media.ts", "edit_file");
+      await observeTool(collector, runId, "src/web/image.ts", "edit_file");
+    const snapshot = await observeTool(collector, runId, "src/application/media.ts", "edit_file");
     expect(snapshot.signals.scopeStabilized?.value).toBe(false);
   });
 
@@ -110,9 +139,9 @@ describe("EvidenceRuntimeSignalCollector", () => {
     const collector = new EvidenceRuntimeSignalCollector();
     const runId = crypto.randomUUID();
     await initialize(collector, runId);
-    let snapshot = await observeTool(collector, runId, "frontend/image.ts", "edit_file");
+    let snapshot = await observeTool(collector, runId, "src/web/image.ts", "edit_file");
     for (let index = 0; index < 3; index += 1)
-      snapshot = await observeTool(collector, runId, "frontend/image.ts", "edit_file");
+      snapshot = await observeTool(collector, runId, "src/web/image.ts", "edit_file");
     expect(snapshot.signals.scopeStabilized?.value).toBe(false);
   });
 
@@ -162,10 +191,109 @@ describe("EvidenceRuntimeSignalCollector", () => {
       value: 0.8,
       provenance: "EXTERNAL_HINT",
     });
-    expect(snapshot.signals.scopeStabilized?.provenance).toBe("EXTERNAL_HINT");
+    expect(snapshot.signals.scopeStabilized).toMatchObject({
+      value: false,
+      provenance: "HEURISTIC",
+    });
     expect(snapshot.signals.touchedModules).toMatchObject({
       value: 1,
       provenance: "DETERMINISTIC",
+    });
+  });
+
+  it("does not count imports inside one architectural module as cross-module edges", async () => {
+    const collector = new EvidenceRuntimeSignalCollector();
+    const runId = crypto.randomUUID();
+    await collector.observe({
+      runId,
+      type: "INITIAL_CONTEXT",
+      checkpoint: "context-built",
+      timestamp,
+      repository,
+      initialFiles: ["src/application/media.ts"],
+      initialModules: ["src/application"],
+    });
+    const snapshot = await observeTool(collector, runId, "src/application/controller.ts");
+    expect(snapshot.signals.touchedModules?.value).toBe(1);
+    expect(snapshot.signals.crossModuleEdges?.value).toBe(0);
+  });
+
+  it("invalidates previously stable scope when a new module and dependency edge appear", async () => {
+    const collector = new EvidenceRuntimeSignalCollector();
+    const runId = crypto.randomUUID();
+    await initialize(collector, runId);
+    for (let index = 0; index < 5; index += 1) {
+      await observeTool(collector, runId, "src/web/image.ts", "edit_file");
+    }
+    expect((await collector.latest(runId))?.signals.scopeStabilized?.value).toBe(true);
+    const invalidated = await observeTool(
+      collector,
+      runId,
+      "src/application/media.ts",
+      "read_file",
+    );
+    expect(invalidated.signals.scopeStabilized?.value).toBe(false);
+    expect(invalidated.signals.mechanicalRemainingWork?.value).toBe(false);
+    expect(invalidated.signals.stabilizationInvalidations?.value).toBe(1);
+    expect(
+      invalidated.evidence.some((item) => item.summary.includes("Previously stabilized scope")),
+    ).toBe(true);
+  });
+
+  it("lets trusted verifier failure invalidate stabilization and block mechanical narrowing", async () => {
+    const collector = new EvidenceRuntimeSignalCollector();
+    const runId = crypto.randomUUID();
+    await initialize(collector, runId);
+    for (let index = 0; index < 5; index += 1) {
+      await observeTool(collector, runId, "src/web/image.ts", "edit_file");
+    }
+    const verification: Verification = {
+      id: "failure",
+      runId,
+      type: "command",
+      state: "QUARANTINED",
+      exitCode: 1,
+      output: "failed",
+      startedAt: timestamp,
+      completedAt: timestamp,
+      attempt: 1,
+      candidateId: "candidate",
+    };
+    const snapshot = await collector.observe({
+      runId,
+      type: "VERIFICATION",
+      checkpoint: "verification-attempt-1-quarantined",
+      timestamp,
+      verification,
+    });
+    expect(snapshot.signals.scopeStabilized?.value).toBe(false);
+    expect(snapshot.signals.mechanicalRemainingWork?.value).toBe(false);
+  });
+
+  it("does not let agent inference override contradictory repository expansion", async () => {
+    const collector = new EvidenceRuntimeSignalCollector();
+    const runId = crypto.randomUUID();
+    await initialize(collector, runId);
+    const snapshot = await collector.observe({
+      runId,
+      type: "AGENT_EVENT",
+      checkpoint: "agent-tool",
+      timestamp,
+      event: {
+        type: "tool",
+        data: {
+          tool: "edit_file",
+          operation: "edit_file",
+          path: "src/application/media.ts",
+          mechanicalRemainingWork: true,
+        },
+        timestamp,
+      },
+    });
+    expect(snapshot.signals.scopeStabilized?.value).toBe(false);
+    expect(snapshot.signals.mechanicalRemainingWork).toMatchObject({
+      value: false,
+      provenance: "HEURISTIC",
     });
   });
 });

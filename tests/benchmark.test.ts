@@ -26,8 +26,12 @@ const execution = (reportedCost: number | null): BenchmarkExecution => ({
   reportedCost,
   latencyMs: 25,
   retryCount: 0,
+  verificationAttempts: 1,
+  repairAttempts: 0,
+  verifierFailures: 0,
   verificationResult: "VERIFIED",
   filesChanged: ["src/example.ts"],
+  modulesTouched: ["src"],
   contextExpansion: 1,
   orchestrationOverheadMs: 3,
 });

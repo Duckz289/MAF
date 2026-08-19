@@ -188,6 +188,9 @@ export const createApp = async (): Promise<AppRuntime> => {
   app.get<{ Params: { id: string } }>("/api/v1/runs/:id/artifacts", async (request) =>
     runs.artifacts(request.params.id),
   );
+  app.get<{ Params: { id: string } }>("/api/v1/runs/:id/verifications", async (request) =>
+    runs.verifications(request.params.id),
+  );
   app.get<{ Params: { id: string } }>("/api/v1/runs/:id/runtime-signals", async (request) =>
     runs.signalSnapshots(request.params.id),
   );

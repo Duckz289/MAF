@@ -85,6 +85,8 @@ export interface Verification {
   output: string;
   startedAt: string;
   completedAt: string;
+  attempt?: number;
+  candidateId?: string;
 }
 
 export interface TokenUsage {
@@ -115,6 +117,7 @@ export interface RuntimeSignals {
   filesChanged?: number | undefined;
   newDependenciesDiscovered?: number | undefined;
   verificationFailureCount?: number | undefined;
+  stabilizationInvalidations?: number | undefined;
 }
 
 export type RuntimeSignalName = keyof RuntimeSignals;

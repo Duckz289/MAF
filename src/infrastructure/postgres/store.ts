@@ -155,8 +155,10 @@ export class PostgresRunStore implements RunStore {
 
   async addVerification(verification: Verification): Promise<void> {
     await this.pool.query(
-      `INSERT INTO verifications(id, run_id, type, state, command, exit_code, output, started_at, completed_at)
-       VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      `INSERT INTO verifications(
+         id, run_id, type, state, command, exit_code, output, started_at, completed_at,
+         attempt, candidate_id
+       ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
       [
         verification.id,
         verification.runId,
@@ -167,6 +169,8 @@ export class PostgresRunStore implements RunStore {
         verification.output,
         verification.startedAt,
         verification.completedAt,
+        verification.attempt ?? 1,
+        verification.candidateId ?? null,
       ],
     );
   }
@@ -174,8 +178,9 @@ export class PostgresRunStore implements RunStore {
   async listVerifications(runId: string): Promise<Verification[]> {
     const result = await this.pool.query<Verification>(
       `SELECT id, run_id AS "runId", type, state, command, exit_code AS "exitCode", output,
-              started_at::text AS "startedAt", completed_at::text AS "completedAt"
-       FROM verifications WHERE run_id=$1 ORDER BY started_at`,
+              started_at::text AS "startedAt", completed_at::text AS "completedAt",
+              attempt, candidate_id AS "candidateId"
+       FROM verifications WHERE run_id=$1 ORDER BY attempt, started_at`,
       [runId],
     );
     return result.rows;

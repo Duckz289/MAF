@@ -3,9 +3,14 @@ import { access, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 interface FixtureInput {
-  task: { prompt: string; signals?: { contextExpansion?: number } };
+  task: {
+    prompt: string;
+    signals?: { contextExpansion?: number };
+    verification?: { expectedFile?: string };
+  };
   context: string;
   credentialReferences: string[];
+  message: string;
 }
 
 const emit = (type: string, data: Record<string, unknown>): void => {
@@ -24,10 +29,10 @@ lines.once("line", async (line) => {
       });
     }
     const adaptivePaths = [
-      "frontend/image.ts",
-      "api/media.ts",
-      "storage/resolver.ts",
-      "auth/permissions.ts",
+      "src/web/image.ts",
+      "src/application/media.ts",
+      "src/infrastructure/resolver.ts",
+      "src/domain/permissions.ts",
     ];
     const adaptiveRepository = await Promise.all(
       adaptivePaths.map(async (file) => {
@@ -46,7 +51,7 @@ lines.once("line", async (line) => {
           emit("tool", {
             tool: "edit_file",
             operation: "edit",
-            path: "auth/permissions.ts",
+            path: "src/domain/permissions.ts",
             pass: index + 1,
           });
         }
@@ -80,6 +85,18 @@ lines.once("line", async (line) => {
       `Dotenv visible: ${dotenvProbe}`,
     ].join("\n");
     await writeFile(path.resolve("agent-output.md"), content, "utf8");
+    if (
+      /repair succeeds/iu.test(input.task.prompt) &&
+      /Trusted verification repair request/iu.test(input.message) &&
+      input.task.verification?.expectedFile
+    ) {
+      await writeFile(path.resolve(input.task.verification.expectedFile), "repaired\n", "utf8");
+      emit("tool", {
+        tool: "write_file",
+        operation: "create",
+        path: input.task.verification.expectedFile,
+      });
+    }
     emit("usage", {
       inputTokens: Math.ceil(input.context.length / 4),
       outputTokens: 48,

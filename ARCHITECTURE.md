@@ -37,11 +37,13 @@ or `src/server`. This keeps use cases testable with in-memory adapters.
 5. A capability-preserving `AgentAdapter` runs the native agent.
 6. `RuntimeSignalCollector` updates evidence snapshots at context, tool-event, diff, and verification
    checkpoints; the controller may change mode without altering the agent's native planning loop.
-7. The harness captures its diff and artifacts.
-8. `CommandVerifier` moves the output through `VERIFYING` to `VERIFIED` or `QUARANTINED`.
-9. Telemetry records cost, tokens, retry, latency, mode, changed files, verification, and adaptive
+7. The harness captures an attempt-linked candidate diff and artifact.
+8. `CommandVerifier` moves the candidate through `VERIFYING`. A failure may start one bounded repair
+   with structured verifier evidence; every new candidate and verification is persisted.
+9. Only a trusted verifier pass moves output to `VERIFIED`; exhaustion remains `QUARANTINED`.
+10. Telemetry records cost, tokens, retry, latency, mode, changed files, verification, and adaptive
    signal dimensions.
-10. Worktree retention is applied and `SandboxFinalized` is emitted.
+11. Worktree retention is applied and `SandboxFinalized` is emitted.
 
 Downstream mission nodes can consume only `VERIFIED` outputs.
 
@@ -66,14 +68,19 @@ The fixture agents prove the native CLI and ACP paths without external credentia
 Every transition is a persisted `ModeChanged` event with `from`, `to`, `reason`, structured evidence,
 the triggering signal-snapshot ID, evidence IDs, and timestamp. Signals include dependency and
 context expansion, touched modules, resolved cross-module import edges, changed files, verification
-failure history, uncertainty, scope stabilization, and mechanical remaining work. A cooldown blocks
-immediate narrowing after broadening; `STRICT` is terminal for V0.
+failure history, uncertainty, scope stabilization, and mechanical remaining work. `STRICT` is
+reversible when deltas from its entry snapshot invalidate stabilization. Three observations of
+cooldown block immediate re-narrowing or cumulative-signal escalation after a transition; explicit
+new evidence may still leave `STRICT` immediately.
 
 ## Project Brain
 
 `ProjectBrain` separates `FACT`, `INFERENCE`, `EVIDENCE`, and `DECISION`. A fact without evidence is
 rejected. Records from a different source revision become `STALE`. The default index builds file,
-symbol, resolved local import-relation, module-map, and digest evidence.
+symbol, resolved local import-relation, module-map, file-to-module ownership, and digest evidence.
+Workspace/package roots (`workspaces`, simple pnpm workspace entries, `apps/*`, `packages/*`, and
+`services/*`) take precedence. Single-package `src/*` layers and `src/features/*` feature roots form
+bounded deterministic modules.
 `OptionalCodebaseMemoryIndex` is an explicitly inactive optional port until a configured MCP/service
 transport exists; its status exposes the deterministic local fallback and never claims a hidden
 daemon connection.

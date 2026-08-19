@@ -1,12 +1,14 @@
 import path from "node:path";
 import type {
   AgentAdapter,
+  AgentSession,
   ContextBuilderPort,
   ProjectBrain,
   RepositoryIndex,
   RunStore,
   RuntimeSignalCollector,
   Sandbox,
+  SandboxDiff,
   SandboxProvider,
   TelemetrySink,
   VerifierPort,
@@ -23,6 +25,7 @@ import {
   type RuntimeSignals,
   type RuntimeSignalSnapshot,
   type Task,
+  type Verification,
   type VerificationSpec,
 } from "../domain/types";
 import { LocalWorktreeSandbox } from "../infrastructure/local-worktree";
@@ -75,14 +78,45 @@ interface RunServiceDependencies {
   telemetry: TelemetrySink;
   runtimeSignals: RuntimeSignalCollector;
   modeController?: AdaptiveModeController;
+  repairPolicy?: Partial<VerificationRepairPolicy>;
+}
+
+export interface VerificationRepairPolicy {
+  maxRepairAttempts: number;
+  maxVerifierOutputChars: number;
+  maxDiffPreviewChars: number;
+}
+
+export const defaultVerificationRepairPolicy: VerificationRepairPolicy = {
+  maxRepairAttempts: 1,
+  maxVerifierOutputChars: 12_000,
+  maxDiffPreviewChars: 12_000,
+};
+
+interface TransitionState {
+  count: number;
+  strictReexpansions: number;
+  lastSequence?: number;
+  lastSnapshot?: RuntimeSignalSnapshot;
+}
+
+interface Candidate {
+  id: string;
+  artifact: Artifact;
+  diff: SandboxDiff;
+  attempt: number;
 }
 
 export class RunService {
   private readonly active = new Map<string, { cancelled: boolean; sandbox?: Sandbox }>();
   private readonly modeController: AdaptiveModeController;
+  private readonly repairPolicy: VerificationRepairPolicy;
 
   constructor(private readonly dependencies: RunServiceDependencies) {
     this.modeController = dependencies.modeController ?? new AdaptiveModeController();
+    this.repairPolicy = { ...defaultVerificationRepairPolicy, ...dependencies.repairPolicy };
+    if (this.repairPolicy.maxRepairAttempts < 0)
+      throw new Error("Maximum repair attempts cannot be negative");
   }
 
   async create(request: CreateRunRequest): Promise<Run> {
@@ -178,6 +212,11 @@ export class RunService {
     return this.dependencies.store.listArtifacts(id);
   }
 
+  async verifications(id: string): Promise<Verification[]> {
+    await this.requireRun(id);
+    return this.dependencies.store.listVerifications(id);
+  }
+
   async signalSnapshots(id: string): Promise<RuntimeSignalSnapshot[]> {
     await this.requireRun(id);
     return this.dependencies.store.listSignalSnapshots(id);
@@ -238,7 +277,8 @@ export class RunService {
 
   private async execute(run: Run, task: Task, credentialReferences: string[]): Promise<void> {
     const started = performance.now();
-    const transitionState: { count: number; lastSequence?: number } = { count: 0 };
+    const initialMode = run.executionMode;
+    const transitionState: TransitionState = { count: 0, strictReexpansions: 0 };
     let modelCostReported = false;
     let sandbox: Sandbox | undefined;
     try {
@@ -293,118 +333,126 @@ export class RunService {
 
       const securityBoundary = await this.dependencies.agent.securityBoundary?.();
       if (securityBoundary) await this.event(run.id, "AgentSecurityBoundary", securityBoundary);
-
-      const session = await this.dependencies.agent.start({
+      const capabilities = await this.dependencies.agent.capabilities();
+      let sessionResult = await this.runAgentAttempt(
         run,
         task,
-        workspacePath: sandbox.path,
-        initialContext: context.text,
+        sandbox,
+        context.text,
         credentialReferences,
-      });
-      await this.dependencies.agent.send(session, task.prompt);
-      for await (const agentEvent of this.dependencies.agent.events(session)) {
-        if (this.active.get(run.id)?.cancelled) {
-          await this.dependencies.agent.cancel(session);
-          throw new Error("Run cancelled");
+        task.prompt,
+        transitionState,
+      );
+      modelCostReported ||= sessionResult.modelCostReported;
+      let session = sessionResult.session;
+      let verification: Verification | undefined;
+      let candidate: Candidate | undefined;
+      let parentCandidateId: string | undefined;
+      let verificationAttempts = 0;
+      let repairAttempts = 0;
+
+      for (;;) {
+        candidate = await this.captureCandidate(
+          run,
+          sandbox,
+          verificationAttempts + 1,
+          parentCandidateId,
+          transitionState,
+        );
+        verificationAttempts += 1;
+        run.verificationState = "VERIFYING";
+        await this.dependencies.store.updateRun(run);
+        await this.event(run.id, "VerificationChanged", {
+          state: "VERIFYING",
+          attempt: verificationAttempts,
+          candidateId: candidate.id,
+        });
+        verification = await this.dependencies.verifier.verify(run, task, sandbox, candidate.diff);
+        verification.attempt = verificationAttempts;
+        verification.candidateId = candidate.id;
+        await this.dependencies.store.addVerification(verification);
+        await this.observeAndDecide(
+          run,
+          {
+            runId: run.id,
+            type: "VERIFICATION",
+            timestamp: verification.completedAt,
+            checkpoint: `verification-attempt-${verificationAttempts}-${verification.state.toLowerCase()}`,
+            verification,
+          },
+          transitionState,
+        );
+        await this.event(run.id, "VerificationChanged", {
+          state: verification.state,
+          attempt: verificationAttempts,
+          candidateId: candidate.id,
+          exitCode: verification.exitCode,
+          output: verification.output,
+        });
+        if (verification.state === "VERIFIED") break;
+
+        const previousVerification = (await this.dependencies.store.listVerifications(run.id)).at(
+          -2,
+        );
+        const worseState =
+          previousVerification !== undefined &&
+          this.verificationSeverity(verification) > this.verificationSeverity(previousVerification);
+        if (repairAttempts >= this.repairPolicy.maxRepairAttempts || worseState) {
+          await this.event(run.id, "VerificationRepairStopped", {
+            reason: worseState ? "verification-state-worsened" : "repair-limit-reached",
+            verificationAttempts,
+            repairAttempts,
+            maxRepairAttempts: this.repairPolicy.maxRepairAttempts,
+            candidateId: candidate.id,
+          });
+          break;
         }
-        await this.event(run.id, "AgentEvent", agentEvent);
-        if (agentEvent.type === "usage") {
-          run.usage.input += Number(agentEvent.data.inputTokens ?? 0);
-          run.usage.output += Number(agentEvent.data.outputTokens ?? 0);
-          run.usage.cached += Number(agentEvent.data.cachedTokens ?? 0);
-          if (typeof agentEvent.data.costUsd === "number") {
-            modelCostReported = true;
-            run.cost.model += agentEvent.data.costUsd;
-            run.cost.total =
-              run.cost.model +
-              run.cost.sandbox +
-              run.cost.verification +
-              run.cost.retry +
-              run.cost.recovery;
-          }
-        }
-        if (agentEvent.type === "context_expansion") {
-          await this.event(run.id, "ContextExpanded", agentEvent.data);
-        }
-        if (agentEvent.type === "tool" || agentEvent.type === "context_expansion") {
-          await this.observeAndDecide(
-            run,
-            {
-              runId: run.id,
-              type: "AGENT_EVENT",
-              timestamp: agentEvent.timestamp,
-              checkpoint: `agent-${agentEvent.type}`,
-              event: agentEvent,
-            },
-            transitionState,
-          );
-        }
-        if (agentEvent.type === "error")
-          throw new Error(String(agentEvent.data.message ?? "Agent failed"));
+
+        repairAttempts += 1;
+        run.retryCount = repairAttempts;
+        run.updatedAt = new Date().toISOString();
+        await this.dependencies.store.updateRun(run);
+        const repairMessage = this.repairMessage(task, verification, candidate, repairAttempts);
+        await this.event(run.id, "VerificationRepairStarted", {
+          repairAttempt: repairAttempts,
+          failedVerificationId: verification.id,
+          candidateId: candidate.id,
+          command: task.verification.command ?? null,
+          exitCode: verification.exitCode ?? null,
+          output: verification.output.slice(0, this.repairPolicy.maxVerifierOutputChars),
+          changedFiles: candidate.diff.changedFiles,
+          diffDigest: candidate.artifact.digest,
+          sessionStrategy:
+            capabilities.resumeSession && session.nativeSessionId
+              ? "NATIVE_RESUME"
+              : "NEW_BOUNDED_SESSION",
+        });
+        parentCandidateId = candidate.id;
+        sessionResult = await this.runAgentAttempt(
+          run,
+          task,
+          sandbox,
+          context.text,
+          credentialReferences,
+          repairMessage,
+          transitionState,
+          capabilities.resumeSession ? session : undefined,
+        );
+        modelCostReported ||= sessionResult.modelCostReported;
+        session = sessionResult.session;
       }
 
-      const diff = await this.dependencies.sandbox.collectDiff(sandbox);
-      run.changedFiles = diff.changedFiles;
-      const artifact: Artifact = {
-        id: crypto.randomUUID(),
-        runId: run.id,
-        kind: "DIFF",
-        uri: `sandbox://${run.id}/changes.patch`,
-        digest: LocalWorktreeSandbox.digest(diff),
-        metadata: redactSensitiveData({
-          changedFiles: diff.changedFiles,
-          bytes: Buffer.byteLength(diff.patch),
-          preview: diff.patch.slice(0, 20_000),
-        }) as Record<string, unknown>,
-        createdAt: new Date().toISOString(),
-      };
-      await this.dependencies.store.addArtifact(artifact);
-      await this.event(run.id, "DiffCaptured", {
-        artifactId: artifact.id,
-        changedFiles: diff.changedFiles,
-        digest: artifact.digest,
-      });
-      await this.observeAndDecide(
-        run,
-        {
-          runId: run.id,
-          type: "DIFF_CAPTURED",
-          timestamp: new Date().toISOString(),
-          checkpoint: "diff-captured",
-          diff,
-        },
-        transitionState,
-      );
-
-      run.verificationState = "VERIFYING";
-      await this.dependencies.store.updateRun(run);
-      await this.event(run.id, "VerificationChanged", { state: "VERIFYING" });
-      const verification = await this.dependencies.verifier.verify(run, task, sandbox, diff);
-      await this.dependencies.store.addVerification(verification);
-      await this.observeAndDecide(
-        run,
-        {
-          runId: run.id,
-          type: "VERIFICATION",
-          timestamp: verification.completedAt,
-          checkpoint: `verification-${verification.state.toLowerCase()}`,
-          verification,
-        },
-        transitionState,
-      );
+      if (!verification) throw new Error("Trusted verification did not run");
       run.verificationState = verification.state;
       run.state = verification.state === "VERIFIED" ? "COMPLETED" : "FAILED";
       run.completedAt = new Date().toISOString();
       run.updatedAt = run.completedAt;
       await this.dependencies.store.updateRun(run);
-      await this.event(run.id, "VerificationChanged", {
-        state: verification.state,
-        exitCode: verification.exitCode,
-        output: verification.output,
-      });
       await this.event(run.id, "RunCompleted", {
         state: run.state,
         verificationState: run.verificationState,
+        verificationAttempts,
+        repairAttempts,
       });
       try {
         const latestSignals = await this.dependencies.runtimeSignals.latest(run.id);
@@ -415,6 +463,8 @@ export class RunService {
           agent: run.agent,
           model: run.model,
           provider: run.provider,
+          initialMode,
+          finalMode: run.executionMode,
           executionMode: run.executionMode,
           inputTokens: run.usage.input,
           outputTokens: run.usage.output,
@@ -430,12 +480,17 @@ export class RunService {
           verificationType: "command",
           verificationState: run.verificationState,
           modeTransitions: transitionState.count,
+          strictReexpansions: transitionState.strictReexpansions,
           signalSnapshots: (await this.dependencies.store.listSignalSnapshots(run.id)).length,
           ...(latestSignals ? { latestSignalSnapshotId: latestSignals.id } : {}),
           dependencyExpansion: Number(signalValues?.dependencyExpansion?.value ?? 0),
           touchedModules: Number(signalValues?.touchedModules?.value ?? 0),
           crossModuleEdges: Number(signalValues?.crossModuleEdges?.value ?? 0),
           verifierFailures: Number(signalValues?.repeatedVerifierFailures?.value ?? 0),
+          verificationAttempts,
+          repairAttempts,
+          moduleCountObserved: Number(signalValues?.touchedModules?.value ?? 0),
+          stabilizationInvalidations: Number(signalValues?.stabilizationInvalidations?.value ?? 0),
           contextExpansion: Number(signalValues?.contextExpansion?.value ?? 0),
           verifiedSuccess: run.verificationState === "VERIFIED",
           timestamp: run.completedAt,
@@ -473,6 +528,165 @@ export class RunService {
     }
   }
 
+  private async runAgentAttempt(
+    run: Run,
+    task: Task,
+    sandbox: Sandbox,
+    initialContext: string,
+    credentialReferences: string[],
+    message: string,
+    transitionState: TransitionState,
+    resumeFrom?: AgentSession,
+  ): Promise<{ session: AgentSession; modelCostReported: boolean }> {
+    const session =
+      resumeFrom?.nativeSessionId !== undefined
+        ? await this.dependencies.agent.resume(resumeFrom.nativeSessionId)
+        : await this.dependencies.agent.start({
+            run,
+            task,
+            workspacePath: sandbox.path,
+            initialContext,
+            credentialReferences,
+          });
+    await this.dependencies.agent.send(session, message);
+    let modelCostReported = false;
+    for await (const agentEvent of this.dependencies.agent.events(session)) {
+      if (this.active.get(run.id)?.cancelled) {
+        await this.dependencies.agent.cancel(session);
+        throw new Error("Run cancelled");
+      }
+      await this.event(run.id, "AgentEvent", {
+        ...agentEvent,
+        executionAttempt: run.retryCount + 1,
+      });
+      if (agentEvent.type === "usage") {
+        run.usage.input += Number(agentEvent.data.inputTokens ?? 0);
+        run.usage.output += Number(agentEvent.data.outputTokens ?? 0);
+        run.usage.cached += Number(agentEvent.data.cachedTokens ?? 0);
+        if (typeof agentEvent.data.costUsd === "number") {
+          modelCostReported = true;
+          run.cost.model += agentEvent.data.costUsd;
+          run.cost.total =
+            run.cost.model +
+            run.cost.sandbox +
+            run.cost.verification +
+            run.cost.retry +
+            run.cost.recovery;
+        }
+      }
+      if (agentEvent.type === "context_expansion") {
+        await this.event(run.id, "ContextExpanded", {
+          ...agentEvent.data,
+          executionAttempt: run.retryCount + 1,
+        });
+      }
+      if (agentEvent.type === "tool" || agentEvent.type === "context_expansion") {
+        await this.observeAndDecide(
+          run,
+          {
+            runId: run.id,
+            type: "AGENT_EVENT",
+            timestamp: agentEvent.timestamp,
+            checkpoint:
+              run.retryCount === 0
+                ? `agent-${agentEvent.type}`
+                : `verification-repair-${run.retryCount}-${agentEvent.type}`,
+            event: agentEvent,
+          },
+          transitionState,
+        );
+      }
+      if (agentEvent.type === "error") {
+        throw new Error(String(agentEvent.data.message ?? "Agent failed"));
+      }
+    }
+    return { session, modelCostReported };
+  }
+
+  private async captureCandidate(
+    run: Run,
+    sandbox: Sandbox,
+    attempt: number,
+    parentCandidateId: string | undefined,
+    transitionState: TransitionState,
+  ): Promise<Candidate> {
+    const diff = await this.dependencies.sandbox.collectDiff(sandbox);
+    run.changedFiles = diff.changedFiles;
+    run.updatedAt = new Date().toISOString();
+    await this.dependencies.store.updateRun(run);
+    const id = crypto.randomUUID();
+    const artifact: Artifact = {
+      id,
+      runId: run.id,
+      kind: "DIFF",
+      uri: `sandbox://${run.id}/candidate-${attempt}.patch`,
+      digest: LocalWorktreeSandbox.digest(diff),
+      metadata: redactSensitiveData({
+        candidateId: id,
+        attempt,
+        parentCandidateId: parentCandidateId ?? null,
+        changedFiles: diff.changedFiles,
+        bytes: Buffer.byteLength(diff.patch),
+        preview: diff.patch.slice(0, this.repairPolicy.maxDiffPreviewChars),
+      }) as Record<string, unknown>,
+      createdAt: new Date().toISOString(),
+    };
+    await this.dependencies.store.addArtifact(artifact);
+    await this.event(run.id, "DiffCaptured", {
+      artifactId: artifact.id,
+      candidateId: id,
+      parentCandidateId: parentCandidateId ?? null,
+      attempt,
+      changedFiles: diff.changedFiles,
+      digest: artifact.digest,
+    });
+    await this.observeAndDecide(
+      run,
+      {
+        runId: run.id,
+        type: "DIFF_CAPTURED",
+        timestamp: new Date().toISOString(),
+        checkpoint: attempt === 1 ? "diff-captured" : `verification-repair-${attempt - 1}-diff`,
+        diff,
+      },
+      transitionState,
+    );
+    return { id, artifact, diff, attempt };
+  }
+
+  private repairMessage(
+    task: Task,
+    verification: Verification,
+    candidate: Candidate,
+    repairAttempt: number,
+  ): string {
+    const evidence = redactSensitiveData({
+      repairAttempt,
+      verificationAttempt: verification.attempt,
+      verificationId: verification.id,
+      candidateId: candidate.id,
+      command: task.verification.command ?? null,
+      expectedFile: task.verification.expectedFile ?? null,
+      exitCode: verification.exitCode ?? null,
+      output: verification.output.slice(0, this.repairPolicy.maxVerifierOutputChars),
+      changedFiles: candidate.diff.changedFiles,
+      diffDigest: candidate.artifact.digest,
+      diffPreview: candidate.diff.patch.slice(0, this.repairPolicy.maxDiffPreviewChars),
+    });
+    return [
+      "Trusted verification repair request.",
+      "The verifier is authoritative. Repair the candidate in the existing workspace and do not claim success without another verifier pass.",
+      JSON.stringify(evidence, null, 2),
+    ].join("\n\n");
+  }
+
+  private verificationSeverity(verification: Verification): number {
+    if (verification.state === "VERIFIED") return 0;
+    if (verification.state === "QUARANTINED") return 1;
+    if (verification.state === "FAILED") return 2;
+    return 3;
+  }
+
   private async event(runId: string, type: string, data: unknown): Promise<void> {
     await this.dependencies.store.appendEvent({
       id: crypto.randomUUID(),
@@ -486,7 +700,7 @@ export class RunService {
   private async observeAndDecide(
     run: Run,
     observation: Parameters<RuntimeSignalCollector["observe"]>[0],
-    transitionState: { count: number; lastSequence?: number },
+    transitionState: TransitionState,
   ): Promise<RuntimeSignalSnapshot> {
     const snapshot = await this.dependencies.runtimeSignals.observe(observation);
     await this.dependencies.store.addSignalSnapshot(snapshot);
@@ -495,13 +709,19 @@ export class RunService {
       ...(transitionState.lastSequence !== undefined
         ? { lastTransitionSequence: transitionState.lastSequence }
         : {}),
+      ...(transitionState.lastSnapshot
+        ? { lastTransitionSnapshot: transitionState.lastSnapshot }
+        : {}),
     });
     if (decision && decision.to !== run.executionMode) {
+      const from = run.executionMode;
       const event = this.modeController.apply(run, decision);
       await this.dependencies.store.updateRun(run);
       await this.dependencies.store.appendEvent(event);
       transitionState.count += 1;
+      if (from === "STRICT") transitionState.strictReexpansions += 1;
       transitionState.lastSequence = snapshot.sequence;
+      transitionState.lastSnapshot = snapshot;
     }
     return snapshot;
   }

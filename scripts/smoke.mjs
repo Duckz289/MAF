@@ -23,13 +23,13 @@ await run("git", ["config", "user.email", "smoke@example.invalid"], repository);
 await run("git", ["config", "user.name", "Harness Smoke"], repository);
 await writeFile(path.join(repository, "README.md"), "# Smoke fixture\n");
 for (const [file, source] of Object.entries({
-  "frontend/image.ts":
-    'import { loadMedia } from "../api/media";\nexport const image = loadMedia;\n',
-  "api/media.ts":
-    'import { resolveMedia } from "../storage/resolver";\nexport const loadMedia = resolveMedia;\n',
-  "storage/resolver.ts":
-    'import { canReadMedia } from "../auth/permissions";\nexport const resolveMedia = canReadMedia;\n',
-  "auth/permissions.ts": "export const canReadMedia = (): boolean => true;\n",
+  "src/web/image.ts":
+    'import { loadMedia } from "../application/media";\nexport const image = loadMedia;\n',
+  "src/application/media.ts":
+    'import { resolveMedia } from "../infrastructure/resolver";\nexport const loadMedia = resolveMedia;\n',
+  "src/infrastructure/resolver.ts":
+    'import { canReadMedia } from "../domain/permissions";\nexport const resolveMedia = canReadMedia;\n',
+  "src/domain/permissions.ts": "export const canReadMedia = (): boolean => true;\n",
 })) {
   const target = path.join(repository, file);
   await mkdir(path.dirname(target), { recursive: true });
@@ -110,21 +110,22 @@ const waitForEvent = async (id, type) => {
 try {
   await waitForHealth();
   await verifyDashboard();
-  const pass = await create("agent-output.md", {
-    scopeStabilized: true,
-    mechanicalRemainingWork: true,
-  });
+  const pass = await create(
+    "agent-output.md",
+    undefined,
+    "Fix image rendering in web, then stabilize repeated edits",
+  );
   const fail = await create("missing-proof.txt", {
     rootCauseUncertainty: 0.9,
     crossModuleEdges: 5,
   });
-  const adaptive = await create("agent-output.md", undefined, "Fix image rendering in frontend");
+  const adaptive = await create("agent-output.md", undefined, "Fix image rendering in web");
   const [verified, quarantined, adaptiveVerified] = await Promise.all([
     waitForRun(pass.id),
     waitForRun(fail.id),
     waitForRun(adaptive.id),
   ]);
-  if (verified.verificationState !== "VERIFIED" || verified.executionMode !== "STRICT") {
+  if (verified.verificationState !== "VERIFIED" || verified.executionMode !== "GUIDED") {
     throw new Error(`Unexpected verified result: ${JSON.stringify(verified)}`);
   }
   if (

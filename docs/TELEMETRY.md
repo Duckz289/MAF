@@ -6,15 +6,16 @@ optional AI-specific export adapter. Domain code does not depend on a telemetry 
 ## Recorded dimensions
 
 - task and run identity
-- agent, model, provider, and execution mode
+- agent, model, provider, initial mode, and final mode
 - input, output, and cached tokens
 - model, sandbox, verification, retry, and recovery costs
 - latency and retry count
 - changed-file count
 - verification type and state
-- mode-transition count
+- mode-transition and `STRICT` re-expansion counts
+- verification attempts, verifier failures, and repair attempts
 - latest signal-snapshot ID, touched modules, dependency/context expansion, cross-module edges,
-  scope stabilization, mechanical-work state, and verification-failure count
+  module count, scope stabilization invalidations, and verification-failure count
 - verified-success flag
 
 The primary metric is `cost per verified success`, exposed at

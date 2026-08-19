@@ -23,6 +23,10 @@ export interface AdaptiveModePolicy {
   touchedModulesThreshold: number;
   verifierFailureThreshold: number;
   transitionCooldownObservations: number;
+  strictSoloDependencyExpansionDelta: number;
+  strictSoloCrossModuleEdgesDelta: number;
+  strictSoloTouchedModulesDelta: number;
+  strictSoloContextExpansionDelta: number;
 }
 
 export const defaultAdaptiveModePolicy: AdaptiveModePolicy = {
@@ -32,10 +36,15 @@ export const defaultAdaptiveModePolicy: AdaptiveModePolicy = {
   touchedModulesThreshold: 4,
   verifierFailureThreshold: 2,
   transitionCooldownObservations: 3,
+  strictSoloDependencyExpansionDelta: 2,
+  strictSoloCrossModuleEdgesDelta: 2,
+  strictSoloTouchedModulesDelta: 2,
+  strictSoloContextExpansionDelta: 3,
 };
 
 export interface ModeDecisionContext {
   lastTransitionSequence?: number;
+  lastTransitionSnapshot?: RuntimeSignalSnapshot;
 }
 
 export class AdaptiveModeController {
@@ -50,7 +59,6 @@ export class AdaptiveModeController {
     input: RuntimeSignals | RuntimeSignalSnapshot,
     context: ModeDecisionContext = {},
   ): ModeDecision | undefined {
-    if (current === "STRICT") return undefined;
     const snapshot =
       "runId" in input && "sequence" in input ? (input as RuntimeSignalSnapshot) : undefined;
     const signals: RuntimeSignals = snapshot ? signalValues(snapshot) : (input as RuntimeSignals);
@@ -59,6 +67,22 @@ export class AdaptiveModeController {
     const crossEdges = signals.crossModuleEdges ?? 0;
     const modules = signals.touchedModules ?? 0;
     const failures = signals.repeatedVerifierFailures ?? 0;
+    const baseline = context.lastTransitionSnapshot
+      ? signalValues(context.lastTransitionSnapshot)
+      : undefined;
+    const delta = (name: keyof RuntimeSignals, currentValue: number): number =>
+      Math.max(0, currentValue - Number(baseline?.[name] ?? 0));
+    const deltas = {
+      dependencyExpansion: delta("dependencyExpansion", expansion),
+      crossModuleEdges: delta("crossModuleEdges", crossEdges),
+      touchedModules: baseline ? delta("touchedModules", modules) : 0,
+      contextExpansion: delta("contextExpansion", signals.contextExpansion ?? 0),
+      verifierFailures: delta("repeatedVerifierFailures", failures),
+      stabilizationInvalidations: delta(
+        "stabilizationInvalidations",
+        signals.stabilizationInvalidations ?? 0,
+      ),
+    };
 
     const inCooldown =
       snapshot !== undefined &&
@@ -66,7 +90,42 @@ export class AdaptiveModeController {
       snapshot.sequence - context.lastTransitionSequence <
         this.policy.transitionCooldownObservations;
 
+    if (current === "STRICT") {
+      const uncertaintyIncreased =
+        uncertainty >= this.policy.uncertaintyThreshold &&
+        uncertainty > Number(baseline?.rootCauseUncertainty ?? 0);
+      const reexpanded =
+        deltas.dependencyExpansion > 0 ||
+        deltas.crossModuleEdges > 0 ||
+        deltas.touchedModules > 0 ||
+        deltas.contextExpansion > 0 ||
+        deltas.verifierFailures > 0 ||
+        deltas.stabilizationInvalidations > 0 ||
+        uncertaintyIncreased;
+      if (!reexpanded) return undefined;
+
+      const severe =
+        deltas.dependencyExpansion >= this.policy.strictSoloDependencyExpansionDelta ||
+        deltas.crossModuleEdges >= this.policy.strictSoloCrossModuleEdgesDelta ||
+        deltas.touchedModules >= this.policy.strictSoloTouchedModulesDelta ||
+        deltas.contextExpansion >= this.policy.strictSoloContextExpansionDelta ||
+        deltas.verifierFailures >= this.policy.verifierFailureThreshold ||
+        uncertaintyIncreased;
+      return this.decision(snapshot, {
+        to: severe ? "SOLO_NATIVE" : "GUIDED",
+        reason: severe
+          ? "Stabilized scope was invalidated by significant repository or verifier re-expansion"
+          : "Stabilized scope was invalidated by a bounded unexpected expansion",
+        evidence: this.evidence(snapshot, {
+          ...deltas,
+          uncertainty,
+          scopeStabilized: signals.scopeStabilized ?? false,
+        }),
+      });
+    }
+
     if (
+      !inCooldown &&
       current === "GUIDED" &&
       (uncertainty >= this.policy.uncertaintyThreshold ||
         expansion >= this.policy.dependencyExpansionThreshold ||
@@ -150,6 +209,7 @@ export class AdaptiveModeController {
     return {
       checkpoint: snapshot.checkpoint,
       sequence: snapshot.sequence,
+      decision: fallback,
       signals: Object.fromEntries(
         Object.entries(snapshot.signals).map(([name, signal]) => [
           name,

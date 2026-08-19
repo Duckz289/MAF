@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { moduleOwnerForFile } from "../domain/module-ownership";
 
 export class InMemoryProjectBrain implements ProjectBrain {
   private readonly records = new Map<string, KnowledgeRecord>();
@@ -73,6 +74,65 @@ const execCapture = async (command: string, args: string[], cwd: string): Promis
 
 const sourceExtensions = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
 
+const workspacePatterns = async (repositoryPath: string, files: string[]): Promise<string[]> => {
+  const patterns: string[] = [];
+  if (files.includes("package.json")) {
+    try {
+      const manifest = JSON.parse(
+        await readFile(path.join(repositoryPath, "package.json"), "utf8"),
+      ) as {
+        workspaces?: string[] | { packages?: string[] };
+      };
+      const workspaces = Array.isArray(manifest.workspaces)
+        ? manifest.workspaces
+        : (manifest.workspaces?.packages ?? []);
+      patterns.push(...workspaces);
+    } catch {
+      // An invalid manifest cannot be trusted as workspace evidence.
+    }
+  }
+  if (files.includes("pnpm-workspace.yaml")) {
+    try {
+      const yaml = await readFile(path.join(repositoryPath, "pnpm-workspace.yaml"), "utf8");
+      for (const line of yaml.split(/\r?\n/u)) {
+        const match = line.match(/^\s*-\s*['"]?([^'"#]+?)['"]?\s*$/u);
+        if (match?.[1]) patterns.push(match[1].trim());
+      }
+    } catch {
+      // Workspace hints are optional; tracked-file conventions remain available.
+    }
+  }
+  return [...new Set(patterns)];
+};
+
+const rootsForPattern = (pattern: string, files: string[]): string[] => {
+  const normalized = pattern.replaceAll("\\", "/").replace(/^\.\//u, "").replace(/\/$/u, "");
+  if (!normalized.includes("*"))
+    return files.some((file) => file.startsWith(`${normalized}/`)) ? [normalized] : [];
+  const prefix = normalized.slice(0, normalized.indexOf("*")).replace(/\/$/u, "");
+  const depth = prefix.split("/").filter(Boolean).length + 1;
+  return files
+    .filter((file) => file.startsWith(`${prefix}/`))
+    .map((file) => file.split("/").slice(0, depth).join("/"))
+    .filter(Boolean);
+};
+
+const discoverModuleRoots = async (repositoryPath: string, files: string[]): Promise<string[]> => {
+  const roots = new Set<string>();
+  for (const file of files) {
+    const normalized = file.replaceAll("\\", "/");
+    if (normalized.endsWith("/package.json")) roots.add(path.posix.dirname(normalized));
+    const segments = normalized.split("/");
+    if (["apps", "packages", "services"].includes(segments[0] ?? "") && segments[1]) {
+      roots.add(`${segments[0]}/${segments[1]}`);
+    }
+  }
+  for (const pattern of await workspacePatterns(repositoryPath, files)) {
+    for (const root of rootsForPattern(pattern, files)) roots.add(root);
+  }
+  return [...roots].sort((left, right) => left.localeCompare(right));
+};
+
 const resolveLocalImport = (
   from: string,
   specifier: string,
@@ -112,7 +172,9 @@ export class LocalRepositoryIndex implements RepositoryIndex {
     const symbols: RepositorySnapshot["symbols"] = [];
     const relations: RepositorySnapshot["relations"] = [];
     const moduleMap: Record<string, string[]> = {};
+    const moduleOwnership: Record<string, string> = {};
     const evidence: RepositorySnapshot["evidence"] = [];
+    const moduleRoots = await discoverModuleRoots(repositoryPath, files);
 
     await Promise.all(
       sourceFiles.slice(0, 500).map(async (file) => {
@@ -147,8 +209,9 @@ export class LocalRepositoryIndex implements RepositoryIndex {
             if (target) relations.push({ from: file, to: target, kind: "IMPORTS" });
           }
         });
-        const module =
-          file.includes("/") || file.includes("\\") ? (file.split(/[\\/]/u)[0] ?? "root") : "root";
+        const normalizedFile = file.replaceAll("\\", "/");
+        const module = moduleOwnerForFile(normalizedFile, moduleRoots);
+        moduleOwnership[normalizedFile] = module;
         moduleMap[module] = [...(moduleMap[module] ?? []), file];
       }),
     );
@@ -159,7 +222,16 @@ export class LocalRepositoryIndex implements RepositoryIndex {
     );
     evidence.sort((left, right) => left.uri.localeCompare(right.uri));
     for (const moduleFiles of Object.values(moduleMap)) moduleFiles.sort();
-    return { revision, files, symbols, relations, moduleMap, evidence };
+    return {
+      revision,
+      files,
+      symbols,
+      relations,
+      moduleMap,
+      moduleOwnership,
+      moduleRoots,
+      evidence,
+    };
   }
 
   async structuralSearch(

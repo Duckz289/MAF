@@ -4,7 +4,11 @@ import {
   LocalRepositoryIndex,
   OptionalCodebaseMemoryIndex,
 } from "../src/infrastructure/project-brain";
-import { createAdaptiveFixtureRepository, createFixtureRepository } from "./helpers";
+import {
+  createAdaptiveFixtureRepository,
+  createFixtureRepository,
+  createMonorepoFixtureRepository,
+} from "./helpers";
 
 describe("Project Brain", () => {
   it("rejects evidence-free facts", async () => {
@@ -69,8 +73,8 @@ describe("Project Brain", () => {
       const local = new LocalRepositoryIndex();
       const snapshot = await local.index(fixture.path, "HEAD");
       expect(snapshot.relations).toContainEqual({
-        from: "frontend/image.ts",
-        to: "api/media.ts",
+        from: "src/web/image.ts",
+        to: "src/application/media.ts",
         kind: "IMPORTS",
       });
       const optional = new OptionalCodebaseMemoryIndex(local);
@@ -78,6 +82,42 @@ describe("Project Brain", () => {
         capability: "OPTIONAL_PORT",
         active: false,
         fallbackEngine: "local-deterministic-index",
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("derives architectural src modules without fragmenting files inside a layer", async () => {
+    const fixture = await createAdaptiveFixtureRepository();
+    try {
+      const snapshot = await new LocalRepositoryIndex().index(fixture.path, "HEAD");
+      expect(Object.keys(snapshot.moduleMap)).toEqual(
+        expect.arrayContaining(["src/application", "src/domain", "src/infrastructure", "src/web"]),
+      );
+      expect(snapshot.moduleOwnership["src/application/media.ts"]).toBe("src/application");
+      expect(snapshot.moduleOwnership["src/application/controller.ts"]).toBe("src/application");
+      expect(snapshot.relations).toContainEqual({
+        from: "src/application/controller.ts",
+        to: "src/application/media.ts",
+        kind: "IMPORTS",
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("preserves apps and packages workspace boundaries", async () => {
+    const fixture = await createMonorepoFixtureRepository();
+    try {
+      const snapshot = await new LocalRepositoryIndex().index(fixture.path, "HEAD");
+      expect(snapshot.moduleRoots).toEqual(
+        expect.arrayContaining(["apps/api", "apps/web", "packages/shared"]),
+      );
+      expect(snapshot.moduleOwnership).toMatchObject({
+        "apps/web/index.ts": "apps/web",
+        "apps/api/index.ts": "apps/api",
+        "packages/shared/index.ts": "packages/shared",
       });
     } finally {
       await fixture.cleanup();

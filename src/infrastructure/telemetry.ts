@@ -21,6 +21,8 @@ export class DomainTelemetryRecorder implements TelemetrySink {
       span.setAttributes({
         "harness.task_id": sanitized.taskId,
         "harness.run_id": sanitized.runId,
+        "harness.initial_mode": sanitized.initialMode,
+        "harness.final_mode": sanitized.finalMode,
         "harness.execution_mode": sanitized.executionMode,
         "harness.verified_success": sanitized.verifiedSuccess,
         "harness.signal_snapshots": sanitized.signalSnapshots,
@@ -29,6 +31,12 @@ export class DomainTelemetryRecorder implements TelemetrySink {
         "harness.cross_module_edges": sanitized.crossModuleEdges,
         "harness.verifier_failures": sanitized.verifierFailures,
         "harness.context_expansion": sanitized.contextExpansion,
+        "harness.mode_transitions": sanitized.modeTransitions,
+        "harness.strict_reexpansions": sanitized.strictReexpansions,
+        "harness.verification_attempts": sanitized.verificationAttempts,
+        "harness.repair_attempts": sanitized.repairAttempts,
+        "harness.module_count_observed": sanitized.moduleCountObserved,
+        "harness.stabilization_invalidations": sanitized.stabilizationInvalidations,
         "harness.cost.known": sanitized.modelCost !== null,
       });
       if (sanitized.latestSignalSnapshotId)

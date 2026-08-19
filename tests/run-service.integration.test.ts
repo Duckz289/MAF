@@ -48,7 +48,7 @@ const harness = (sandboxRoot: string, agent?: AgentAdapter) => {
     telemetry,
     runtimeSignals: new EvidenceRuntimeSignalCollector(),
   });
-  return { service, telemetry };
+  return { service, telemetry, store };
 };
 
 describe("single native-agent execution", () => {
@@ -133,7 +133,7 @@ describe("single native-agent execution", () => {
     fixtures.push(fixture);
     const { service, telemetry } = harness(fixture.sandboxRoot);
     const created = await service.create({
-      prompt: "Fix image rendering in frontend",
+      prompt: "Fix image rendering in web",
       repositoryPath: fixture.path,
       verification: { expectedFile: "agent-output.md" },
     });
@@ -167,16 +167,20 @@ describe("single native-agent execution", () => {
       touchedModules: expect.any(Number),
       crossModuleEdges: expect.any(Number),
       contextExpansion: expect.any(Number),
+      verificationAttempts: 1,
+      repairAttempts: 0,
+      moduleCountObserved: expect.any(Number),
+      stabilizationInvalidations: expect.any(Number),
       verifiedSuccess: true,
     });
   });
 
-  it("moves SOLO_NATIVE to STRICT only after observed scope stabilization", async () => {
+  it("expands, stabilizes, enters STRICT, then leaves STRICT after unexpected diff scope", async () => {
     const fixture = await createAdaptiveFixtureRepository();
     fixtures.push(fixture);
-    const { service } = harness(fixture.sandboxRoot);
+    const { service, telemetry } = harness(fixture.sandboxRoot);
     const created = await service.create({
-      prompt: "Fix image rendering in frontend, then stabilize repeated edits",
+      prompt: "Fix image rendering in web, then stabilize repeated edits",
       repositoryPath: fixture.path,
       verification: { expectedFile: "agent-output.md" },
     });
@@ -185,11 +189,23 @@ describe("single native-agent execution", () => {
       (run) => run?.state === "COMPLETED" || run?.state === "FAILED",
     );
     await service.waitForIdle(created.id);
-    expect(completed?.executionMode).toBe("STRICT");
     const explanation = await service.modeExplanation(created.id);
     expect(
+      completed?.executionMode,
+      JSON.stringify({
+        timeline: explanation.timeline,
+        snapshots: (await service.signalSnapshots(created.id)).map((snapshot) => ({
+          sequence: snapshot.sequence,
+          checkpoint: snapshot.checkpoint,
+          scope: snapshot.signals.scopeStabilized?.value,
+          mechanical: snapshot.signals.mechanicalRemainingWork?.value,
+          invalidations: snapshot.signals.stabilizationInvalidations?.value,
+        })),
+      }),
+    ).toBe("GUIDED");
+    expect(
       explanation.timeline.map((transition) => `${transition.from}->${transition.to}`),
-    ).toEqual(["GUIDED->SOLO_NATIVE", "SOLO_NATIVE->STRICT"]);
+    ).toEqual(["GUIDED->SOLO_NATIVE", "SOLO_NATIVE->STRICT", "STRICT->GUIDED"]);
     const strictSnapshot = (await service.signalSnapshots(created.id)).find(
       (snapshot) => snapshot.id === explanation.timeline[1]?.signalSnapshotId,
     );
@@ -198,6 +214,93 @@ describe("single native-agent execution", () => {
       provenance: "HEURISTIC",
     });
     expect(strictSnapshot?.signals.mechanicalRemainingWork?.value).toBe(true);
+    const reexpandedSnapshot = (await service.signalSnapshots(created.id)).find(
+      (snapshot) => snapshot.id === explanation.timeline[2]?.signalSnapshotId,
+    );
+    expect(reexpandedSnapshot?.signals.scopeStabilized?.value).toBe(false);
+    expect(reexpandedSnapshot?.signals.stabilizationInvalidations?.value).toBe(1);
+    expect(
+      reexpandedSnapshot?.evidence.some((evidence) =>
+        evidence.summary.includes("Previously stabilized scope invalidated"),
+      ),
+    ).toBe(true);
+    expect(telemetry.snapshot()[0]).toMatchObject({
+      initialMode: "GUIDED",
+      finalMode: "GUIDED",
+      modeTransitions: 3,
+      strictReexpansions: 1,
+      verificationAttempts: 1,
+      repairAttempts: 0,
+      stabilizationInvalidations: 1,
+    });
+  });
+
+  it("persists two trusted failures through one bounded repair and escalates mode", async () => {
+    const fixture = await createFixtureRepository();
+    fixtures.push(fixture);
+    const { service } = harness(fixture.sandboxRoot);
+    const created = await service.create({
+      prompt: "Attempt a bounded repair that remains unverifiable",
+      repositoryPath: fixture.path,
+      verification: { expectedFile: "missing-proof.txt" },
+    });
+    const completed = await waitFor(
+      () => service.get(created.id),
+      (run) => run?.state === "COMPLETED" || run?.state === "FAILED",
+    );
+    await service.waitForIdle(created.id);
+    expect(completed?.verificationState).toBe("QUARANTINED");
+    expect(completed?.retryCount).toBe(1);
+    expect(completed?.executionMode).toBe("SOLO_NATIVE");
+    const verifications = await service.verifications(created.id);
+    expect(verifications).toHaveLength(2);
+    expect(verifications.map((verification) => verification.attempt)).toEqual([1, 2]);
+    expect(verifications.every((verification) => Boolean(verification.candidateId))).toBe(true);
+    const snapshots = await service.signalSnapshots(created.id);
+    expect(snapshots.at(-1)?.signals.repeatedVerifierFailures).toMatchObject({
+      value: 2,
+      provenance: "DETERMINISTIC",
+    });
+    const artifacts = await service.artifacts(created.id);
+    expect(artifacts).toHaveLength(2);
+    expect(artifacts[1]?.metadata).toMatchObject({
+      attempt: 2,
+      parentCandidateId: artifacts[0]?.id,
+    });
+    const events = await service.events(created.id);
+    expect(events.filter((event) => event.type === "VerificationRepairStarted")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "VerificationRepairStopped")).toHaveLength(1);
+  });
+
+  it("accepts a repaired candidate only after the trusted verifier passes", async () => {
+    const fixture = await createFixtureRepository();
+    fixtures.push(fixture);
+    const { service, telemetry } = harness(fixture.sandboxRoot);
+    const created = await service.create({
+      prompt: "Repair succeeds only after trusted evidence",
+      repositoryPath: fixture.path,
+      verification: { expectedFile: "repair-proof.txt" },
+    });
+    const completed = await waitFor(
+      () => service.get(created.id),
+      (run) => run?.state === "COMPLETED" || run?.state === "FAILED",
+    );
+    await service.waitForIdle(created.id);
+    expect(completed?.verificationState, completed?.error).toBe("VERIFIED");
+    const verifications = await service.verifications(created.id);
+    expect(verifications.map((verification) => verification.state)).toEqual([
+      "QUARANTINED",
+      "VERIFIED",
+    ]);
+    expect(completed?.changedFiles).toEqual(
+      expect.arrayContaining(["agent-output.md", "repair-proof.txt"]),
+    );
+    expect(telemetry.snapshot()[0]).toMatchObject({
+      verificationAttempts: 2,
+      repairAttempts: 1,
+      verifierFailures: 1,
+      verifiedSuccess: true,
+    });
   });
 
   it("proves the local agent receives references but not managed provider secrets", async () => {

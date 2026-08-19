@@ -62,7 +62,7 @@ describe("control API", () => {
       method: "POST",
       url: "/api/v1/runs",
       payload: {
-        prompt: "Fix image rendering in frontend",
+        prompt: "Fix image rendering in web",
         repositoryPath: fixture.path,
         verification: { expectedFile: "agent-output.md" },
       },
@@ -85,5 +85,11 @@ describe("control API", () => {
     });
     expect(signals.statusCode).toBe(200);
     expect(signals.json().length).toBeGreaterThan(3);
+    const verifications = await runtime.app.inject({
+      method: "GET",
+      url: `/api/v1/runs/${runId}/verifications`,
+    });
+    expect(verifications.statusCode).toBe(200);
+    expect(verifications.json()).toMatchObject([{ attempt: 1, state: "VERIFIED" }]);
   });
 });

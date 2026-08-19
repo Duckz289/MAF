@@ -1,4 +1,5 @@
 import path from "node:path";
+import { repositoryModuleOwner } from "../domain/module-ownership";
 import type {
   RepositorySnapshot,
   RuntimeObservation,
@@ -18,15 +19,24 @@ import type {
 export interface RuntimeSignalPolicy {
   stabilizationWindow: number;
   minimumMechanicalEdits: number;
+  maxMechanicalTargets: number;
+  maximumMechanicalUncertainty: number;
 }
 
 export const defaultRuntimeSignalPolicy: RuntimeSignalPolicy = {
   stabilizationWindow: 5,
   minimumMechanicalEdits: 2,
+  maxMechanicalTargets: 3,
+  maximumMechanicalUncertainty: 0.5,
 };
 
 interface MeaningfulActivity {
   expanded: boolean;
+  newFiles: string[];
+  newModules: string[];
+  newEdges: number;
+  targetFiles: string[];
+  verifierFailure: boolean;
   editPattern?: string;
 }
 
@@ -38,7 +48,12 @@ interface CollectorState {
   observedModules: Set<string>;
   changedFiles: Set<string>;
   expandedFiles: Set<string>;
+  stabilizationInvalidations: number;
+  stabilized: boolean;
+  stabilizedTargets: Set<string>;
+  verificationAttempts: number;
   verificationFailures: number;
+  unresolvedVerifierFailure: boolean;
   externalHints: RuntimeSignals;
   agentInferences: Partial<RuntimeSignals>;
   evidence: RuntimeSignalEvidence[];
@@ -53,11 +68,31 @@ const normalizeFile = (value: string): string =>
     .replace(/^\.\//u, "");
 
 const moduleLookup = (snapshot: RepositorySnapshot): Map<string, string> => {
-  const lookup = new Map<string, string>();
+  const lookup = new Map(
+    Object.entries(snapshot.moduleOwnership).map(([file, module]) => [normalizeFile(file), module]),
+  );
   for (const [module, files] of Object.entries(snapshot.moduleMap)) {
     for (const file of files) lookup.set(normalizeFile(file), module);
   }
   return lookup;
+};
+
+const meaningfulCrossModuleEdges = (
+  snapshot: RepositorySnapshot,
+  involved: Set<string>,
+): Set<string> => {
+  const lookup = moduleLookup(snapshot);
+  const edges = new Set<string>();
+  for (const relation of snapshot.relations) {
+    if (relation.kind !== "IMPORTS") continue;
+    const fromModule = lookup.get(normalizeFile(relation.from));
+    const toModule = lookup.get(normalizeFile(relation.to));
+    if (!fromModule || !toModule || fromModule === toModule) continue;
+    if (involved.has(fromModule) && involved.has(toModule)) {
+      edges.add(`${fromModule}->${toModule}`);
+    }
+  }
+  return edges;
 };
 
 const findRepositoryFile = (candidate: string, files: Set<string>): string | undefined => {
@@ -114,7 +149,12 @@ export class EvidenceRuntimeSignalCollector implements RuntimeSignalCollector {
         observedModules: new Set(observation.initialModules),
         changedFiles: new Set(),
         expandedFiles: new Set(),
+        stabilizationInvalidations: 0,
+        stabilized: false,
+        stabilizedTargets: new Set(),
+        verificationAttempts: 0,
         verificationFailures: 0,
+        unresolvedVerifierFailure: false,
         externalHints: structuredClone(observation.externalHints ?? {}),
         agentInferences: {},
         evidence: [],
@@ -170,6 +210,10 @@ export class EvidenceRuntimeSignalCollector implements RuntimeSignalCollector {
       .map((candidate) => findRepositoryFile(candidate, repositoryFiles))
       .filter((candidate): candidate is string => Boolean(candidate));
     const lookup = moduleLookup(state.repository);
+    const edgeCountBefore = meaningfulCrossModuleEdges(
+      state.repository,
+      state.observedModules,
+    ).size;
     const newFiles: string[] = [];
     const newModules: string[] = [];
     for (const file of files) {
@@ -189,8 +233,17 @@ export class EvidenceRuntimeSignalCollector implements RuntimeSignalCollector {
       observation.event.type === "tool" || observation.event.type === "context_expansion";
     if (meaningful) {
       const pattern = editPattern(observation.event.data, files);
-      state.meaningful.push({
-        expanded,
+      const newEdges = Math.max(
+        0,
+        meaningfulCrossModuleEdges(state.repository, state.observedModules).size - edgeCountBefore,
+      );
+      this.recordActivity(state, observation.timestamp, `agent-event:${observation.event.type}`, {
+        expanded: expanded || newEdges > 0,
+        newFiles: [...newFiles],
+        newModules: [...newModules],
+        newEdges,
+        targetFiles: pattern ? [...new Set(files)].sort() : [],
+        verifierFailure: false,
         ...(pattern ? { editPattern: pattern } : {}),
       });
     }
@@ -199,7 +252,15 @@ export class EvidenceRuntimeSignalCollector implements RuntimeSignalCollector {
         source: `agent-event:${observation.event.type}`,
         provenance: "DETERMINISTIC",
         summary: "Agent activity reached repository scope outside the previously observed set",
-        data: { files: newFiles.sort(), modules: newModules.sort() },
+        data: {
+          files: newFiles.sort(),
+          modules: newModules.sort(),
+          crossModuleEdgesDelta: Math.max(
+            0,
+            meaningfulCrossModuleEdges(state.repository, state.observedModules).size -
+              edgeCountBefore,
+          ),
+        },
         timestamp: observation.timestamp,
       });
     } else if (meaningful && files.length > 0) {
@@ -250,24 +311,47 @@ export class EvidenceRuntimeSignalCollector implements RuntimeSignalCollector {
   ): void {
     const lookup = moduleLookup(state.repository);
     const repositoryFiles = new Set(state.repository.files.map(normalizeFile));
+    const edgeCountBefore = meaningfulCrossModuleEdges(
+      state.repository,
+      state.observedModules,
+    ).size;
+    const newFiles: string[] = [];
     const newModules: string[] = [];
     for (const candidate of observation.diff.changedFiles) {
       const normalized = normalizeFile(candidate);
       state.changedFiles.add(normalized);
       const file = findRepositoryFile(normalized, repositoryFiles) ?? normalized;
+      if (!state.observedFiles.has(file)) newFiles.push(file);
       state.observedFiles.add(file);
       const module =
-        lookup.get(file) ?? (file.includes("/") ? file.split("/")[0] : "root") ?? "root";
+        lookup.get(file) ??
+        repositoryModuleOwner(file, state.repository.moduleOwnership, state.repository.moduleRoots);
       if (!state.observedModules.has(module)) newModules.push(module);
       state.observedModules.add(module);
       if (!state.initialFiles.has(file)) state.expandedFiles.add(file);
     }
-    state.meaningful.push({ expanded: newModules.length > 0 });
+    const newEdges = Math.max(
+      0,
+      meaningfulCrossModuleEdges(state.repository, state.observedModules).size - edgeCountBefore,
+    );
+    this.recordActivity(state, observation.timestamp, "git-diff", {
+      expanded: newFiles.length > 0 || newModules.length > 0 || newEdges > 0,
+      newFiles,
+      newModules,
+      newEdges,
+      targetFiles: [...new Set(observation.diff.changedFiles.map(normalizeFile))].sort(),
+      verifierFailure: false,
+    });
     this.addEvidence(state, {
       source: "git-diff",
       provenance: "DETERMINISTIC",
       summary: "Git recorded the final changed-file set",
-      data: { files: [...state.changedFiles].sort(), newModules: newModules.sort() },
+      data: {
+        files: [...state.changedFiles].sort(),
+        newFiles: newFiles.sort(),
+        newModules: newModules.sort(),
+        crossModuleEdgesDelta: newEdges,
+      },
       timestamp: observation.timestamp,
     });
   }
@@ -276,14 +360,29 @@ export class EvidenceRuntimeSignalCollector implements RuntimeSignalCollector {
     state: CollectorState,
     observation: Extract<RuntimeObservation, { type: "VERIFICATION" }>,
   ): void {
-    if (observation.verification.state !== "VERIFIED") state.verificationFailures += 1;
+    state.verificationAttempts += 1;
+    const failed = observation.verification.state !== "VERIFIED";
+    if (failed) {
+      state.verificationFailures += 1;
+      state.unresolvedVerifierFailure = true;
+      this.recordActivity(state, observation.timestamp, "verifier-history", {
+        expanded: false,
+        newFiles: [],
+        newModules: [],
+        newEdges: 0,
+        targetFiles: [],
+        verifierFailure: true,
+      });
+    } else {
+      state.unresolvedVerifierFailure = false;
+    }
     this.addEvidence(state, {
       source: "verifier-history",
       provenance: "DETERMINISTIC",
       summary: "Verification attempt recorded by the trusted verifier",
       data: {
-        attempt:
-          state.verificationFailures + (observation.verification.state === "VERIFIED" ? 1 : 0),
+        attempt: observation.verification.attempt ?? state.verificationAttempts,
+        candidateId: observation.verification.candidateId ?? null,
         state: observation.verification.state,
         exitCode: observation.verification.exitCode ?? null,
       },
@@ -301,12 +400,6 @@ export class EvidenceRuntimeSignalCollector implements RuntimeSignalCollector {
     const deterministicEvidenceIds = state.evidence
       .filter((evidence) => evidence.provenance === "DETERMINISTIC")
       .map((evidence) => evidence.id);
-    const externalEvidenceIds = state.evidence
-      .filter((evidence) => evidence.provenance === "EXTERNAL_HINT")
-      .map((evidence) => evidence.id);
-    const agentEvidenceIds = state.evidence
-      .filter((evidence) => evidence.provenance === "AGENT_INFERENCE")
-      .map((evidence) => evidence.id);
     const deterministic = <Name extends RuntimeSignalName>(
       name: Name,
       value: NonNullable<RuntimeSignals[Name]>,
@@ -320,17 +413,8 @@ export class EvidenceRuntimeSignalCollector implements RuntimeSignalCollector {
         timestamp,
       ) as never;
     };
-    const lookup = moduleLookup(state.repository);
     const involved = state.observedModules;
-    const meaningfulEdges = new Set<string>();
-    for (const relation of state.repository.relations) {
-      if (relation.kind !== "IMPORTS") continue;
-      const fromModule = lookup.get(normalizeFile(relation.from));
-      const toModule = lookup.get(normalizeFile(relation.to));
-      if (!fromModule || !toModule || fromModule === toModule) continue;
-      if (involved.has(fromModule) && involved.has(toModule))
-        meaningfulEdges.add(`${fromModule}->${toModule}`);
-    }
+    const meaningfulEdges = meaningfulCrossModuleEdges(state.repository, involved);
     const expandedModules = [...involved].filter((module) => !state.initialModules.has(module));
     deterministic("touchedModules", involved.size, "repository-observation");
     deterministic("dependencyExpansion", expandedModules.length, "initial-scope-comparison");
@@ -340,44 +424,76 @@ export class EvidenceRuntimeSignalCollector implements RuntimeSignalCollector {
     deterministic("newDependenciesDiscovered", meaningfulEdges.size, "resolved-local-import-graph");
     deterministic("repeatedVerifierFailures", state.verificationFailures, "verifier-history");
     deterministic("verificationFailureCount", state.verificationFailures, "verifier-history");
+    deterministic(
+      "stabilizationInvalidations",
+      state.stabilizationInvalidations,
+      "scope-stability-history",
+    );
 
     const recent = state.meaningful.slice(-this.policy.stabilizationWindow);
+    const recentEdits = recent.filter((activity) => activity.editPattern);
+    const boundedTargets = new Set(recent.flatMap((activity) => activity.targetFiles));
+    const expansionFree = recent.every(
+      (activity) =>
+        !activity.expanded &&
+        activity.newFiles.length === 0 &&
+        activity.newModules.length === 0 &&
+        activity.newEdges === 0,
+    );
+    const targetsBounded =
+      boundedTargets.size === 0 || boundedTargets.size <= this.policy.maxMechanicalTargets;
+    const verifierStable =
+      !state.unresolvedVerifierFailure && recent.every((activity) => !activity.verifierFailure);
     const scopeStabilized =
       recent.length === this.policy.stabilizationWindow &&
       state.observedModules.size > 0 &&
-      recent.every((activity) => !activity.expanded);
+      expansionFree &&
+      targetsBounded &&
+      verifierStable;
     const stabilizationEvidence = this.addEvidence(state, {
       source: "scope-stability-policy",
       provenance: "HEURISTIC",
       summary: scopeStabilized
-        ? "Recent meaningful activity introduced no new repository scope"
-        : "Repository scope has not met the stabilization window",
+        ? "Observed files, modules, dependency edges, and bounded edit targets are stable"
+        : "Repository scope has not met the multi-signal stabilization policy",
       data: {
         window: this.policy.stabilizationWindow,
         observed: recent.length,
         expansions: recent.filter((activity) => activity.expanded).length,
+        newFiles: recent.flatMap((activity) => activity.newFiles).length,
+        newModules: recent.flatMap((activity) => activity.newModules).length,
+        newCrossModuleEdges: recent.reduce((total, activity) => total + activity.newEdges, 0),
+        targetFileCount: boundedTargets.size,
+        targetsBounded,
+        recentVerifierFailure: !verifierStable,
+        unresolvedVerifierFailure: state.unresolvedVerifierFailure,
       },
       timestamp,
     });
-    const externalScope = state.externalHints.scopeStabilized;
-    signals.scopeStabilized =
-      recent.length < this.policy.stabilizationWindow && externalScope !== undefined
-        ? this.value(externalScope, "run-request", "EXTERNAL_HINT", externalEvidenceIds, timestamp)
-        : this.value(
-            scopeStabilized,
-            "scope-stability-policy",
-            "HEURISTIC",
-            [stabilizationEvidence.id],
-            timestamp,
-          );
+    signals.scopeStabilized = this.value(
+      scopeStabilized,
+      "scope-stability-policy",
+      "HEURISTIC",
+      [stabilizationEvidence.id],
+      timestamp,
+    );
+    state.stabilized = scopeStabilized;
+    if (scopeStabilized) state.stabilizedTargets = new Set(boundedTargets);
 
-    const stableEdits = recent
+    const stableEdits = recentEdits
       .map((activity) => activity.editPattern)
       .filter((pattern): pattern is string => Boolean(pattern));
+    const inferredUncertainty =
+      state.agentInferences.rootCauseUncertainty ?? state.externalHints.rootCauseUncertainty ?? 0;
     const mechanicalHeuristic =
       scopeStabilized &&
       stableEdits.length >= this.policy.minimumMechanicalEdits &&
-      new Set(stableEdits).size === 1;
+      new Set(stableEdits).size === 1 &&
+      boundedTargets.size > 0 &&
+      boundedTargets.size <= this.policy.maxMechanicalTargets &&
+      inferredUncertainty <= this.policy.maximumMechanicalUncertainty &&
+      state.agentInferences.mechanicalRemainingWork !== false &&
+      state.externalHints.mechanicalRemainingWork !== false;
     const mechanicalEvidence = this.addEvidence(state, {
       source: "mechanical-work-policy",
       provenance: "HEURISTIC",
@@ -388,42 +504,20 @@ export class EvidenceRuntimeSignalCollector implements RuntimeSignalCollector {
         stableEdits: stableEdits.length,
         patterns: [...new Set(stableEdits)].sort(),
         required: this.policy.minimumMechanicalEdits,
+        targetFiles: [...boundedTargets].sort(),
+        maximumTargets: this.policy.maxMechanicalTargets,
+        rootCauseUncertainty: inferredUncertainty,
+        unresolvedVerifierFailure: state.unresolvedVerifierFailure,
       },
       timestamp,
     });
-    if (mechanicalHeuristic) {
-      signals.mechanicalRemainingWork = this.value(
-        true,
-        "mechanical-work-policy",
-        "HEURISTIC",
-        [mechanicalEvidence.id],
-        timestamp,
-      );
-    } else if (state.agentInferences.mechanicalRemainingWork !== undefined) {
-      signals.mechanicalRemainingWork = this.value(
-        state.agentInferences.mechanicalRemainingWork,
-        "agent-report",
-        "AGENT_INFERENCE",
-        agentEvidenceIds,
-        timestamp,
-      );
-    } else if (state.externalHints.mechanicalRemainingWork !== undefined) {
-      signals.mechanicalRemainingWork = this.value(
-        state.externalHints.mechanicalRemainingWork,
-        "run-request",
-        "EXTERNAL_HINT",
-        externalEvidenceIds,
-        timestamp,
-      );
-    } else {
-      signals.mechanicalRemainingWork = this.value(
-        false,
-        "mechanical-work-policy",
-        "HEURISTIC",
-        [mechanicalEvidence.id],
-        timestamp,
-      );
-    }
+    signals.mechanicalRemainingWork = this.value(
+      mechanicalHeuristic,
+      "mechanical-work-policy",
+      "HEURISTIC",
+      [mechanicalEvidence.id],
+      timestamp,
+    );
 
     this.copyInferenceOrHint(state, signals, "rootCauseUncertainty", timestamp);
     this.copyInferenceOrHint(state, signals, "independentWorkstreams", timestamp);
@@ -494,6 +588,51 @@ export class EvidenceRuntimeSignalCollector implements RuntimeSignalCollector {
     const complete = { id: crypto.randomUUID(), ...evidence };
     state.evidence.push(complete);
     return complete;
+  }
+
+  private recordActivity(
+    state: CollectorState,
+    timestamp: string,
+    source: string,
+    activity: MeaningfulActivity,
+  ): void {
+    state.meaningful.push(activity);
+    const newTargets = activity.targetFiles.filter((file) => !state.stabilizedTargets.has(file));
+    if (
+      !state.stabilized ||
+      (!activity.expanded &&
+        activity.newEdges === 0 &&
+        !activity.verifierFailure &&
+        newTargets.length === 0)
+    ) {
+      return;
+    }
+    state.stabilized = false;
+    state.stabilizationInvalidations += 1;
+    const scope = [
+      ...activity.newModules.map((module) => `module ${module}`),
+      ...activity.newFiles.map((file) => `file ${file}`),
+    ];
+    this.addEvidence(state, {
+      source,
+      provenance: "DETERMINISTIC",
+      summary: activity.verifierFailure
+        ? "Previously stabilized scope invalidated by a trusted verifier failure"
+        : `Previously stabilized scope invalidated by newly observed ${
+            scope.join(", ") ||
+            newTargets.map((file) => `changed target ${file}`).join(", ") ||
+            "dependency edge"
+          }`,
+      data: {
+        newFiles: activity.newFiles,
+        newModules: activity.newModules,
+        crossModuleEdgesDelta: activity.newEdges,
+        newTargets,
+        verifierFailure: activity.verifierFailure,
+        invalidation: state.stabilizationInvalidations,
+      },
+      timestamp,
+    });
   }
 
   private requireState(runId: string): CollectorState {

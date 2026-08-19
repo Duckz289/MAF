@@ -28,8 +28,12 @@ export interface BenchmarkExecution {
   reportedCost: number | null;
   latencyMs: number;
   retryCount: number;
+  verificationAttempts: number;
+  repairAttempts: number;
+  verifierFailures: number;
   verificationResult: BenchmarkVerificationResult;
   filesChanged: string[];
+  modulesTouched: string[];
   contextExpansion: number;
   orchestrationOverheadMs: number;
 }

@@ -8,13 +8,13 @@
     {
       "strategy": "NATIVE",
       "command": "node",
-      "args": ["benchmarks/fixture-executor.mjs", "NATIVE"],
+      "args": ["--import", "tsx", "benchmarks/fixture-executor.ts", "NATIVE"],
       "cwd": "."
     },
     {
       "strategy": "MAF_ADAPTIVE",
       "command": "node",
-      "args": ["benchmarks/fixture-executor.mjs", "MAF_ADAPTIVE"],
+      "args": ["--import", "tsx", "benchmarks/fixture-executor.ts", "MAF_ADAPTIVE"],
       "cwd": "."
     }
   ]
