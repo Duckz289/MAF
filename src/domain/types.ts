@@ -37,6 +37,18 @@ export type VerificationState =
   | "CANCELLED";
 
 /**
+ * Evidence-backed trust ladder for a run's final candidate (M6A). Absent on legacy runs; PROPOSED
+ * until deterministic verification succeeds. Never a display-only value: it is derived from the
+ * quality report and (when required) an approved independent review, and gates merge eligibility.
+ */
+export type TrustState =
+  | "PROPOSED"
+  | "CORRECTNESS_VERIFIED"
+  | "QUALITY_VERIFIED"
+  | "DURABLE_VERIFIED"
+  | "MERGE_ELIGIBLE";
+
+/**
  * PAUSED means a durable RecoveryCapsule was captured for this run's failure — the workspace and
  * all evidence are preserved and the run can be explicitly resumed. It carries strictly more
  * information than a bare FAILED and is used whenever recovery evidence was successfully built.
@@ -75,6 +87,8 @@ export interface Run {
   /** The mode actually enforced on the current/next agent session, backed by evidence. */
   effectiveMode: ExecutionMode;
   verificationState: VerificationState;
+  /** Derived (M6) from verification + quality report + any required independent review. */
+  trustState?: TrustState;
   agent: string;
   model: string;
   provider: string;

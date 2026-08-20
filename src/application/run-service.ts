@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import type {
   AgentAdapter,
@@ -27,7 +28,13 @@ import {
   type BudgetCategory,
   type BudgetReservationPolicy,
 } from "../domain/budget";
-import { buildAssurancePlan, type QualityPreference } from "../domain/assurance";
+import {
+  buildAssurancePlan,
+  type AssurancePlan,
+  type QualityPreference,
+} from "../domain/assurance";
+import { deriveQualityReport, deriveTrustState, type QualityReport } from "../domain/quality";
+import { buildReviewPrompt, parseReviewVerdict, type ReviewVerdict } from "../domain/review";
 import { ProviderCircuitBreaker, ProviderCircuitOpenError } from "../domain/circuit-breaker";
 import { AdaptiveModeController, type ModeDecision } from "../domain/mode-controller";
 import {
@@ -43,7 +50,7 @@ import {
   isAutoRetryable,
   verificationSeverity,
 } from "../domain/recovery";
-import { countCrossModuleEdges, deriveRiskVector } from "../domain/risk";
+import { countCrossModuleEdges, deriveRiskVector, type RiskVector } from "../domain/risk";
 import { redactSensitiveData } from "../domain/security";
 import { extractFileCandidates, findRepositoryFile, normalizeFile } from "./file-candidates";
 import {
@@ -176,6 +183,14 @@ interface Candidate {
   artifact: Artifact;
   diff: SandboxDiff;
   attempt: number;
+  /** Risk vector + assurance plan the quality gate evaluates this candidate against (M5/M6). */
+  assessment: RiskAssessment;
+}
+
+/** The (riskVector, assurancePlan) pair assessRisk computes; the diff-stage pair is ground truth. */
+interface RiskAssessment {
+  riskVector: RiskVector;
+  assurancePlan: AssurancePlan;
 }
 
 interface ActiveRunState {
@@ -660,7 +675,13 @@ export class RunService {
       });
       // Pre-execution estimate: the only thing available before any diff exists. Refined once a
       // candidate's actual diff exists (see captureCandidate) — see the M5 design note.
-      await this.assessRisk(run, task, enrichedSnapshot, context.initialFiles, "pre-execution");
+      const preExecutionAssessment = await this.assessRisk(
+        run,
+        task,
+        enrichedSnapshot,
+        context.initialFiles,
+        "pre-execution",
+      );
 
       // The collector rejects re-initializing a run it already has state for (an invariant, not
       // an oversight — see EvidenceRuntimeSignalCollector.observe). A same-process resume shares
@@ -718,6 +739,7 @@ export class RunService {
           contextState,
           verificationAttempts + 1,
           parentCandidateId,
+          preExecutionAssessment,
         );
         verificationAttempts += 1;
         run.verificationState = "VERIFYING";
@@ -825,6 +847,27 @@ export class RunService {
       }
 
       if (!verification) throw new Error("Trusted verification did not run");
+      // M6 quality gate: after the correctness gate has spoken, evaluate the candidate's quality
+      // dimensions and derive its trust state. Only a VERIFIED candidate is assessed -- the gate
+      // distinguishes correctness from quality, it never replaces or overrides the correctness
+      // gate's verdict.
+      if (verification.state === "VERIFIED" && candidate) {
+        await this.assessQuality(
+          run,
+          task,
+          sandbox,
+          contextState,
+          candidate,
+          verification,
+          context.initialModules,
+          preExecutionAssessment,
+        );
+      } else {
+        // A candidate whose deterministic verification did not pass stays PROPOSED — no model
+        // review is consulted (let alone able to lift it), because deterministic evidence
+        // outranks model confidence.
+        run.trustState = "PROPOSED";
+      }
       run.verificationState = verification.state;
       run.state = verification.state === "VERIFIED" ? "COMPLETED" : "FAILED";
       run.completedAt = new Date().toISOString();
@@ -833,6 +876,7 @@ export class RunService {
       await this.event(run.id, "RunCompleted", {
         state: run.state,
         verificationState: run.verificationState,
+        trustState: run.trustState ?? null,
         verificationAttempts,
         repairAttempts,
       });
@@ -1449,6 +1493,7 @@ export class RunService {
     contextState: ContextState,
     attempt: number,
     parentCandidateId: string | undefined,
+    fallbackAssessment: RiskAssessment,
   ): Promise<Candidate> {
     const diff = await this.dependencies.sandbox.collectDiff(sandbox);
     run.changedFiles = diff.changedFiles;
@@ -1489,11 +1534,20 @@ export class RunService {
       diff,
       ...(grown ? { repository: contextState.snapshot } : {}),
     });
-    // Ground truth refinement: the actual changed files, now that a diff exists.
-    if (diff.changedFiles.length > 0) {
-      await this.assessRisk(run, task, contextState.snapshot, diff.changedFiles, "diff-captured");
-    }
-    return { id, artifact, diff, attempt };
+    // Ground truth refinement: the actual changed files, now that a diff exists. When the diff
+    // touches nothing there is nothing to refine from -- the pre-execution estimate stands (the
+    // quality gate still needs a vector to report against, and honest fallback beats absence).
+    const assessment =
+      diff.changedFiles.length > 0
+        ? await this.assessRisk(
+            run,
+            task,
+            contextState.snapshot,
+            diff.changedFiles,
+            "diff-captured",
+          )
+        : fallbackAssessment;
+    return { id, artifact, diff, attempt, assessment };
   }
 
   /**
@@ -1509,7 +1563,7 @@ export class RunService {
     snapshot: RepositorySnapshot,
     files: string[],
     stage: "pre-execution" | "diff-captured",
-  ): Promise<void> {
+  ): Promise<RiskAssessment> {
     const riskVector = deriveRiskVector({
       files,
       moduleOwnership: snapshot.moduleOwnership,
@@ -1528,6 +1582,292 @@ export class RunService {
       qualityPreference,
       plan: assurancePlan,
     });
+    return { riskVector, assurancePlan };
+  }
+
+  /**
+   * M6 quality gate. Derives the candidate's quality report (a per-dimension vector, never a
+   * scalar) from the trusted verification result plus the M5 risk/assurance evidence, runs an
+   * independent review if — and only if — the assurance plan requires one, and derives the
+   * candidate's trust state from exactly the evidence actually obtained. Deterministic evidence
+   * stays authoritative: a model review can never override a failed verification (it is only
+   * consulted after VERIFIED), and quality evidence is bound to this candidate's id + diff digest
+   * so a review of one candidate can never promote another.
+   */
+  private async assessQuality(
+    run: Run,
+    task: Task,
+    sandbox: Sandbox,
+    contextState: ContextState,
+    candidate: Candidate,
+    verification: Verification,
+    initialModules: string[],
+    preExecutionAssessment: RiskAssessment,
+  ): Promise<void> {
+    const assessment = candidate.assessment;
+    const report: QualityReport = deriveQualityReport({
+      verificationState: verification.state,
+      verificationCommand: task.verification.command ?? null,
+      verificationExitCode: verification.exitCode,
+      assurancePlan: assessment.assurancePlan,
+      preExecutionRisk: preExecutionAssessment.riskVector,
+      diffRisk: assessment.riskVector,
+      changedFiles: candidate.diff.changedFiles,
+      initialModules,
+      moduleOwnership: contextState.snapshot.moduleOwnership,
+    });
+    // The report is derived before any reviewer session starts: if a gated dimension already caps
+    // promotion at CORRECTNESS_VERIFIED, no verdict — approved or not — can change the outcome, so
+    // the review spend would be dead weight. Skip it and record why.
+    let review: { verdict: ReviewVerdict; reviewerSessionId: string } | undefined;
+    let reviewSkipped: string | undefined;
+    if (assessment.assurancePlan.required.includes("INDEPENDENT_REVIEW")) {
+      if (
+        deriveTrustState(verification.state, report, assessment.assurancePlan, true) ===
+        "CORRECTNESS_VERIFIED"
+      ) {
+        reviewSkipped =
+          "a gated quality dimension is not PASS, so no verdict can raise the trust state above CORRECTNESS_VERIFIED";
+      } else {
+        review = await this.runIndependentReview(run, task, sandbox, candidate, assessment);
+      }
+    }
+    const trustState = deriveTrustState(
+      verification.state,
+      report,
+      assessment.assurancePlan,
+      review?.verdict.status === "APPROVED",
+    );
+    run.trustState = trustState;
+    run.updatedAt = new Date().toISOString();
+    await this.dependencies.store.updateRun(run);
+    await this.event(run.id, "QualityAssessed", {
+      candidateId: candidate.id,
+      diffDigest: candidate.artifact.digest,
+      report,
+      trustState,
+      ...(review
+        ? {
+            review: {
+              status: review.verdict.status,
+              reasons: review.verdict.reasons,
+              reviewerSessionId: review.reviewerSessionId,
+              candidateId: candidate.id,
+              diffDigest: candidate.artifact.digest,
+            },
+          }
+        : {}),
+      ...(reviewSkipped ? { reviewSkipped } : {}),
+    });
+  }
+
+  /**
+   * M6C independent review: a single fresh-context reviewer session (never a resume of the author's
+   * session, never given the author's context or reasoning) whose verdict is parsed against a
+   * bounded structured contract bound to the exact candidate under review. The reviewer's output is
+   * evidence, not authority: a malformed/misdirected verdict is INVALID, and an INVALID or REJECTED
+   * verdict simply withholds promotion. Exactly one attempt — no unbounded review loops. A failure
+   * to run the reviewer at all is honestly reported (INVALID + reason) rather than swallowed.
+   */
+  private async runIndependentReview(
+    run: Run,
+    task: Task,
+    sandbox: Sandbox,
+    candidate: Candidate,
+    assessment: RiskAssessment,
+  ): Promise<{ verdict: ReviewVerdict; reviewerSessionId: string }> {
+    const verdictFileName = "independent-review-verdict.json";
+    const maxChars = this.repairPolicy.maxDiffPreviewChars;
+    const fullPatch = candidate.diff.patch;
+    const diffTruncated = fullPatch.length > maxChars;
+    const prompt = buildReviewPrompt({
+      requirements: task.prompt,
+      candidateId: candidate.id,
+      diffDigest: candidate.artifact.digest ?? "",
+      diffPatch: diffTruncated
+        ? `${fullPatch.slice(0, maxChars)}\n[TRUNCATED: the diff above was cut to ${maxChars} characters for this review, but the diffDigest you must echo covers the FULL diff. If the cut-off portion could affect your verdict, reject.]`
+        : fullPatch,
+      riskVector: assessment.riskVector,
+      assurancePlan: assessment.assurancePlan,
+      verdictFileName,
+    });
+    await this.event(run.id, "IndependentReviewRequested", {
+      candidateId: candidate.id,
+      diffDigest: candidate.artifact.digest,
+      reason: assessment.assurancePlan.reasons.INDEPENDENT_REVIEW,
+      ...(diffTruncated ? { diffTruncated: true } : {}),
+    });
+    try {
+      const { verdict, reviewerSessionId } = await this.runReviewerSession(
+        run,
+        task,
+        sandbox,
+        prompt,
+        verdictFileName,
+        candidate,
+      );
+      await this.event(run.id, "IndependentReviewCompleted", {
+        candidateId: candidate.id,
+        diffDigest: candidate.artifact.digest,
+        status: verdict.status,
+        reasons: verdict.reasons,
+        reviewerSessionId,
+        provenance: "MODEL_REVIEW",
+      });
+      return { verdict, reviewerSessionId };
+    } catch (error) {
+      // A cancellation is not a reviewer failure: rethrow so it propagates to the outer handler
+      // and the run stays CANCELLED instead of being resurrected as COMPLETED below.
+      if (this.active.get(run.id)?.cancelled) throw error;
+      const reason = error instanceof Error ? error.message : String(error);
+      const verdict: ReviewVerdict = {
+        status: "INVALID",
+        reasons: [`reviewer session failed: ${reason}`],
+      };
+      await this.event(run.id, "IndependentReviewCompleted", {
+        candidateId: candidate.id,
+        diffDigest: candidate.artifact.digest,
+        status: verdict.status,
+        reasons: verdict.reasons,
+        provenance: "REVIEWER_SESSION_FAILED",
+      });
+      return { verdict, reviewerSessionId: "none" };
+    }
+  }
+
+  /**
+   * Runs the one bounded reviewer session and returns its parsed verdict. Deliberately simpler
+   * than the execution path: no policy enforcement, no graph growth, no signal observation — the
+   * reviewer only reads. Cost accounting still applies (its usage lands in run.usage, its reported
+   * cost in run.cost.model), and like verification itself the review is never skipped for budget
+   * reasons — mandatory trust must not be silently weakened by budget pressure (see M4C).
+   */
+  private async runReviewerSession(
+    run: Run,
+    task: Task,
+    sandbox: Sandbox,
+    prompt: string,
+    verdictFileName: string,
+    candidate: Candidate,
+  ): Promise<{ verdict: ReviewVerdict; reviewerSessionId: string }> {
+    if (!this.circuitBreaker.canAttempt(run.provider)) {
+      throw new ProviderCircuitOpenError(
+        `Provider circuit is open for ${run.provider}: cannot run independent review`,
+      );
+    }
+    if (this.circuitBreaker.state(run.provider) === "HALF_OPEN") {
+      this.circuitBreaker.beginAttempt(run.provider);
+    }
+    try {
+      const result = await this.consumeReviewerSession(
+        run,
+        task,
+        sandbox,
+        prompt,
+        verdictFileName,
+        candidate,
+      );
+      this.circuitBreaker.recordOutcome(run.provider, true);
+      return result;
+    } catch (error) {
+      if (error instanceof ProviderCircuitOpenError) throw error;
+      const classification = classifyFailure(error, {
+        agentReported: error instanceof AgentReportedFailure,
+      });
+      if (providerRelatedClassifications.has(classification)) {
+        this.circuitBreaker.recordOutcome(run.provider, false);
+      } else {
+        this.circuitBreaker.releaseProbe(run.provider);
+      }
+      throw error;
+    }
+  }
+
+  private async consumeReviewerSession(
+    run: Run,
+    task: Task,
+    sandbox: Sandbox,
+    prompt: string,
+    verdictFileName: string,
+    candidate: Candidate,
+  ): Promise<{ verdict: ReviewVerdict; reviewerSessionId: string }> {
+    const session = await this.dependencies.agent.start({
+      run,
+      // The reviewer sees the task's requirements but NOT the implementing agent's built context
+      // or credential references — a fresh-context review, uncontaminated by the author's framing.
+      task,
+      workspacePath: sandbox.path,
+      initialContext:
+        "You are an independent reviewer session. Follow the instructions in the message exactly.",
+      credentialReferences: [],
+    });
+    await this.dependencies.agent.send(session, prompt);
+    let raw: string | undefined;
+    try {
+      for await (const agentEvent of this.dependencies.agent.events(session)) {
+        if (this.active.get(run.id)?.cancelled) {
+          await this.dependencies.agent.cancel(session);
+          throw new Error("Run cancelled during independent review");
+        }
+        if (agentEvent.type === "usage") {
+          run.usage.input += Number(agentEvent.data.inputTokens ?? 0);
+          run.usage.output += Number(agentEvent.data.outputTokens ?? 0);
+          run.usage.cached += Number(agentEvent.data.cachedTokens ?? 0);
+          const sanitizedCost = sanitizeReportedCost(agentEvent.data.costUsd);
+          if (sanitizedCost !== null) {
+            run.cost.model += sanitizedCost;
+            run.cost.total =
+              run.cost.model +
+              run.cost.sandbox +
+              run.cost.verification +
+              run.cost.retry +
+              run.cost.recovery;
+          }
+        }
+        if (agentEvent.type === "error") {
+          throw new AgentReportedFailure(String(agentEvent.data.message ?? "Reviewer failed"));
+        }
+      }
+      raw = await readFile(path.join(sandbox.path, verdictFileName), "utf8").catch(() => undefined);
+      // Tamper check: the reviewer had write access to the sandbox, and "do not modify any other
+      // file" was only prose. Remove the verdict file itself (its content is already read), then
+      // re-collect the diff: if anything else moved, the digest no longer matches the candidate
+      // under review and the verdict is INVALID — the reviewed/verified diff and the retained
+      // workspace must not silently diverge.
+      await rm(path.join(sandbox.path, verdictFileName), { force: true });
+      const postReviewDiff = await this.dependencies.sandbox.collectDiff(sandbox);
+      const postDigest = LocalWorktreeSandbox.digest(postReviewDiff);
+      if (postDigest !== candidate.artifact.digest) {
+        const verdict: ReviewVerdict = {
+          status: "INVALID",
+          reasons: [
+            "workspace changed during independent review: the post-review diff digest does not match the candidate under review",
+          ],
+        };
+        await this.event(run.id, "IndependentReviewCompleted", {
+          candidateId: candidate.id,
+          diffDigest: candidate.artifact.digest,
+          status: verdict.status,
+          reasons: verdict.reasons,
+          reviewerSessionId: session.id ?? "unknown",
+          provenance: "MODEL_REVIEW",
+        });
+        return { verdict, reviewerSessionId: session.id ?? "unknown" };
+      }
+    } finally {
+      const current = this.active.get(run.id);
+      if (current) {
+        current.sessionActive = false;
+        current.session = undefined;
+      }
+    }
+    return {
+      verdict: parseReviewVerdict(raw, {
+        candidateId: candidate.id,
+        diffDigest: candidate.artifact.digest ?? "",
+      }),
+      reviewerSessionId: session.id ?? "unknown",
+    };
   }
 
   /**

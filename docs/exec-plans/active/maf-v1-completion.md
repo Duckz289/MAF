@@ -8,7 +8,7 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 - Start branch: `adaptive-harness/runtime-signals-v0.1` at `357ab60` (clean tree).
 - Baseline validation (2026-08-19): `format:check`, `lint`, `typecheck`, `test` (49 passing),
   `build` (server + UI), `compose:check`, `smoke` — all PASS.
-- Current milestone: M6 — Quality Governance.
+- Current milestone: M7 — Architecture Governance and Technical Debt.
 
 ## Confirmed repository facts
 
@@ -34,8 +34,8 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 | M2 | Scalable incremental project graph | DONE (VERIFIED) | 5cd71ed |
 | M3 | Recovery plane (3A–3D) | DONE (VERIFIED) | 937dede |
 | M4 | Budget authority (4A–4E) | DONE (VERIFIED) | 0994fa7 |
-| M5 | Task risk profiler + assurance planner | DONE (VERIFIED) | (pending local commit) |
-| M6 | Quality governance (6A–6B) | NOT STARTED | |
+| M5 | Task risk profiler + assurance planner | DONE (VERIFIED) | cea4114 |
+| M6 | Quality governance (6A–6G) | DONE (VERIFIED) | (pending local commit) |
 | M7 | Architecture governance + debt delta | NOT STARTED | |
 | M8 | Security assurance (8A–8B) | NOT STARTED | |
 | M9 | Performance & runtime assurance | NOT STARTED | |
@@ -494,6 +494,119 @@ security/performance/architecture verifiers the plan calls for are M7–M9's job
      and added one asserting the `HIGH`-only behavior explicitly, plus a dedicated
      `OperationalSensitivity`-drives-`RESILIENCE` test for finding 2.
 - Re-validated after fixes: `typecheck`, `test` (141 passing), `format:check`, `lint`, `build`,
+  `compose:check`, `smoke` — all PASS.
+
+## M6 design (Quality Governance)
+
+Starting point: M5 left the assurance plan as inspectable evidence only — "wiring the plan into
+actual verification gates is explicitly M6–M10's job". M6 is the first milestone that consults the
+plan. Scope: quality vector + trust ladder + bounded independent review (M6A–M6F) plus
+qualityPreference threading (M6G, delivered structurally in M5 via `Task.qualityPreference` and
+the plan rule table — FAST/HIGH widen/narrow which checks the plan requires; they never bypass
+CORRECTNESS or the HIGH-security+CRITICAL review rule).
+
+1. `src/domain/quality.ts` (pure): `QualityCheckState` (`PASS`/`WARN`/`FAIL`/`UNKNOWN`/
+   `NOT_REQUIRED`), `QualityProvenance` (`DETERMINISTIC`/`PENDING_CHECKER`), the eight
+   `QualityDimension`s, and `deriveQualityReport(input)` → a `QualityReport` vector where every
+   dimension always carries state + evidence + provenance — never collapsed to a scalar. Correctness
+   is deterministic from the trusted verification state; Architecture is a deterministic scope-creep
+   detector (diff-captured risk vs the pre-execution estimate); Maintainability is files touched
+   outside the pre-execution scoped modules; TestQuality is source-without-test in the diff.
+   Security/Performance/Resilience are honestly `UNKNOWN`/`PENDING_CHECKER` when plan-required
+   (their checkers are M8/M9/M10); DebtDelta reuses M5's DebtRisk evidence (honest `UNKNOWN` until
+   M7A).
+2. `deriveTrustState(verificationState, report, plan, reviewApproved)` implements the M6A ladder:
+   not-VERIFIED → `PROPOSED` regardless of anything a model says; a gated dimension that is not
+   exactly PASS → `CORRECTNESS_VERIFIED`; review required but not approved → `QUALITY_VERIFIED`;
+   otherwise `MERGE_ELIGIBLE`. `DURABLE_VERIFIED` is in the type but unreachable until M10.
+3. Gating decision (explicit): gated dimensions are only those with a checker that exists today —
+   Correctness and Architecture. Security/Performance/Resilience are reported (UNKNOWN, never PASS)
+   but do not gate until their milestone checkers land: an unbuilt checker must neither deadlock
+   `MERGE_ELIGIBLE` for every security-adjacent change for three milestones nor silently pass
+   anything. When each checker lands, its dimension joins `gatedDimensions` and gating activates
+   with no other change.
+4. `src/domain/review.ts` (pure): `buildReviewPrompt` (requirements, bounded diff preview, verdict
+   file contract, explicit denial of author-side contamination such as the author's confidence) and
+   `parseReviewVerdict(raw, {candidateId, diffDigest})` — malformed JSON, wrong shape, or a verdict
+   echoing a different candidateId/diffDigest is `INVALID`, never a promotion.
+5. `RunService.assessQuality` runs after final diff capture, driven by the diff-captured assessment
+   (ground truth, not the pre-execution estimate). If that plan requires `INDEPENDENT_REVIEW`, it
+   starts one fresh-context reviewer session (no credentials, bounded single attempt, gated by M4's
+   provider circuit breaker) whose verdict file is written after the candidate diff was captured, so
+   the verdict itself never contaminates the diff under review. Reviewer usage/cost is accounted to
+   the run. Verdict + report + trust state are emitted as `IndependentReviewRequested`/
+   `IndependentReviewCompleted`/`QualityAssessed` events; `RunCompleted` carries `trustState`.
+   A non-VERIFIED candidate never reaches quality assessment at all: it stays `PROPOSED` and no
+   model review is consulted.
+
+## M6 validation log
+
+- `tests/quality.test.ts` (unit, pure): report always contains all eight dimensions with evidence +
+  provenance; UNKNOWN-not-PASS for required-but-checkerless Security (M8 evidence text) and
+  Resilience; NOT_REQUIRED carries the plan's reason; Correctness FAIL on non-VERIFIED; Architecture
+  WARN on grown footprint / PASS within estimate; TestQuality WARN/PASS; DebtDelta UNKNOWN reusing
+  DebtRisk evidence; Maintainability WARN out-of-scope. Trust ladder: PROPOSED despite approved
+  review when not VERIFIED; MERGE_ELIGIBLE low-risk; UNKNOWN-without-gating reaches MERGE_ELIGIBLE
+  with approval; WARN caps at CORRECTNESS_VERIFIED; QUALITY_VERIFIED when review required but not
+  approved; MERGE_ELIGIBLE only on approval; DURABLE_VERIFIED never returned. Fixture sanity tests
+  pin the HIGH-security + CRITICAL plan semantics.
+- `tests/review.test.ts` (unit, pure): prompt binds candidateId/diffDigest, contains requirements/
+  diff/verdict contract and the contamination denial; parse: APPROVED with echo, REJECTED, INVALID
+  for undefined/malformed/wrong-shape/wrong-candidateId/wrong-diffDigest; non-string reasons → [].
+- `tests/quality-governance.integration.test.ts` (8 tests, real NativeCliAdapter + sandbox):
+  low-risk verified candidate → MERGE_ELIGIBLE with full vector, no review, DebtDelta UNKNOWN;
+  verification failure → PROPOSED with no `QualityAssessed`/`IndependentReviewRequested` events;
+  HIGH-security (fixture agent genuinely edits three auth files, so the diff-captured assessment is
+  the ground-truth driver) + CRITICAL → review requested; approve → MERGE_ELIGIBLE with Security
+  UNKNOWN/PENDING_CHECKER and an identity-bound verdict; reject/malformed/wrong-candidate/session-
+  failure → QUALITY_VERIFIED; TestQuality WARN never blocks.
+- Full suite after implementation: `format:check`, `lint`, `typecheck`, `test` (178 passing),
+  `build`, `compose:check`, `smoke` — all PASS.
+- Architecture-WARN promotion-capping is covered at unit level only: the fixture diff edits files
+  inside the already-scoped auth module, so the integration fixture cannot grow cross-module
+  coupling without inventing a scenario the harness never runs. Unit tests
+  (`quality.test.ts` "caps at CORRECTNESS_VERIFIED") cover the gate directly.
+- Fresh-context review (independent subagent, diff-only plus full-repo read access, no primed
+  conclusion; it independently executed the pure functions with crafted inputs and ran the test
+  suite) confirmed the core contract — ladder precedence, candidate/digest binding, deterministic-
+  over-model precedence, UNKNOWN honesty, single bounded review attempt, circuit-breaker gating —
+  and found 3 MATERIAL and 8 minor issues. MATERIAL, all fixed before commit:
+  1. **Cancel during independent review resurrected the run as COMPLETED/VERIFIED.** The catch in
+     `runIndependentReview` swallowed the cancellation error thrown by the reviewer event loop and
+     converted it to an INVALID verdict; execution then fell through to the unconditional
+     `run.state = "COMPLETED"`, overwriting the CANCELLED state `cancel()` had already persisted.
+     Pre-M6 the window between final verification and completion was microseconds; the reviewer
+     session made it minutes wide. Fixed: the catch rethrows when `active.get(run.id)?.cancelled`,
+     so cancellation propagates to the outer handler and the run stays CANCELLED.
+  2. **The reviewer approved a digest of a diff it never fully saw.** The patch was sliced to
+     `maxDiffPreviewChars` (12k) with no truncation marker, so an APPROVED verdict echoed the
+     sha256 of the FULL patch while the reviewer examined only the first 12k chars — routine
+     real-world changes get merge eligibility signed off on partial evidence with no signal
+     anywhere. Fixed: the truncated prompt now ends with an explicit `[TRUNCATED: ...]` marker
+     instructing the reviewer to reject if the cut-off portion could affect the verdict, and
+     `IndependentReviewRequested` carries `diffTruncated: true`.
+  3. **Reviewer sandbox tampering went undetected.** The reviewer's only write constraint was
+     prose; nothing re-checked the workspace after the session, so a buggy or adversarial reviewer
+     could rewrite any file after the candidate diff was captured — and a VERIFIED run's sandbox is
+     retained, so the tampered state is what a human would later inspect. Fixed: after the verdict
+     file is read it is deleted and the diff re-collected; a digest mismatch with the candidate
+     under review makes the verdict INVALID ("workspace changed during independent review") and
+     promotion is withheld. Proven by a new integration test (`review verdict: tamper` fixture
+     marker: a well-formed APPROVED verdict plus a post-capture file edit → INVALID +
+     QUALITY_VERIFIED).
+  Minor fixes in the same pass: (4) a verdict with missing/empty/non-string[] `reasons` is now
+  INVALID (an unjustified approval is not a valid verdict) — previously it was accepted as APPROVED
+  with `reasons: []`; (5) the test that overclaimed this behavior now asserts INVALID; (6) the
+  quality report is now derived BEFORE the reviewer session starts, and the review is skipped with
+  a recorded `reviewSkipped` reason when a gated dimension already caps promotion at
+  CORRECTNESS_VERIFIED — no more review spend that cannot affect the outcome; (7) a failed reviewer
+  session's `IndependentReviewCompleted` now carries provenance REVIEWER_SESSION_FAILED, not
+  MODEL_REVIEW (no model was consulted); (8) Maintainability now discloses changed files with no
+  module ownership evidence (new files) in its evidence rather than silently counting them
+  in-scope. Not fixed, judged acceptable as-is: reviewer mode-selection lives in the fixture
+  (test infra only); the reviewer session is not policy-enforced (it only reads); TestQuality
+  counts any test file in the diff (informational, ungated).
+- Re-validated after fixes: `format:check`, `lint`, `typecheck`, `test` (179 passing), `build`,
   `compose:check`, `smoke` — all PASS.
 
 ## Blockers

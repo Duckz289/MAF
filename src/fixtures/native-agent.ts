@@ -48,6 +48,68 @@ let forgedAckSent = false;
 
 const runTask = async (input: FixtureInput): Promise<void> => {
   currentPrompt = input.task.prompt;
+  // M6C independent-review mode: when the harness message is the reviewer prompt, act as a
+  // bounded reviewer instead of the implementing agent. The verdict deliberately echoes the
+  // candidateId/diffDigest extracted from the prompt so the candidate-binding contract is
+  // exercised; the task.prompt markers let tests drive approve/reject/malformed/wrong-candidate
+  // and reviewer-session-failure outcomes.
+  if (/independent reviewer/iu.test(input.message)) {
+    const candidateId = input.message.match(/candidateId: (\S+)/u)?.[1] ?? "unknown-candidate";
+    const diffDigest = input.message.match(/diffDigest: (\S+)/u)?.[1] ?? "unknown-digest";
+    const verdictFile =
+      input.message.match(/named "([^"]+)"/u)?.[1] ?? "independent-review-verdict.json";
+    if (/review verdict: fail/iu.test(input.task.prompt)) {
+      emit("error", { message: "Reviewer session crashed before writing a verdict" });
+      process.exitCode = 1;
+      return;
+    }
+    if (/review verdict: tamper/iu.test(input.task.prompt)) {
+      // Writes a well-formed verdict but also modifies a workspace file after the candidate diff
+      // was captured — the tampering scenario the harness must detect.
+      const output = path.resolve("agent-output.md");
+      const existing = await readFile(output, "utf8").catch(() => undefined);
+      if (existing !== undefined) {
+        await writeFile(output, `${existing}\n// tampered by reviewer\n`, "utf8");
+      }
+      await writeFile(
+        path.resolve(verdictFile),
+        JSON.stringify({ candidateId, diffDigest, approved: true, reasons: ["Approving."] }),
+        "utf8",
+      );
+    } else if (/review verdict: malformed/iu.test(input.task.prompt)) {
+      await writeFile(path.resolve(verdictFile), "{not valid json", "utf8");
+    } else if (/review verdict: wrong candidate/iu.test(input.task.prompt)) {
+      await writeFile(
+        path.resolve(verdictFile),
+        JSON.stringify({
+          candidateId: "a-different-candidate-id",
+          diffDigest,
+          approved: true,
+          reasons: ["verdict deliberately targeting the wrong candidate"],
+        }),
+        "utf8",
+      );
+    } else {
+      const approved = !/review verdict: reject/iu.test(input.task.prompt);
+      await writeFile(
+        path.resolve(verdictFile),
+        JSON.stringify({
+          candidateId,
+          diffDigest,
+          approved,
+          reasons: [
+            approved
+              ? "Fixture reviewer approves: the diff matches the requirements."
+              : "Fixture reviewer rejects: the diff does not satisfy the requirements.",
+          ],
+        }),
+        "utf8",
+      );
+    }
+    emit("usage", { inputTokens: Math.ceil(input.message.length / 4), outputTokens: 24 });
+    emit("complete", { changedFiles: [verdictFile] });
+    return;
+  }
   // Recovery-plane probes: a persistent marker file (survives across process restarts in the
   // same preserved workspace, unlike in-memory state) lets these simulate "fails once, then
   // succeeds on retry/resume" without any harness-side test hook.
@@ -134,6 +196,25 @@ const runTask = async (input: FixtureInput): Promise<void> => {
       credentialReferences: input.credentialReferences,
     });
   }
+  // M6 integration scenario: when asked to harden the auth surface, actually edit the three
+  // security-sensitive files so the ground-truth diff (not just the pre-execution estimate)
+  // carries HIGH SecuritySensitivity — which is what drives the independent-review requirement.
+  const authSurfacePaths = [
+    "src/domain/auth-service.ts",
+    "src/domain/auth-token.ts",
+    "src/domain/session-store.ts",
+  ];
+  const changedFiles = ["agent-output.md"];
+  if (/harden the auth/iu.test(input.task.prompt)) {
+    for (const authPath of authSurfacePaths) {
+      const absolute = path.resolve(authPath);
+      const existing = await readFile(absolute, "utf8").catch(() => undefined);
+      if (existing === undefined) continue;
+      await writeFile(absolute, `${existing}\n// hardened by fixture agent\n`, "utf8");
+      emit("tool", { tool: "edit_file", operation: "edit", path: authPath });
+      changedFiles.push(authPath);
+    }
+  }
   const content = [
     "# Native agent fixture output",
     "",
@@ -165,7 +246,7 @@ const runTask = async (input: FixtureInput): Promise<void> => {
     cachedTokens: 0,
     ...(reportedCostMatch ? { costUsd: Number(reportedCostMatch[1]) } : {}),
   });
-  emit("complete", { changedFiles: ["agent-output.md"] });
+  emit("complete", { changedFiles });
 };
 
 lines.on("line", (line) => {

@@ -21,6 +21,9 @@ export type RiskDimension =
 export type RiskLevel = "LOW" | "MEDIUM" | "HIGH";
 export type RiskProvenance = "DETERMINISTIC" | "HEURISTIC" | "INSUFFICIENT_EVIDENCE";
 
+/** Ordinal comparison for RiskLevel — lets callers detect an increase/decrease, not just equality. */
+export const riskLevelRank: Record<RiskLevel, number> = { LOW: 0, MEDIUM: 1, HIGH: 2 };
+
 export interface RiskValue {
   level: RiskLevel;
   provenance: RiskProvenance;
