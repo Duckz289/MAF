@@ -35,7 +35,7 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 | M3 | Recovery plane (3A–3D) | DONE (VERIFIED) | 937dede |
 | M4 | Budget authority (4A–4E) | DONE (VERIFIED) | 0994fa7 |
 | M5 | Task risk profiler + assurance planner | DONE (VERIFIED) | cea4114 |
-| M6 | Quality governance (6A–6G) | DONE (VERIFIED) | (pending local commit) |
+| M6 | Quality governance (6A–6G) | DONE (VERIFIED) | f86ef1a |
 | M7 | Architecture governance + debt delta | NOT STARTED | |
 | M8 | Security assurance (8A–8B) | NOT STARTED | |
 | M9 | Performance & runtime assurance | NOT STARTED | |
