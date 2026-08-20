@@ -11,7 +11,7 @@ import { NativeCliAdapter } from "../src/infrastructure/native-cli-adapter";
 import { InMemoryProjectBrain, LocalRepositoryIndex } from "../src/infrastructure/project-brain";
 import { DomainTelemetryRecorder } from "../src/infrastructure/telemetry";
 import { CommandVerifier } from "../src/infrastructure/verifier";
-import type { AgentAdapter } from "../src/domain/ports";
+import type { AgentAdapter, VerifierPort } from "../src/domain/ports";
 import {
   createAdaptiveFixtureRepository,
   createFixtureRepository,
@@ -24,7 +24,7 @@ afterEach(async () => {
   await Promise.all(fixtures.splice(0).map((fixture) => fixture.cleanup()));
 });
 
-const harness = (sandboxRoot: string, agent?: AgentAdapter) => {
+const harness = (sandboxRoot: string, agent?: AgentAdapter, verifier?: VerifierPort) => {
   const store = new InMemoryRunStore();
   const brain = new InMemoryProjectBrain();
   const telemetry = new DomainTelemetryRecorder();
@@ -42,7 +42,7 @@ const harness = (sandboxRoot: string, agent?: AgentAdapter) => {
         capabilities: { livePolicyUpdate: true },
       }),
     sandbox: new LocalWorktreeSandbox(sandboxRoot, "none"),
-    verifier: new CommandVerifier(),
+    verifier: verifier ?? new CommandVerifier(),
     repositoryIndex: new LocalRepositoryIndex(),
     projectBrain: brain,
     contextBuilder: new GuidedContextBuilder(brain),
@@ -302,6 +302,101 @@ describe("single native-agent execution", () => {
       verifierFailures: 1,
       verifiedSuccess: true,
     });
+  });
+
+  it("redacts trusted-verifier output before persistence and API-facing retrieval", async () => {
+    const fixture = await createFixtureRepository();
+    fixtures.push(fixture);
+    const verifierOutput = [
+      "-----BEGIN ENCRYPTED PRIVATE KEY-----",
+      "VERIFIER-PERSISTED-PRIVATE-KEY-BODY",
+      "-----END ENCRYPTED PRIVATE KEY-----",
+      "PASSWORD=hunter2hunter2 # verifier echoed environment",
+    ].join("\n");
+    const verifier: VerifierPort = {
+      verify: async (run) => {
+        const now = new Date().toISOString();
+        return {
+          id: crypto.randomUUID(),
+          runId: run.id,
+          type: "probe",
+          state: "VERIFIED",
+          exitCode: 0,
+          output: verifierOutput,
+          startedAt: now,
+          completedAt: now,
+        };
+      },
+      cancel: async () => {},
+    };
+    const { service } = harness(fixture.sandboxRoot, undefined, verifier);
+    const created = await service.create({
+      prompt: "Write the fixture artifact",
+      repositoryPath: fixture.path,
+      verification: { expectedFile: "agent-output.md" },
+    });
+    await service.waitForIdle(created.id);
+
+    const exposed = JSON.stringify({
+      verifications: await service.verifications(created.id),
+      events: await service.events(created.id),
+    });
+    expect(exposed).not.toContain("VERIFIER-PERSISTED-PRIVATE-KEY-BODY");
+    expect(exposed).not.toContain("hunter2hunter2");
+    expect(exposed).not.toContain("BEGIN ENCRYPTED PRIVATE KEY");
+    expect(exposed).toContain("REDACTED PRIVATE KEY");
+  });
+
+  it("rejects secret-bearing durable locators and raw agent credential inputs", async () => {
+    const fixture = await createFixtureRepository();
+    fixtures.push(fixture);
+    const { service } = harness(fixture.sandboxRoot);
+    const rawToken = "ghp_AAAA1111BBBB2222CCCC3333DDDD4444EEEE";
+
+    await expect(
+      service.create({
+        prompt: "probe revision boundary",
+        repositoryPath: fixture.path,
+        revision: rawToken,
+      }),
+    ).rejects.toThrow("Revision contains credential-shaped text");
+    await expect(
+      service.create({
+        prompt: "probe expected-file boundary",
+        repositoryPath: fixture.path,
+        verification: { expectedFile: rawToken },
+      }),
+    ).rejects.toThrow("Expected-file path contains credential-shaped text");
+    await expect(
+      service.create({
+        prompt: "probe reference boundary",
+        repositoryPath: fixture.path,
+        credentialReferences: [rawToken],
+      }),
+    ).rejects.toThrow("credential:// references");
+  });
+
+  it("redacts adversarial changed filenames from runs and runtime-signal persistence", async () => {
+    const fixture = await createFixtureRepository();
+    fixtures.push(fixture);
+    const { service } = harness(fixture.sandboxRoot);
+    const rawFilename = "ghp_AAAA1111BBBB2222CCCC3333DDDD4444EEEE";
+    const created = await service.create({
+      prompt: "Write secret-shaped filename",
+      repositoryPath: fixture.path,
+      verification: { expectedFile: "agent-output.md" },
+    });
+    await service.waitForIdle(created.id);
+
+    const exposed = JSON.stringify({
+      run: await service.get(created.id),
+      summaries: await service.listSummaries(),
+      signals: await service.signalSnapshots(created.id),
+      events: await service.events(created.id),
+      artifacts: await service.artifacts(created.id),
+    });
+    expect(exposed).not.toContain(rawFilename);
+    expect(exposed).toContain("redacted");
   });
 
   it("proves the local agent receives references but not managed provider secrets", async () => {

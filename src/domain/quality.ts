@@ -20,7 +20,13 @@ import type { TrustState, VerificationState } from "./types";
  * flagged, worth attention") and from FAIL ("deterministic evidence says this is wrong"). UNKNOWN
  * must never be promoted to PASS -- unknown remains unknown.
  */
-export type QualityCheckState = "PASS" | "WARN" | "FAIL" | "UNKNOWN" | "NOT_REQUIRED";
+export type QualityCheckState =
+  | "PASS"
+  | "WARN"
+  | "FAIL"
+  | "UNKNOWN"
+  | "NOT_CHECKED"
+  | "NOT_REQUIRED";
 
 /** Where a dimension's result came from. Deterministic evidence outranks model confidence. */
 export type QualityProvenance = "DETERMINISTIC" | "PENDING_CHECKER";
@@ -209,6 +215,9 @@ const deriveSecurity = (plan: AssurancePlan, diffPatch: string): QualityCheckRes
   const posture = deriveSecurityPosture(diffPatch);
   if (posture.state === "FAIL") {
     return deterministic("FAIL", [...posture.evidence, ...posture.findings]);
+  }
+  if (posture.state === "NOT_CHECKED") {
+    return deterministic("NOT_CHECKED", [...posture.evidence, ...posture.findings]);
   }
   if (!requiredCheck(plan, "SECURITY")) {
     return deterministic("NOT_REQUIRED", [plan.reasons.SECURITY, ...posture.evidence]);

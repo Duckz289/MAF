@@ -52,7 +52,12 @@ import {
   verificationSeverity,
 } from "../domain/recovery";
 import { countCrossModuleEdges, deriveRiskVector, type RiskVector } from "../domain/risk";
-import { redactPatchPreview, redactSensitiveData } from "../domain/security";
+import {
+  isSafeCredentialReference,
+  redactPatchPreview,
+  redactSensitiveData,
+  redactSensitiveText,
+} from "../domain/security";
 import { extractFileCandidates, findRepositoryFile, normalizeFile } from "./file-candidates";
 import {
   emptyCost,
@@ -239,6 +244,20 @@ const providerRelatedClassifications = new Set<FailureClassification>([
   "NETWORK_FAILURE",
 ]);
 
+const assertPersistenceSafeLocator = (label: string, value: string | undefined): void => {
+  if (value !== undefined && redactSensitiveText(value) !== value) {
+    throw new Error(
+      `${label} contains credential-shaped text and cannot be used as durable execution state`,
+    );
+  }
+};
+
+const assertCredentialReferences = (references: string[]): void => {
+  if (references.some((reference) => !isSafeCredentialReference(reference))) {
+    throw new Error("Agent credentials must be credential:// references, never raw values");
+  }
+};
+
 export class RunService {
   private readonly active = new Map<string, ActiveRunState>();
   private readonly modeController: AdaptiveModeController;
@@ -277,12 +296,18 @@ export class RunService {
     if (this.emergencyStopped) {
       throw new Error("New runs are blocked: an emergency stop is active");
     }
+    const resolvedRepositoryPath = path.resolve(request.repositoryPath);
+    const requestedRevision = request.revision ?? "HEAD";
+    assertPersistenceSafeLocator("Repository path", resolvedRepositoryPath);
+    assertPersistenceSafeLocator("Revision", requestedRevision);
+    assertPersistenceSafeLocator("Expected-file path", request.verification?.expectedFile);
+    assertCredentialReferences(request.credentialReferences ?? []);
     const now = new Date().toISOString();
     const task: Task = {
       id: crypto.randomUUID(),
       prompt: request.prompt,
-      repositoryPath: path.resolve(request.repositoryPath),
-      revision: request.revision ?? "HEAD",
+      repositoryPath: resolvedRepositoryPath,
+      revision: requestedRevision,
       createdAt: now,
       verification: request.verification ?? {},
       ...(request.signals ? { signals: request.signals } : {}),
@@ -298,9 +323,9 @@ export class RunService {
       desiredMode: initialMode,
       effectiveMode: initialMode,
       verificationState: "PROPOSED",
-      agent: request.agent ?? this.dependencies.agent.name,
-      model: request.model ?? "native",
-      provider: request.provider ?? "native",
+      agent: redactSensitiveText(request.agent ?? this.dependencies.agent.name),
+      model: redactSensitiveText(request.model ?? "native"),
+      provider: redactSensitiveText(request.provider ?? "native"),
       createdAt: now,
       updatedAt: now,
       changedFiles: [],
@@ -308,7 +333,22 @@ export class RunService {
       usage: emptyUsage(),
       retryCount: 0,
     };
-    await this.dependencies.store.createTask(task);
+    // Execution keeps the caller's in-memory task, but durable/API-facing task text is sanitized.
+    // A resumed run intentionally receives the sanitized form: raw credentials are not durable
+    // execution state and must not be reintroduced from storage.
+    await this.dependencies.store.createTask({
+      ...task,
+      prompt: redactSensitiveText(task.prompt),
+      verification: {
+        ...task.verification,
+        ...(task.verification.command
+          ? { command: redactSensitiveText(task.verification.command) }
+          : {}),
+        ...(task.verification.expectedFile
+          ? { expectedFile: redactSensitiveText(task.verification.expectedFile) }
+          : {}),
+      },
+    });
     await this.dependencies.store.createRun(run);
     await this.event(run.id, "RunCreated", {
       taskId: task.id,
@@ -467,6 +507,7 @@ export class RunService {
     if (this.emergencyStopped) {
       throw new Error("Cannot resume runs: an emergency stop is active");
     }
+    assertCredentialReferences(credentialReferences);
     const run = await this.requireRun(id);
     if (run.state !== "PAUSED") throw new Error(`Run ${id} is not paused (state: ${run.state})`);
     const capsule = await this.dependencies.store.getRecoveryCapsule(id);
@@ -589,7 +630,10 @@ export class RunService {
     if (run.desiredMode === to && run.effectiveMode === to) return structuredClone(run);
     await this.requestModeChange(run, {
       to,
-      reason,
+      // Operator-provided transition rationale is durable evidence and eventually appears in the
+      // ModeChanged event produced by the controller. Sanitize it before it enters the decision,
+      // in addition to sanitizing the final event at the persistence boundary below.
+      reason: redactSensitiveText(reason),
       evidence: redactSensitiveData({ ...evidence, source: "EXTERNAL_HINT" }) as Record<
         string,
         unknown
@@ -617,9 +661,12 @@ export class RunService {
       await this.dependencies.store.updateRun(run);
       await this.event(run.id, resumeSandbox ? "RunResumed" : "RunStarted", {});
 
-      sandbox =
+      const preparedSandbox =
         resumeSandbox ??
         (await this.dependencies.sandbox.create(run.id, task.repositoryPath, task.revision));
+      assertPersistenceSafeLocator("Sandbox path", preparedSandbox.path);
+      assertPersistenceSafeLocator("Sandbox revision", preparedSandbox.revision);
+      sandbox = preparedSandbox;
       const active = this.active.get(run.id);
       if (active) active.sandbox = sandbox;
       run.sandboxPath = sandbox.path;
@@ -755,9 +802,21 @@ export class RunService {
         // there is no budget gate here, by design. (The current CommandVerifier is $0 per run
         // either way; the "verification" allocation exists for a future costed verifier, at which
         // point this comment is the reminder that it still must never be skipped for budget.)
-        verification = await this.dependencies.verifier.verify(run, task, sandbox, candidate.diff);
-        verification.attempt = verificationAttempts;
-        verification.candidateId = candidate.id;
+        const verifierResult = await this.dependencies.verifier.verify(
+          run,
+          task,
+          sandbox,
+          candidate.diff,
+        );
+        verification = {
+          ...verifierResult,
+          ...(verifierResult.command
+            ? { command: redactSensitiveText(verifierResult.command) }
+            : {}),
+          output: redactSensitiveText(verifierResult.output),
+          attempt: verificationAttempts,
+          candidateId: candidate.id,
+        };
         await this.dependencies.store.addVerification(verification);
         await this.observeAndDecide(run, {
           runId: run.id,
@@ -939,14 +998,15 @@ export class RunService {
       const latest = await this.dependencies.store.getRun(run.id);
       if (latest?.state !== "CANCELLED") {
         run.verificationState = run.verificationState === "VERIFYING" ? "QUARANTINED" : "FAILED";
-        run.error = error instanceof Error ? error.message : String(error);
-        run.completedAt = new Date().toISOString();
-        run.updatedAt = run.completedAt;
+        const rawErrorDetail = error instanceof Error ? error.message : String(error);
         const classification = classifyFailure(error, {
           agentReported: error instanceof AgentReportedFailure,
           budgetExhausted: error instanceof BudgetExhaustedError,
           circuitOpen: error instanceof ProviderCircuitOpenError,
         });
+        run.error = redactSensitiveText(rawErrorDetail);
+        run.completedAt = new Date().toISOString();
+        run.updatedAt = run.completedAt;
         try {
           const capsule = await this.captureRecoveryCapsule(
             run,
@@ -1443,7 +1503,12 @@ export class RunService {
     }
     const event = this.modeController.apply(run, decision, enforcement);
     await this.dependencies.store.updateRun(run);
-    await this.dependencies.store.appendEvent(event);
+    // ModeChanged is created by the controller (so it already has its identity/timestamp) rather
+    // than through event(). It still crosses the same redaction boundary as every other event.
+    await this.dependencies.store.appendEvent({
+      ...event,
+      data: redactSensitiveData(event.data),
+    });
     const transitionState = this.active.get(run.id)?.transitionState;
     if (!transitionState) return;
     transitionState.count += 1;
@@ -1497,7 +1562,9 @@ export class RunService {
     fallbackAssessment: RiskAssessment,
   ): Promise<Candidate> {
     const diff = await this.dependencies.sandbox.collectDiff(sandbox);
-    run.changedFiles = diff.changedFiles;
+    // The candidate retains exact paths for trusted analysis. The API-facing Run record needs
+    // only display/count semantics, so filenames are sanitized before durable persistence.
+    run.changedFiles = diff.changedFiles.map((file) => redactSensitiveText(file));
     run.updatedAt = new Date().toISOString();
     await this.dependencies.store.updateRun(run);
     const id = crypto.randomUUID();
@@ -1690,14 +1757,15 @@ export class RunService {
     const verdictFileName = "independent-review-verdict.json";
     const maxChars = this.repairPolicy.maxDiffPreviewChars;
     const fullPatch = candidate.diff.patch;
-    const diffTruncated = fullPatch.length > maxChars;
+    const reviewPatch = redactPatchPreview(fullPatch);
+    const diffTruncated = reviewPatch.length > maxChars;
     const prompt = buildReviewPrompt({
       requirements: task.prompt,
       candidateId: candidate.id,
       diffDigest: candidate.artifact.digest ?? "",
       diffPatch: diffTruncated
-        ? `${fullPatch.slice(0, maxChars)}\n[TRUNCATED: the diff above was cut to ${maxChars} characters for this review, but the diffDigest you must echo covers the FULL diff. If the cut-off portion could affect your verdict, reject.]`
-        : fullPatch,
+        ? `${reviewPatch.slice(0, maxChars)}\n[TRUNCATED: the diff above was cut to ${maxChars} characters for this review, but the diffDigest you must echo covers the FULL diff. If the cut-off portion could affect your verdict, reject.]`
+        : reviewPatch,
       riskVector: assessment.riskVector,
       assurancePlan: assessment.assurancePlan,
       verdictFileName,
@@ -1977,7 +2045,10 @@ export class RunService {
       output: verification.output.slice(0, this.repairPolicy.maxVerifierOutputChars),
       changedFiles: candidate.diff.changedFiles,
       diffDigest: candidate.artifact.digest,
-      diffPreview: candidate.diff.patch.slice(0, this.repairPolicy.maxDiffPreviewChars),
+      diffPreview: redactPatchPreview(candidate.diff.patch).slice(
+        0,
+        this.repairPolicy.maxDiffPreviewChars,
+      ),
     });
     return [
       "Trusted verification repair request.",
@@ -2089,7 +2160,11 @@ export class RunService {
     observation: Parameters<RuntimeSignalCollector["observe"]>[0],
   ): Promise<RuntimeSignalSnapshot> {
     const snapshot = await this.dependencies.runtimeSignals.observe(observation);
-    await this.dependencies.store.addSignalSnapshot(snapshot);
+    // Collector state remains exact for live control decisions; its persisted/API copy is an
+    // untrusted evidence record and crosses the same recursive redaction boundary as events.
+    await this.dependencies.store.addSignalSnapshot(
+      redactSensitiveData(snapshot) as RuntimeSignalSnapshot,
+    );
     await this.event(run.id, "RuntimeSignalsObserved", snapshot);
     const transitionState = this.active.get(run.id)?.transitionState;
     const decision = this.modeController.decide(run.desiredMode, snapshot, {

@@ -26,6 +26,7 @@ afterEach(async () => {
 const harness = (sandboxRoot: string) => {
   const store = new InMemoryRunStore();
   const brain = new InMemoryProjectBrain();
+  const telemetry = new DomainTelemetryRecorder();
   const service = new RunService({
     store,
     agent: new NativeCliAdapter({
@@ -41,10 +42,10 @@ const harness = (sandboxRoot: string) => {
     repositoryIndex: new LocalRepositoryIndex(),
     projectBrain: brain,
     contextBuilder: new GuidedContextBuilder(brain),
-    telemetry: new DomainTelemetryRecorder(),
+    telemetry,
     runtimeSignals: new EvidenceRuntimeSignalCollector(),
   });
-  return { service, store };
+  return { service, store, telemetry };
 };
 
 /**
@@ -323,6 +324,72 @@ describe("quality governance (M6)", () => {
       "ghp_AAAA1111BBBB2222CCCC3333DDDD4444EEEE",
     );
     expect(JSON.stringify(data.report.Security)).toContain("redacted");
+  });
+
+  it("redacts consecutive private-key files through persisted artifacts, events, telemetry, and API-facing service data", async () => {
+    const fixture = await createFixtureRepository();
+    fixtures.push(fixture);
+    const { service, store, telemetry } = harness(fixture.sandboxRoot);
+    const created = await service.create({
+      prompt: "Leak consecutive private keys for the M8 persistence-boundary probe",
+      repositoryPath: fixture.path,
+      verification: { expectedFile: "agent-output.md" },
+      qualityPreference: "BALANCED",
+    });
+    await service.waitForIdle(created.id);
+
+    const run = await store.getRun(created.id);
+    expect(run?.state).toBe("COMPLETED");
+    expect(run?.verificationState).toBe("VERIFIED");
+    expect(run?.trustState).toBe("CORRECTNESS_VERIFIED");
+
+    const artifacts = await service.artifacts(created.id);
+    const events = await service.events(created.id);
+    const persistedAndExposed = JSON.stringify({
+      run: await service.get(created.id),
+      artifacts,
+      events,
+      telemetry: telemetry.snapshot(),
+    });
+    for (const rawSecretFragment of [
+      "FIRST-PERSISTED-PRIVATE-KEY-BODY",
+      "SECOND-PERSISTED-PRIVATE-KEY-BODY",
+      "BEGIN RSA PRIVATE KEY",
+    ]) {
+      expect(persistedAndExposed).not.toContain(rawSecretFragment);
+    }
+    const preview = String(artifacts[0]?.metadata.preview ?? "");
+    expect(preview.match(/credential-shaped line suppressed/gu)).toHaveLength(6);
+    expect(persistedAndExposed).toContain("REDACTED PRIVATE KEY");
+
+    const data = await qualityEvent(service, created.id);
+    expect(data.report.Security.state).toBe("FAIL");
+  });
+
+  it("keeps a required binary security diff NOT_CHECKED and suppresses its persisted payload", async () => {
+    const fixture = await createFixtureRepository();
+    fixtures.push(fixture);
+    const { service, store } = harness(fixture.sandboxRoot);
+    const created = await service.create({
+      prompt: "Write binary credential for the M8 uninspectable-diff probe",
+      repositoryPath: fixture.path,
+      verification: { expectedFile: "agent-output.md" },
+      qualityPreference: "BALANCED",
+    });
+    await service.waitForIdle(created.id);
+
+    const run = await store.getRun(created.id);
+    expect(run?.verificationState).toBe("VERIFIED");
+    expect(run?.trustState).toBe("CORRECTNESS_VERIFIED");
+    const data = await qualityEvent(service, created.id);
+    expect(data.report.Security.state).toBe("NOT_CHECKED");
+    expect(data.report.Security.evidence.join(" ")).toContain("binary");
+
+    const artifacts = await service.artifacts(created.id);
+    const preview = String(artifacts[0]?.metadata.preview ?? "");
+    expect(preview).not.toContain("GIT binary patch");
+    expect(preview).not.toContain("literal ");
+    expect(preview).toContain("uninspectable binary patch payload suppressed");
   });
 
   it("reports quality dimensions honestly without gating on not-yet-built checkers (warn, don't block)", async () => {

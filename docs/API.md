@@ -50,6 +50,20 @@ selected scope) and `stage: "diff-captured"` (once a candidate's actual diff exi
 estimate with ground truth). `RiskProfiled.riskVector` always carries all ten dimensions, each with
 a `level` and a `provenance` (`DETERMINISTIC`/`HEURISTIC`/`INSUFFICIENT_EVIDENCE` — never a guessed
 value presented as fact). `AssurancePlanned.plan` lists `required`/`notRequired` checks with a
-`reasons` entry for every check. No check listed as required is actually run yet — see
-ARCHITECTURE.md's "Task risk profiler and assurance planner" section for what this does and does
-not wire up today.
+`reasons` entry for every check. `CORRECTNESS` is enforced by the trusted verifier;
+`ARCHITECTURE`, `DEBT`, and `SECURITY` have deterministic diff-bound checkers; and
+`INDEPENDENT_REVIEW` has one bounded candidate/digest-bound reviewer session when required.
+`PERFORMANCE`, `CONCURRENCY`, and `RESILIENCE` still have no checker: a required dimension remains
+`UNKNOWN`/not verified, never a synthetic pass. See ARCHITECTURE.md's "Task risk profiler and
+assurance planner" section for the exact gating rules.
+
+Security redaction is applied before run/task errors, changed filenames/runtime signals,
+verification output, recovery capsules, mode-transition evidence, events, and artifact previews
+reach these routes. Reference-shaped fields preserve only validated `credential://` locators, and
+secret-shaped durable execution locators are rejected on create. The M8 regression suite exercises
+HTTP run, summary, verification, artifact, recovery-capsule, runtime-signal, and SSE-event data with
+adjacent/encrypted PEM keys, generic credentials, adversarial filenames/references, and
+secret-bearing failures. Uninspectable binary diff payloads are suppressed from artifact previews;
+binary, gitlink, and rename/copy-only changes are reported as Security `NOT_CHECKED`, never PASS.
+This is a tested harness-persistence boundary, not a claim of OS/network isolation or a guarantee
+about arbitrary output written by external processes outside MAF's stores.

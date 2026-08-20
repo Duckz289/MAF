@@ -147,4 +147,67 @@ describe("parseFilePatches", () => {
     expect(files[0]?.removedLines).toEqual(["-- old lua style comment"]);
     expect(files[0]?.addedLines).toEqual(["++ new lua style value", "+ increment operator line"]);
   });
+
+  it("marks git binary patches as uninspectable instead of treating them as empty text", () => {
+    const patch = [
+      "diff --git a/assets/data.bin b/assets/data.bin",
+      "new file mode 100644",
+      "--- /dev/null",
+      "+++ b/assets/data.bin",
+      "GIT binary patch",
+      "literal 8",
+      "zcmeAS@N?(o",
+    ].join("\n");
+
+    const files = parseFilePatches(patch);
+
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatchObject({ file: "assets/data.bin", binary: true });
+    expect(files[0]?.addedLines).toHaveLength(0);
+  });
+
+  it("decodes Git-quoted UTF-8 paths while preserving binary attribution", () => {
+    const patch = String.raw`diff --git "a/assets/\303\251.bin" "b/assets/\303\251.bin"
+new file mode 100644
+GIT binary patch
+literal 8
+zcmeAS@N?(o`;
+
+    expect(parseFilePatches(patch)).toEqual([
+      {
+        file: "assets/é.bin",
+        addedLines: [],
+        removedLines: [],
+        binary: true,
+        uninspectableReasons: ["BINARY"],
+      },
+    ]);
+  });
+
+  it("marks gitlinks and rename-only changes as textually uninspectable", () => {
+    const patch = [
+      "diff --git a/vendor/sdk b/vendor/sdk",
+      "new file mode 160000",
+      "index 0000000..1234567",
+      "--- /dev/null",
+      "+++ b/vendor/sdk",
+      "@@ -0,0 +1 @@",
+      "+Subproject commit 1234567890abcdef1234567890abcdef12345678",
+      "diff --git a/tests/fixtures/key.pem b/src/config/key.pem",
+      "similarity index 100%",
+      "rename from tests/fixtures/key.pem",
+      "rename to src/config/key.pem",
+    ].join("\n");
+
+    const files = parseFilePatches(patch);
+    expect(files).toHaveLength(2);
+    expect(files[0]).toMatchObject({
+      file: "vendor/sdk",
+      uninspectableReasons: ["GITLINK"],
+    });
+    expect(files[1]).toMatchObject({
+      file: "src/config/key.pem",
+      uninspectableReasons: ["RENAME_OR_COPY"],
+    });
+  });
 });

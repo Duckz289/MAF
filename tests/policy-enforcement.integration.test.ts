@@ -275,14 +275,25 @@ describe("execution policy enforcement", () => {
       (run) => run?.state === "COMPLETED" || run?.state === "FAILED",
     );
     await service.waitForIdle(created.id);
-    const transitioned = await service.transition(created.id, "STRICT", "operator narrowed scope", {
-      operator: true,
-    });
+    const rawTransitionToken = "ghp_1234567890abcdefghijklmnopqrstuvwxyz";
+    const transitioned = await service.transition(
+      created.id,
+      "STRICT",
+      `operator narrowed scope; token="${rawTransitionToken}"`,
+      {
+        operator: true,
+        authorization: `Bearer ${rawTransitionToken}`,
+        credentialReference: "UNSTRUCTURED-PROVIDER-SECRET-9f8e7d6c5b4a",
+      },
+    );
     expect(transitioned.desiredMode).toBe("STRICT");
     expect(transitioned.effectiveMode).toBe("STRICT");
     const events = await service.events(created.id);
     const changed = events.filter((event) => event.type === "ModeChanged").at(-1);
     expect((changed?.data as ModeChangedData).enforcement?.method).toBe("SESSION_BOUNDARY");
+    expect(JSON.stringify(events)).not.toContain(rawTransitionToken);
+    expect(JSON.stringify(events)).not.toContain("UNSTRUCTURED-PROVIDER-SECRET-9f8e7d6c5b4a");
+    expect(JSON.stringify(changed)).toContain("[REDACTED]");
   });
 });
 

@@ -127,6 +127,69 @@ describe("recovery plane", () => {
     }
   });
 
+  it("keeps private-key bodies out of a recovery capsule captured after a persisted candidate", async () => {
+    const fixture = await createFixtureRepository();
+    fixtures.push(fixture);
+    const { service } = harness(fixture.sandboxRoot, { maxRecoveryAttempts: 0 });
+    const created = await service.create({
+      prompt: "Leak consecutive private keys and fail during repair",
+      repositoryPath: fixture.path,
+      // The first candidate is captured and persisted, then this missing file starts a repair
+      // session that the fixture deliberately fails. Recovery therefore has real candidate
+      // artifacts to compose into the durable capsule.
+      verification: { expectedFile: "never-written.md" },
+    });
+    const paused = await waitFor(
+      () => service.get(created.id),
+      (run) => run?.state === "PAUSED" || run?.state === "FAILED" || run?.state === "COMPLETED",
+    );
+    await service.waitForIdle(created.id);
+
+    expect(paused?.state, paused?.error).toBe("PAUSED");
+    const capsule = await service.recoveryCapsule(created.id);
+    expect(capsule?.candidateLineage).toHaveLength(1);
+    const serializedCapsule = JSON.stringify(capsule);
+    expect(serializedCapsule).not.toContain("FIRST-PERSISTED-PRIVATE-KEY-BODY");
+    expect(serializedCapsule).not.toContain("SECOND-PERSISTED-PRIVATE-KEY-BODY");
+    expect(serializedCapsule).not.toContain("BEGIN RSA PRIVATE KEY");
+    // Capsules retain candidate identity/digest/verification metadata, not diff-preview content.
+    expect(capsule?.candidateLineage[0]?.digest).toBeTruthy();
+  });
+
+  it("redacts task goals and agent-controlled errors before run, summary, and capsule persistence", async () => {
+    const fixture = await createFixtureRepository();
+    fixtures.push(fixture);
+    const { service, store } = harness(fixture.sandboxRoot, { maxRecoveryAttempts: 0 });
+    const created = await service.create({
+      prompt: "simulate secret-bearing failure with ghp_TTTT1111UUUU2222VVVV3333WWWW4444XXXX",
+      repositoryPath: fixture.path,
+      verification: { expectedFile: "agent-output.md" },
+    });
+    await waitFor(
+      () => service.get(created.id),
+      (run) => run?.state === "PAUSED" || run?.state === "FAILED" || run?.state === "COMPLETED",
+    );
+    await service.waitForIdle(created.id);
+
+    const persisted = JSON.stringify({
+      run: await service.get(created.id),
+      task: await store.getTask(created.taskId),
+      summaries: await service.listSummaries(),
+      capsule: await service.recoveryCapsule(created.id),
+      events: await service.events(created.id),
+    });
+    for (const rawSecretFragment of [
+      "ghp_TTTT1111UUUU2222VVVV3333WWWW4444XXXX",
+      "ghp_AAAA1111BBBB2222CCCC3333DDDD4444EEEE",
+      "ERROR-PERSISTED-PRIVATE-KEY-BODY",
+      "BEGIN ENCRYPTED PRIVATE KEY",
+    ]) {
+      expect(persisted).not.toContain(rawSecretFragment);
+    }
+    expect(persisted).toContain("REDACTED PRIVATE KEY");
+    expect(persisted).toContain("redacted");
+  });
+
   it(
     "never lets agent-reported error text masquerade as a different failure classification",
     { timeout: 30_000 },

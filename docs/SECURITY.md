@@ -7,8 +7,20 @@
 - `EnvironmentCredentialResolver` resolves a reference only at the gateway edge.
 - `AgentVaultBroker` supplies a broker URL and dummy reference credential to a sandbox. It does not
   inject the real upstream credential.
-- Recursive redaction removes secret-shaped fields and values before events, artifacts, and telemetry
-  are persisted or exported.
+- Recursive redaction removes known secret-shaped fields, structured tokens, generic credential
+  assignments, and complete PEM private-key blocks before events and telemetry are persisted or
+  exported. Reference-shaped fields preserve only validated, secret-free `credential://` locators;
+  a field name alone cannot exempt a raw value. Diff artifacts use file-level added-line suppression
+  when a file contains credential-shaped content and remove uninspectable binary-patch payloads
+  entirely. Gitlinks and rename/copy-only changes remain `NOT_CHECKED` because their destination
+  bytes are absent from the patch. Stored task goals, run errors, verifier output, changed-file and
+  runtime-signal paths, mode-transition evidence, and recovery-capsule text use the same sanitizer.
+  Secret-shaped repository/revision/expected-file locators are rejected before task persistence.
+  The composed persistence/API path is regression-tested with adjacent and encrypted private-key
+  files, quoted/template passphrases, common config/YAML/Go assignment forms,
+  binary/gitlink/rename diffs, verifier output,
+  adversarial filenames, and secret-bearing failures; this is a bounded guarantee for known harness
+  records, not a claim that arbitrary external process output is impossible.
 - Agent initial context contains credential references only.
 - `.env.example` contains placeholders and `.env` is ignored.
 

@@ -311,6 +311,32 @@ describe("deriveTrustState", () => {
     expect(deriveTrustState("VERIFIED", report, criticalSecurePlan, true)).toBe("MERGE_ELIGIBLE");
   });
 
+  it("keeps a required binary Security check NOT_CHECKED and blocks promotion", () => {
+    const binaryPatch = [
+      "diff --git a/src/api/credential.bin b/src/api/credential.bin",
+      "new file mode 100644",
+      "index 0000000..1234567",
+      "--- /dev/null",
+      "+++ b/src/api/credential.bin",
+      "GIT binary patch",
+      "literal 16",
+      "REVERSIBLE-BINARY-PAYLOAD",
+    ].join("\n");
+    const report = deriveQualityReport(
+      reportInput({
+        assurancePlan: criticalSecurePlan,
+        preExecutionRisk: securityHighRiskVector,
+        diffRisk: securityHighRiskVector,
+        diffPatch: binaryPatch,
+      }),
+    );
+
+    expect(report.Security.state).toBe("NOT_CHECKED");
+    expect(deriveTrustState("VERIFIED", report, criticalSecurePlan, true)).toBe(
+      "CORRECTNESS_VERIFIED",
+    );
+  });
+
   it("caps at CORRECTNESS_VERIFIED when a gated dimension WARNs", () => {
     // ARCHITECTURE is required by this plan; make the footprint grow.
     const grown = deriveRiskVector({

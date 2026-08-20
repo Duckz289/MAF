@@ -113,6 +113,18 @@ const runTask = async (input: FixtureInput): Promise<void> => {
   // Recovery-plane probes: a persistent marker file (survives across process restarts in the
   // same preserved workspace, unlike in-memory state) lets these simulate "fails once, then
   // succeeds on retry/resume" without any harness-side test hook.
+  if (/simulate secret-bearing failure/iu.test(input.task.prompt)) {
+    emit("error", {
+      message: [
+        "Provider rejected ghp_AAAA1111BBBB2222CCCC3333DDDD4444EEEE",
+        "-----BEGIN ENCRYPTED PRIVATE KEY-----",
+        "ERROR-PERSISTED-PRIVATE-KEY-BODY",
+        "-----END ENCRYPTED PRIVATE KEY-----",
+      ].join("\n"),
+    });
+    process.exitCode = 1;
+    return;
+  }
   if (/simulate transient failure once/iu.test(input.task.prompt)) {
     const marker = path.resolve(".recovery-marker");
     const alreadyAttempted = await access(marker)
@@ -127,6 +139,14 @@ const runTask = async (input: FixtureInput): Promise<void> => {
   }
   if (/simulate credential failure/iu.test(input.task.prompt)) {
     emit("error", { message: "Invalid API key: authentication failed" });
+    process.exitCode = 1;
+    return;
+  }
+  if (
+    /fail during repair/iu.test(input.task.prompt) &&
+    /Trusted verification repair request/iu.test(input.message)
+  ) {
+    emit("error", { message: "Fixture repair session failed after candidate capture" });
     process.exitCode = 1;
     return;
   }
@@ -243,6 +263,49 @@ const runTask = async (input: FixtureInput): Promise<void> => {
     );
     emit("tool", { tool: "write_file", operation: "create", path: "src/config/prod-tokens.ts" });
     changedFiles.push("src/config/prod-tokens.ts");
+  }
+  if (/leak consecutive private keys/iu.test(input.task.prompt)) {
+    const privateKeys: Record<string, string> = {
+      "src/config/first-private.pem": [
+        "-----BEGIN RSA PRIVATE KEY-----",
+        "FIRST-PERSISTED-PRIVATE-KEY-BODY-with-no-standalone-signature",
+        "-----END RSA PRIVATE KEY-----",
+      ].join("\n"),
+      "src/config/second-private.pem": [
+        "-----BEGIN RSA PRIVATE KEY-----",
+        "SECOND-PERSISTED-PRIVATE-KEY-BODY-with-no-standalone-signature",
+        "-----END RSA PRIVATE KEY-----",
+      ].join("\n"),
+    };
+    for (const [privateKeyPath, privateKey] of Object.entries(privateKeys)) {
+      await mkdir(path.dirname(path.resolve(privateKeyPath)), { recursive: true });
+      await writeFile(path.resolve(privateKeyPath), `${privateKey}\n`, "utf8");
+      // Deliberately include the untrusted file content in an agent event. The harness must
+      // sanitize this path independently of the persisted diff-preview redactor.
+      emit("tool", {
+        tool: "write_file",
+        operation: "create",
+        path: privateKeyPath,
+        output: privateKey,
+      });
+      changedFiles.push(privateKeyPath);
+    }
+  }
+  if (/write binary credential/iu.test(input.task.prompt)) {
+    const binaryPath = "src/auth/credential.bin";
+    await mkdir(path.dirname(path.resolve(binaryPath)), { recursive: true });
+    await writeFile(
+      path.resolve(binaryPath),
+      Buffer.from("BINARY-CREDENTIAL-PAYLOAD\0with-nul-so-git-emits-a-binary-patch", "utf8"),
+    );
+    emit("tool", { tool: "write_file", operation: "create", path: binaryPath });
+    changedFiles.push(binaryPath);
+  }
+  if (/write secret-shaped filename/iu.test(input.task.prompt)) {
+    const secretShapedPath = "ghp_AAAA1111BBBB2222CCCC3333DDDD4444EEEE";
+    await writeFile(path.resolve(secretShapedPath), "filename boundary probe\n", "utf8");
+    emit("tool", { tool: "write_file", operation: "create", path: secretShapedPath });
+    changedFiles.push(secretShapedPath);
   }
   const content = [
     "# Native agent fixture output",

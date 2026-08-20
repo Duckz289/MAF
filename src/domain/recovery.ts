@@ -11,6 +11,7 @@ import type {
   Verification,
   VerificationState,
 } from "./types";
+import { redactSensitiveText } from "./security";
 
 /**
  * Marks an error whose message text originated from agent-supplied data (an `error` AgentEvent's
@@ -216,14 +217,18 @@ export const buildRecoveryCapsule = (input: RecoveryCapsuleInput): RecoveryCapsu
   return {
     runId: input.runId,
     taskId: input.task.id,
-    goal: input.task.prompt,
-    repositoryPath: input.task.repositoryPath,
-    requestedRevision: input.task.revision,
-    resolvedRevision: input.resolvedRevision,
-    workspacePath: input.workspacePath,
-    agent: input.agent,
-    model: input.model,
-    provider: input.provider,
+    goal: redactSensitiveText(input.task.prompt),
+    repositoryPath: redactSensitiveText(input.task.repositoryPath),
+    requestedRevision: redactSensitiveText(input.task.revision),
+    resolvedRevision:
+      input.resolvedRevision === undefined
+        ? undefined
+        : redactSensitiveText(input.resolvedRevision),
+    workspacePath:
+      input.workspacePath === undefined ? undefined : redactSensitiveText(input.workspacePath),
+    agent: redactSensitiveText(input.agent),
+    model: redactSensitiveText(input.model),
+    provider: redactSensitiveText(input.provider),
     desiredMode: input.desiredMode,
     effectiveMode: input.effectiveMode,
     costSpent: input.costSpent,
@@ -234,12 +239,12 @@ export const buildRecoveryCapsule = (input: RecoveryCapsuleInput): RecoveryCapsu
     latestSignalSnapshotId: input.latestSignalSnapshot?.id,
     verifiedFacts: input.knowledge
       .filter((record) => record.kind === "FACT")
-      .map((record) => record.statement),
+      .map((record) => redactSensitiveText(record.statement)),
     decisions: input.knowledge
       .filter((record) => record.kind === "DECISION")
-      .map((record) => record.statement),
+      .map((record) => redactSensitiveText(record.statement)),
     recoveryReason: input.recoveryReason,
-    recoveryDetail: input.recoveryDetail,
+    recoveryDetail: redactSensitiveText(input.recoveryDetail),
     createdAt: input.now ?? new Date().toISOString(),
   };
 };

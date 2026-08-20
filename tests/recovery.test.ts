@@ -246,4 +246,33 @@ describe("buildRecoveryCapsule", () => {
       ].sort(),
     );
   });
+
+  it("sanitizes execution locators defensively before capsule persistence", () => {
+    const rawToken = "ghp_AAAA1111BBBB2222CCCC3333DDDD4444EEEE";
+    const capsule = buildRecoveryCapsule({
+      runId: "run-sensitive-locators",
+      task: {
+        ...task,
+        repositoryPath: `/repo/${rawToken}`,
+        revision: rawToken,
+      },
+      agent: "fixture",
+      model: "native",
+      provider: "native",
+      desiredMode: "GUIDED",
+      effectiveMode: "GUIDED",
+      costSpent: { model: 0, sandbox: 0, verification: 0, retry: 0, recovery: 0, total: 0 },
+      workspacePath: `/workspace/${rawToken}`,
+      resolvedRevision: rawToken,
+      artifacts: [],
+      verifications: [],
+      knowledge: [],
+      recoveryReason: "ENVIRONMENT_FAILURE",
+      recoveryDetail: "sandbox setup failed",
+    });
+
+    expect(JSON.stringify(capsule)).not.toContain(rawToken);
+    expect(capsule.repositoryPath).toContain("redacted");
+    expect(capsule.requestedRevision).toContain("redacted");
+  });
 });

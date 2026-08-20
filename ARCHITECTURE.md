@@ -310,7 +310,8 @@ violation or a paid-down marker is improvement, not a new finding.
 `SECURITY` gained its checker at M8A: `src/domain/security.ts` scans the diff's added lines (all
 file types — secrets live in `.env`/yaml/json, not just source) for credential patterns, in both
 quoted source form and unquoted `.env`/yaml `key=value` form. A match against a structured secret
-format (AWS access key ID, GitHub/Slack token, private key block) in a production file is
+format (AWS permanent/temporary access key ID, GitHub/Slack token, private key block) in a
+production file is
 deterministic evidence of a leak — `FAIL` on the Security quality dimension, reported whether or
 not the plan required the check, and (uniquely among the dimensions) gating unconditionally: plan
 requirements are path-keyword heuristics, and a leak written to an unkeyworded path must not pass
@@ -319,20 +320,39 @@ confined to test/fixture files and generic literal assignments to credential-sha
 production files are `WARN` (checked, flagged); dummy credentials confined to tests pass with
 disclosure; placeholders and references (`process.env.*`, `${...}`, `<...>`) are not literals.
 Every finding is redacted before it becomes evidence — prefix + `…(redacted)` — and two further
-layers guard the harness's own records: `redactSensitiveData` (key-based `[REDACTED]` plus
-value-based structured-secret replacement) is applied to untrusted values (verifier output,
-external hints) on their way into the event stream, and the persisted diff preview is built by
-`redactPatchPreview`, which suppresses EVERY added line of any file whose additions carry
-credential-shaped content — token-level redaction would leave a private key's base64 body intact,
-since the body lines carry no pattern of their own. The harness must never copy a detected secret
-into its own records, where it would live forever. `Security` joined the gated dimensions at M8B.
+layers guard the harness's own records. `redactSensitiveData` is applied to untrusted event,
+verifier, hint, and telemetry values: secret-shaped keys are replaced wholesale unless their value
+is a validated `credential://` locator or known capability label, structured token formats and
+generic credential assignments (including config namespaces, quoted/template passphrases, Go
+short assignments, and YAML block scalars) are replaced
+in strings, and an entire PEM private-key
+block (header, unsigned body, and footer) is suppressed as one unit. Its search expressions are
+stateless; repeated values and adjacent files cannot influence one another through `RegExp.lastIndex`.
+The persisted artifact preview, repair prompt, and independent-review prompt are built with
+`redactPatchPreview`, which suppresses every added line of each file whose additions carry
+credential-shaped content. Token-only redaction is insufficient for a private key because its body
+lines have no standalone signature. Uninspectable `GIT binary patch` payloads are also removed from
+the persisted preview rather than retained in reversible form. The Security quality dimension for
+such a candidate is `NOT_CHECKED`, not PASS. Gitlink and rename/copy-only changes receive the same
+honest state because their complete destination bytes are not present in the patch; when the
+assurance plan requires Security, that state blocks promotion. The composed agent → diff →
+artifact/event/telemetry/API path is regression-tested
+with consecutive and encrypted private-key files, inline and repeated credential assignments,
+binary/uninspectable diffs, raw verifier output, adversarial filenames and references, mode reasons,
+and secret-bearing task/error text. Recovery capsules retain candidate identity and digest metadata
+rather than diff-preview content, and sanitize their goal, failure detail, facts, decisions, and
+operational locators. Create/resume reject raw agent credential inputs and create rejects
+secret-bearing durable locators. These controls reduce retention in known harness persistence
+paths; they do not prove that arbitrary native agent processes, external verifier commands, or
+sandbox files cannot disclose a secret outside the harness. `Security` joined the gated dimensions
+at M8B.
 
-Not yet implemented: wiring the plan's remaining required checks to actual verifiers.
-`PERFORMANCE`, `CONCURRENCY`, `RESILIENCE`, and `INDEPENDENT_REVIEW` are not yet backed by real
-checkers — that is M9-M10's job (INDEPENDENT_REVIEW is model-review territory, M6C). A plan
-requiring `PERFORMANCE` today does not cause a benchmark to run; it only records, with evidence,
-that one should. `ReasoningDifficulty` remains `INSUFFICIENT_EVIDENCE` for every run until a real
-source exists (nothing is planned yet for it).
+Still not implemented: deterministic checkers for `PERFORMANCE`, `CONCURRENCY`, and `RESILIENCE` —
+that is M9-M10's job. `INDEPENDENT_REVIEW` is already backed by M6's one bounded, candidate-bound
+fresh session. A plan requiring `PERFORMANCE` today does not cause a benchmark to run; it records,
+with evidence, that one is required while the quality vector remains `UNKNOWN`. `ReasoningDifficulty`
+remains `INSUFFICIENT_EVIDENCE` for every run until a real source exists (nothing is planned yet
+for it).
 
 ## Durable state
 

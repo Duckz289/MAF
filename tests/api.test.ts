@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp, type AppRuntime } from "../src/server/app";
-import { createAdaptiveFixtureRepository, type FixtureRepository } from "./helpers";
+import {
+  createAdaptiveFixtureRepository,
+  createFixtureRepository,
+  type FixtureRepository,
+} from "./helpers";
 
 let runtime: AppRuntime | undefined;
 const fixtures: FixtureRepository[] = [];
@@ -95,6 +99,84 @@ describe("control API", () => {
     expect(summaries.json()).toMatchObject([
       { id: runId, repositoryPath: fixture.path, revision: "HEAD" },
     ]);
+  });
+
+  it("never exposes consecutive private-key bodies through run, artifact, or event API payloads", async () => {
+    const fixture = await createFixtureRepository();
+    fixtures.push(fixture);
+    runtime = await createApp();
+    const created = await runtime.app.inject({
+      method: "POST",
+      url: "/api/v1/runs",
+      payload: {
+        prompt: "Leak consecutive private keys for the API redaction probe",
+        repositoryPath: fixture.path,
+        verification: {
+          expectedFile: "agent-output.md",
+          command: "node -e \"console.log('ghp_VVVV1111WWWW2222XXXX3333YYYY4444ZZZZ')\"",
+        },
+      },
+    });
+    expect(created.statusCode).toBe(202);
+    const runId = created.json().id as string;
+    await runtime.runs.waitForIdle(runId);
+
+    const [run, artifacts, events, verifications] = await Promise.all([
+      runtime.app.inject({ method: "GET", url: `/api/v1/runs/${runId}` }),
+      runtime.app.inject({ method: "GET", url: `/api/v1/runs/${runId}/artifacts` }),
+      runtime.app.inject({ method: "GET", url: `/api/v1/runs/${runId}/events?follow=false` }),
+      runtime.app.inject({ method: "GET", url: `/api/v1/runs/${runId}/verifications` }),
+    ]);
+    expect(run.statusCode).toBe(200);
+    expect(artifacts.statusCode).toBe(200);
+    expect(events.statusCode).toBe(200);
+    expect(verifications.statusCode).toBe(200);
+    const exposed = [run.body, artifacts.body, events.body, verifications.body].join("\n");
+    expect(exposed).not.toContain("FIRST-PERSISTED-PRIVATE-KEY-BODY");
+    expect(exposed).not.toContain("SECOND-PERSISTED-PRIVATE-KEY-BODY");
+    expect(exposed).not.toContain("BEGIN RSA PRIVATE KEY");
+    expect(exposed).not.toContain("ghp_VVVV1111WWWW2222XXXX3333YYYY4444ZZZZ");
+    expect(verifications.json().length).toBeGreaterThan(0);
+    expect(
+      artifacts.body.match(/credential-shaped line suppressed/gu)?.length ?? 0,
+    ).toBeGreaterThanOrEqual(6);
+    expect(events.body).toContain("REDACTED PRIVATE KEY");
+  });
+
+  it("redacts task and agent-error secrets from run summaries and recovery-capsule APIs", async () => {
+    const fixture = await createFixtureRepository();
+    fixtures.push(fixture);
+    runtime = await createApp();
+    const created = await runtime.app.inject({
+      method: "POST",
+      url: "/api/v1/runs",
+      payload: {
+        prompt: "simulate secret-bearing failure with ghp_TTTT1111UUUU2222VVVV3333WWWW4444XXXX",
+        repositoryPath: fixture.path,
+        verification: { expectedFile: "agent-output.md" },
+      },
+    });
+    const runId = created.json().id as string;
+    await runtime.runs.waitForIdle(runId);
+
+    const [run, summaries, capsule, events] = await Promise.all([
+      runtime.app.inject({ method: "GET", url: `/api/v1/runs/${runId}` }),
+      runtime.app.inject({ method: "GET", url: "/api/v1/runs" }),
+      runtime.app.inject({ method: "GET", url: `/api/v1/runs/${runId}/recovery-capsule` }),
+      runtime.app.inject({ method: "GET", url: `/api/v1/runs/${runId}/events?follow=false` }),
+    ]);
+    expect(run.json()).toMatchObject({ state: "PAUSED" });
+    expect(capsule.statusCode).toBe(200);
+    const exposed = [run.body, summaries.body, capsule.body, events.body].join("\n");
+    for (const rawSecretFragment of [
+      "ghp_TTTT1111UUUU2222VVVV3333WWWW4444XXXX",
+      "ghp_AAAA1111BBBB2222CCCC3333DDDD4444EEEE",
+      "ERROR-PERSISTED-PRIVATE-KEY-BODY",
+      "BEGIN ENCRYPTED PRIVATE KEY",
+    ]) {
+      expect(exposed).not.toContain(rawSecretFragment);
+    }
+    expect(exposed).toContain("REDACTED PRIVATE KEY");
   });
 
   it("exposes product setup metadata without exposing credential values", async () => {
