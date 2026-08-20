@@ -41,6 +41,11 @@ export interface RiskEvidenceInput {
   packageOwnership: Record<string, string>;
   /** Resolved cross-module IMPORTS edges among the touched modules (M2's relations, filtered). */
   crossModuleEdgeCount: number;
+  /**
+   * Declared-debt marker counts from the diff's own patch (M7A) — only available once a diff
+   * exists, so pre-execution vectors stay INSUFFICIENT_EVIDENCE for DebtRisk.
+   */
+  debtMarkers?: { added: number; removed: number };
 }
 
 const securitySensitivePattern =
@@ -87,6 +92,7 @@ const matches = (files: string[], pattern: RegExp): string[] =>
  * currently-available estimate of what is touched — the initially-selected scope before execution,
  * or the actual diff's changed files once one exists (the caller decides which; this function is
  * evidence-agnostic about where `files` came from, only how confident to be given what it is).
+ * `debtMarkers` is likewise optional diff evidence: present only at the diff-captured stage.
  */
 /**
  * `moduleOwnership`/`packageOwnership` only cover source files that M2's indexer actually parses
@@ -104,7 +110,7 @@ const coverageProvenance = (files: string[], ownership: Record<string, string>):
 };
 
 export const deriveRiskVector = (input: RiskEvidenceInput): RiskVector => {
-  const { files, moduleOwnership, packageOwnership, crossModuleEdgeCount } = input;
+  const { files, moduleOwnership, packageOwnership, crossModuleEdgeCount, debtMarkers } = input;
   const touchedModules = new Set(files.map((file) => moduleOwnership[file]).filter(Boolean));
   const touchedPackages = new Set(files.map((file) => packageOwnership[file]).filter(Boolean));
   const moduleCoverage = coverageProvenance(files, moduleOwnership);
@@ -189,17 +195,34 @@ export const deriveRiskVector = (input: RiskEvidenceInput): RiskVector => {
           : ["no operational/config-sensitive path pattern matched among touched files"],
     },
     // Not knowable from repository evidence alone at this stage of the pipeline — honestly
-    // reported as insufficient evidence rather than guessed. Later milestones may add real
-    // sources: M7A (debt-delta history) for DebtRisk, nothing yet planned for ReasoningDifficulty.
+    // reported as insufficient evidence rather than guessed. Nothing is planned yet for
+    // ReasoningDifficulty.
     ReasoningDifficulty: {
       level: "LOW",
       provenance: "INSUFFICIENT_EVIDENCE",
       evidence: ["no deterministic source for reasoning difficulty exists yet"],
     },
-    DebtRisk: {
-      level: "LOW",
-      provenance: "INSUFFICIENT_EVIDENCE",
-      evidence: ["no debt-delta history exists yet (see the M7A roadmap milestone)"],
-    },
+    // DebtRisk has a real source since M7A: the diff's own declared-debt marker counts. Thresholds
+    // align with the debt-delta checker (net 1 is LOW — informational; net >= 2 MEDIUM; net >= 5
+    // HIGH, matching the DebtDelta FAIL threshold). Pre-execution (no diff yet) stays honestly
+    // INSUFFICIENT_EVIDENCE rather than guessed.
+    DebtRisk: debtMarkers
+      ? {
+          level:
+            debtMarkers.added - debtMarkers.removed >= 5
+              ? "HIGH"
+              : debtMarkers.added - debtMarkers.removed >= 2
+                ? "MEDIUM"
+                : "LOW",
+          provenance: "DETERMINISTIC",
+          evidence: [
+            `diff adds ${debtMarkers.added} and removes ${debtMarkers.removed} declared-debt marker(s) (net ${debtMarkers.added - debtMarkers.removed})`,
+          ],
+        }
+      : {
+          level: "LOW",
+          provenance: "INSUFFICIENT_EVIDENCE",
+          evidence: ["no diff exists yet, so no declared-debt delta can be measured"],
+        },
   };
 };

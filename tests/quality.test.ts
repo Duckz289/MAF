@@ -49,8 +49,19 @@ const reportInput = (overrides: Partial<QualityReportInput> = {}): QualityReport
   changedFiles: ["src/domain/widget.ts"],
   initialModules: ["domain"],
   moduleOwnership: { "src/domain/widget.ts": "domain" },
+  diffPatch: "",
   ...overrides,
 });
+
+/** A minimal unified diff adding lines to one file. */
+const patchFor = (file: string, added: string[], removed: string[] = []): string =>
+  [
+    `--- a/${file}`,
+    `+++ b/${file}`,
+    "@@ -1,1 1,1 @@",
+    ...removed.map((line) => `-${line}`),
+    ...added.map((line) => `+${line}`),
+  ].join("\n");
 
 describe("deriveQualityReport", () => {
   it("always reports every one of the eight dimensions as a vector with evidence and provenance", () => {
@@ -163,10 +174,57 @@ describe("deriveQualityReport", () => {
     expect(withTests.TestQuality.state).toBe("PASS");
   });
 
-  it("keeps DebtDelta honestly UNKNOWN pending the M7 checker", () => {
-    const report = deriveQualityReport(reportInput());
-    expect(report.DebtDelta.state).toBe("UNKNOWN");
-    expect(report.DebtDelta.evidence).toEqual(lowRiskVector.DebtRisk.evidence);
+  it("passes DebtDelta for a diff with no declared-debt markers (M7A checker)", () => {
+    const report = deriveQualityReport(
+      reportInput({ diffPatch: patchFor("src/domain/widget.ts", ["export const x = 1;"]) }),
+    );
+    expect(report.DebtDelta.state).toBe("PASS");
+    expect(report.DebtDelta.provenance).toBe("DETERMINISTIC");
+  });
+
+  it("warns on DebtDelta when the diff adds declared-debt markers", () => {
+    const report = deriveQualityReport(
+      reportInput({
+        diffPatch: patchFor("src/domain/widget.ts", [
+          "// TODO: handle the edge case",
+          "const y = 2;",
+        ]),
+      }),
+    );
+    expect(report.DebtDelta.state).toBe("WARN");
+    expect(report.DebtDelta.evidence[0]).toContain("1 debt marker(s) added");
+  });
+
+  it("ignores debt markers in non-source files", () => {
+    const report = deriveQualityReport(
+      reportInput({ diffPatch: patchFor("docs/notes.md", ["TODO: fix later"]) }),
+    );
+    expect(report.DebtDelta.state).toBe("PASS");
+  });
+
+  it("fails Architecture deterministically when the diff introduces a domain layering violation (M7B)", () => {
+    const report = deriveQualityReport(
+      reportInput({
+        diffPatch: patchFor("src/domain/widget.ts", [
+          'import { RunService } from "../application/run-service";',
+        ]),
+      }),
+    );
+    expect(report.Architecture.state).toBe("FAIL");
+    expect(report.Architecture.evidence.join(" ")).toContain("outside src/domain");
+  });
+
+  it("keeps Architecture passing for in-domain and package imports", () => {
+    const report = deriveQualityReport(
+      reportInput({
+        diffPatch: patchFor("src/domain/widget.ts", [
+          'import type { Foo } from "./types";',
+          'import path from "node:path";',
+        ]),
+      }),
+    );
+    expect(report.Architecture.state).toBe("NOT_REQUIRED");
+    expect(report.Architecture.evidence.join(" ")).toContain("stayed within the domain layer");
   });
 
   it("warns on Maintainability when changed files fall outside the pre-execution scope", () => {
@@ -239,6 +297,58 @@ describe("deriveTrustState", () => {
     const plan = buildAssurancePlan(grown, "BALANCED");
     const report = deriveQualityReport(reportInput({ assurancePlan: plan, diffRisk: grown }));
     expect(report.Architecture.state).toBe("WARN");
+    expect(deriveTrustState("VERIFIED", report, plan, undefined)).toBe("CORRECTNESS_VERIFIED");
+  });
+
+  it("caps at CORRECTNESS_VERIFIED when a plan-gated DEBT dimension WARNs (M7A)", () => {
+    // Two net markers reach DebtRisk MEDIUM, so the diff-captured plan requires DEBT.
+    const vector = deriveRiskVector({
+      files: ["src/domain/widget.ts"],
+      moduleOwnership: { "src/domain/widget.ts": "domain" },
+      packageOwnership: { "src/domain/widget.ts": "src" },
+      crossModuleEdgeCount: 0,
+      debtMarkers: { added: 2, removed: 0 },
+    });
+    expect(vector.DebtRisk.level).toBe("MEDIUM");
+    const plan = buildAssurancePlan(vector, "BALANCED");
+    expect(plan.required).toContain("DEBT");
+    const report = deriveQualityReport(
+      reportInput({
+        assurancePlan: plan,
+        diffRisk: vector,
+        diffPatch: patchFor("src/domain/widget.ts", ["// TODO: a", "// TODO: b"]),
+      }),
+    );
+    expect(report.DebtDelta.state).toBe("WARN");
+    expect(deriveTrustState("VERIFIED", report, plan, undefined)).toBe("CORRECTNESS_VERIFIED");
+  });
+
+  it("caps at CORRECTNESS_VERIFIED when a plan-gated Architecture dimension FAILs on layering (M7B)", () => {
+    const vector = deriveRiskVector({
+      files: ["src/api/auth/session.ts", "src/domain/widget.ts"],
+      moduleOwnership: {
+        "src/api/auth/session.ts": "api",
+        "src/domain/widget.ts": "domain",
+      },
+      packageOwnership: {
+        "src/api/auth/session.ts": "src",
+        "src/domain/widget.ts": "src",
+      },
+      crossModuleEdgeCount: 2,
+    });
+    const plan = buildAssurancePlan(vector, "BALANCED");
+    expect(plan.required).toContain("ARCHITECTURE");
+    const report = deriveQualityReport(
+      reportInput({
+        assurancePlan: plan,
+        preExecutionRisk: vector,
+        diffRisk: vector,
+        diffPatch: patchFor("src/domain/widget.ts", [
+          'import { RunService } from "../application/run-service";',
+        ]),
+      }),
+    );
+    expect(report.Architecture.state).toBe("FAIL");
     expect(deriveTrustState("VERIFIED", report, plan, undefined)).toBe("CORRECTNESS_VERIFIED");
   });
 

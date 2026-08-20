@@ -261,8 +261,9 @@ silently absorbs and reports as its own failure.
 evidence (distinct modules/packages touched via M2's ownership maps, resolved cross-module
 `IMPORTS` edges via M2's relations graph, a path-pattern match), `HEURISTIC` when only a weaker
 path-pattern proxy is available and nothing matched (so the honest default is "probably not", not
-a guessed level), and `INSUFFICIENT_EVIDENCE` for the two dimensions (`ReasoningDifficulty`,
-`DebtRisk`) that have no deterministic source yet at all — reported as such rather than guessed.
+a guessed level), and `INSUFFICIENT_EVIDENCE` for dimensions that have no deterministic source yet at a given stage
+(`ReasoningDifficulty` always; `DebtRisk` only pre-execution, since M7A's declared-debt checker made
+it `DETERMINISTIC` once a diff exists) — reported as such rather than guessed.
 `CodeCoupling`/`BlastRadius`/`ArchitectureSensitivity` specifically degrade their own provenance
 (`coverageProvenance` in risk.ts) based on how many touched files actually have module/package
 ownership entries: full coverage stays `DETERMINISTIC`, partial coverage degrades to `HEURISTIC`,
@@ -273,8 +274,8 @@ assess risk.
 
 `src/domain/assurance.ts`'s `buildAssurancePlan` compiles a `RiskVector` plus the task's
 `qualityPreference` (`FAST`/`BALANCED`/`HIGH`/`CRITICAL`, defaulting to `BALANCED`) into an
-`AssurancePlan`: a deterministic rule table (not a model call) deciding which of eight checks
-(`CORRECTNESS`, `INTEGRATION`, `ARCHITECTURE`, `SECURITY`, `PERFORMANCE`, `CONCURRENCY`,
+`AssurancePlan`: a deterministic rule table (not a model call) deciding which of nine checks
+(`CORRECTNESS`, `INTEGRATION`, `ARCHITECTURE`, `DEBT`, `SECURITY`, `PERFORMANCE`, `CONCURRENCY`,
 `RESILIENCE`, `INDEPENDENT_REVIEW`) are required, with a reason recorded for every check —
 required or not, never silent. `CORRECTNESS` is always required (the existing trusted-verifier
 baseline every candidate already goes through); higher risk or a higher quality preference expands
@@ -294,13 +295,23 @@ available before any diff exists), and again from the actual diff's `changedFile
 `captureCandidate` resolves one (ground truth, refining the estimate with what was actually
 touched rather than what was expected to be).
 
-Not yet implemented: wiring the plan's required checks to actual verifiers. M5 only decides what
-SHOULD be checked and why; `SECURITY`, `PERFORMANCE`, `ARCHITECTURE`, `CONCURRENCY`, `RESILIENCE`,
-and `INDEPENDENT_REVIEW` are not yet backed by real checkers — that is M6-M10's job. A plan
-requiring `SECURITY` today does not cause a security scan to run; it only records, with evidence,
-that one should. `ReasoningDifficulty` and `DebtRisk` remain `INSUFFICIENT_EVIDENCE` for every run
-until a real source exists (`DebtRisk` is the stated target of the M7A roadmap milestone; nothing
-is planned yet for `ReasoningDifficulty`).
+Two of the plan's checks gained deterministic checkers at M7, both reading the candidate's own
+unified diff (parsed by `src/domain/diff-parse.ts`): `DEBT` (M7A) — `src/domain/debt.ts` counts
+word-bounded declared-debt markers (`TODO`/`FIXME`/`HACK`/`XXX`) in the diff's added vs removed
+lines of source files; net ≤ 0 passes, a small positive delta warns, and net ≥ 5
+(`DEBT_FAIL_THRESHOLD`) fails. At the diff-captured stage the same counts feed `DebtRisk`
+(`DETERMINISTIC`; net ≥ 2 `MEDIUM`, ≥ 5 `HIGH`), which is what makes the plan require `DEBT`.
+`ARCHITECTURE` (M7B) — `src/domain/architecture.ts` enforces the layering rule that `src/domain`,
+the innermost layer, must not add an import resolving outside itself; a violation is reported as
+`FAIL` on the Architecture quality dimension whether or not the plan required the check, though
+gating still follows the plan's decision. Both checkers analyze added lines only — a removed
+violation or a paid-down marker is improvement, not a new finding.
+
+Not yet implemented: wiring the plan's required checks to actual verifiers. `SECURITY`,
+`PERFORMANCE`, `CONCURRENCY`, `RESILIENCE`, and `INDEPENDENT_REVIEW` are not yet backed by real
+checkers — that is M6-M10's job. A plan requiring `SECURITY` today does not cause a security scan
+to run; it only records, with evidence, that one should. `ReasoningDifficulty` remains
+`INSUFFICIENT_EVIDENCE` for every run until a real source exists (nothing is planned yet for it).
 
 ## Durable state
 

@@ -215,6 +215,23 @@ const runTask = async (input: FixtureInput): Promise<void> => {
       changedFiles.push(authPath);
     }
   }
+  // M7A integration scenario: append declared-debt markers to an existing source file so the
+  // diff-captured DebtRisk (and the DebtDelta quality dimension) are genuinely non-zero.
+  if (/introduce debt/iu.test(input.task.prompt)) {
+    const debtPath = path.resolve("src/domain/auth-service.ts");
+    const existing = await readFile(debtPath, "utf8").catch(() => undefined);
+    if (existing !== undefined) {
+      await writeFile(
+        debtPath,
+        `${existing}\n// TODO: fixture debt marker one\n// TODO: fixture debt marker two\n`,
+        "utf8",
+      );
+      emit("tool", { tool: "edit_file", operation: "edit", path: "src/domain/auth-service.ts" });
+      if (!changedFiles.includes("src/domain/auth-service.ts")) {
+        changedFiles.push("src/domain/auth-service.ts");
+      }
+    }
+  }
   const content = [
     "# Native agent fixture output",
     "",

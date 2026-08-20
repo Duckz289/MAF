@@ -1,4 +1,6 @@
+import { deriveArchitectureGovernance } from "./architecture";
 import type { AssuranceCheck, AssurancePlan } from "./assurance";
+import { deriveDebtDelta } from "./debt";
 import { riskLevelRank, type RiskVector } from "./risk";
 import type { TrustState, VerificationState } from "./types";
 
@@ -61,6 +63,8 @@ export interface QualityReportInput {
   changedFiles: string[];
   initialModules: string[];
   moduleOwnership: Record<string, string>;
+  /** The candidate's full unified diff patch — the M7 checkers' evidence source. */
+  diffPatch: string;
 }
 
 const requiredCheck = (plan: AssurancePlan, check: AssuranceCheck): boolean =>
@@ -104,18 +108,34 @@ const deriveCorrectness = (
     : deterministic("FAIL", [`trusted verification state is ${verificationState}, not VERIFIED`]);
 
 /**
- * Not a judgment of architectural quality (that is model-review territory, see M6C) -- a
- * deterministic scope-creep detector comparing the pre-execution estimate against the actual
- * diff's ground-truth risk. A candidate that ended up more architecturally entangled than expected
- * is worth a reviewer's attention even though nothing here can say whether that entanglement is
- * *good* architecture or bad.
+ * Two deterministic signals, no design opinions (those are model-review territory, see M6C):
+ * (1) the M7B layering rule — a src/domain file importing outward inverts the dependency
+ * direction and is FAIL; (2) the M6 scope-creep detector comparing the pre-execution estimate
+ * against the actual diff's ground-truth risk — a candidate that ended up more entangled than
+ * expected is worth attention (WARN) even though nothing here says whether the entanglement is
+ * good or bad. A layering violation is reported as FAIL whether or not the plan required the
+ * ARCHITECTURE check (a broken rule is evidence, not a preference); gating still follows the
+ * plan's decision, per the gated-dimensions contract.
  */
 const deriveArchitecture = (
   plan: AssurancePlan,
   preExecutionRisk: RiskVector,
   diffRisk: RiskVector,
+  diffPatch: string,
 ): QualityCheckResult => {
-  if (!requiredCheck(plan, "ARCHITECTURE")) return notRequiredResult(plan, "ARCHITECTURE");
+  const governance = deriveArchitectureGovernance(diffPatch);
+  const governanceEvidence = governance.evidence[0] ?? "layering governance produced no evidence";
+  if (governance.state === "FAIL") {
+    return deterministic("FAIL", [
+      `layering violation(s) introduced by the diff: ${governance.violations[0]}`,
+      ...(governance.violations.length > 1
+        ? [`...and ${governance.violations.length - 1} more`]
+        : []),
+    ]);
+  }
+  if (!requiredCheck(plan, "ARCHITECTURE")) {
+    return deterministic("NOT_REQUIRED", [plan.reasons.ARCHITECTURE, governanceEvidence]);
+  }
   const before = preExecutionRisk.ArchitectureSensitivity.level;
   const after = diffRisk.ArchitectureSensitivity.level;
   const beforeBlast = preExecutionRisk.BlastRadius.level;
@@ -126,9 +146,11 @@ const deriveArchitecture = (
   return expanded
     ? deterministic("WARN", [
         `cross-module coupling expanded beyond the pre-execution estimate (ArchitectureSensitivity ${before} -> ${after}, BlastRadius ${beforeBlast} -> ${afterBlast})`,
+        governanceEvidence,
       ])
     : deterministic("PASS", [
         `architectural footprint stayed within the pre-execution estimate (ArchitectureSensitivity ${after}, BlastRadius ${afterBlast})`,
+        governanceEvidence,
       ]);
 };
 
@@ -185,11 +207,13 @@ export const deriveQualityReport = (input: QualityReportInput): QualityReport =>
     changedFiles,
     initialModules,
     moduleOwnership,
+    diffPatch,
   } = input;
+  const debt = deriveDebtDelta(diffPatch);
 
   return {
     Correctness: deriveCorrectness(verificationState, verificationCommand, verificationExitCode),
-    Architecture: deriveArchitecture(assurancePlan, preExecutionRisk, diffRisk),
+    Architecture: deriveArchitecture(assurancePlan, preExecutionRisk, diffRisk, diffPatch),
     Maintainability: deriveMaintainability(changedFiles, initialModules, moduleOwnership),
     Security: !requiredCheck(assurancePlan, "SECURITY")
       ? notRequiredResult(assurancePlan, "SECURITY")
@@ -201,37 +225,38 @@ export const deriveQualityReport = (input: QualityReportInput): QualityReport =>
       ? notRequiredResult(assurancePlan, "RESILIENCE")
       : pendingCheckerResult("M10"),
     TestQuality: deriveTestQuality(changedFiles),
-    // DebtDelta directly reuses M5's DebtRisk evidence rather than inventing a second, overlapping
-    // measure -- DebtRisk is always INSUFFICIENT_EVIDENCE today (pending the M7A roadmap
-    // milestone), so this is honestly UNKNOWN, not PASS, until that real source exists. DebtDelta
-    // maps to no assurance check yet, so it is informational and does not gate promotion.
+    // DebtDelta is the M7A declared-debt checker: deterministic from the diff's own patch. The
+    // result is always reported; whether it gates promotion follows the plan's DEBT decision (the
+    // plan already saw the same marker counts as DebtRisk at the diff-captured stage).
     DebtDelta: {
-      state: "UNKNOWN",
-      evidence: diffRisk.DebtRisk.evidence,
-      provenance: "PENDING_CHECKER",
+      state: debt.state,
+      evidence: debt.evidence,
+      provenance: "DETERMINISTIC",
     },
   };
 };
 
 /**
  * Dimensions whose result is bound to an assurance check the plan can require AND for which a
- * deterministic checker already exists in this milestone. Security/Performance/Resilience are
- * deliberately absent: their checkers arrive in M8/M9/M10, so until then those dimensions are
- * honestly reported as UNKNOWN (never PASS) but cannot gate — an unbuilt checker must not
- * deadlock MERGE_ELIGIBLE for every security-adjacent change for three milestones, and must not
- * silently pass anything either. When each checker lands, its dimension joins this table and
- * gating activates with no other change.
+ * deterministic checker already exists. Security/Performance/Resilience are deliberately absent:
+ * their checkers arrive in M8/M9/M10, so until then those dimensions are honestly reported as
+ * UNKNOWN (never PASS) but cannot gate — an unbuilt checker must not deadlock MERGE_ELIGIBLE for
+ * every security-adjacent change for three milestones, and must not silently pass anything either.
+ * When each checker lands, its dimension joins this table and gating activates with no other
+ * change. DebtDelta joined at M7A; Architecture's governance checker (M7B) reports through the
+ * existing ARCHITECTURE gate.
  */
 const gatedDimensions: Partial<Record<QualityDimension, AssuranceCheck>> = {
   Correctness: "CORRECTNESS",
   Architecture: "ARCHITECTURE",
+  DebtDelta: "DEBT",
 };
 
 /**
  * A gated dimension blocks promotion unless it is exactly PASS: FAIL is deterministic evidence of
  * a problem, WARN is "checked, flagged" (e.g. architectural footprint expanded beyond estimate) --
  * neither may silently count as verified. Only NOT_REQUIRED dims, ungated informational dims
- * (Maintainability, TestQuality, DebtDelta), and not-yet-implemented dims (Security, Performance,
+ * (Maintainability, TestQuality), and not-yet-implemented dims (Security, Performance,
  * Resilience — reported UNKNOWN pending their milestone's checker) don't gate: the assurance plan
  * already decided what was required; these are the checks that can actually be run today.
  */

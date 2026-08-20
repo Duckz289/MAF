@@ -36,7 +36,19 @@ describe("deriveRiskVector", () => {
   it("honestly marks dimensions with no deterministic source as insufficient evidence", () => {
     const vector = deriveRiskVector(evidence());
     expect(vector.ReasoningDifficulty.provenance).toBe("INSUFFICIENT_EVIDENCE");
+    // No diff yet, so no declared-debt delta can be measured — pre-execution stays honest.
     expect(vector.DebtRisk.provenance).toBe("INSUFFICIENT_EVIDENCE");
+  });
+
+  it("derives DebtRisk deterministically from the diff's declared-debt markers (M7A)", () => {
+    const flat = deriveRiskVector(evidence({ debtMarkers: { added: 1, removed: 1 } }));
+    expect(flat.DebtRisk.level).toBe("LOW");
+    expect(flat.DebtRisk.provenance).toBe("DETERMINISTIC");
+    const medium = deriveRiskVector(evidence({ debtMarkers: { added: 2, removed: 0 } }));
+    expect(medium.DebtRisk.level).toBe("MEDIUM");
+    expect(medium.DebtRisk.evidence[0]).toContain("net 2");
+    const high = deriveRiskVector(evidence({ debtMarkers: { added: 5, removed: 0 } }));
+    expect(high.DebtRisk.level).toBe("HIGH");
   });
 
   it("flags security sensitivity deterministically from an auth-shaped path", () => {

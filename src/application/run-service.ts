@@ -33,6 +33,7 @@ import {
   type AssurancePlan,
   type QualityPreference,
 } from "../domain/assurance";
+import { deriveDebtDelta } from "../domain/debt";
 import { deriveQualityReport, deriveTrustState, type QualityReport } from "../domain/quality";
 import { buildReviewPrompt, parseReviewVerdict, type ReviewVerdict } from "../domain/review";
 import { ProviderCircuitBreaker, ProviderCircuitOpenError } from "../domain/circuit-breaker";
@@ -1537,6 +1538,9 @@ export class RunService {
     // Ground truth refinement: the actual changed files, now that a diff exists. When the diff
     // touches nothing there is nothing to refine from -- the pre-execution estimate stands (the
     // quality gate still needs a vector to report against, and honest fallback beats absence).
+    // The diff-captured vector also carries the M7A declared-debt marker counts from the patch
+    // itself, so DebtRisk and the plan's DEBT decision reflect the diff, not a guess.
+    const debtDelta = deriveDebtDelta(diff.patch);
     const assessment =
       diff.changedFiles.length > 0
         ? await this.assessRisk(
@@ -1545,6 +1549,7 @@ export class RunService {
             contextState.snapshot,
             diff.changedFiles,
             "diff-captured",
+            { added: debtDelta.addedMarkers, removed: debtDelta.removedMarkers },
           )
         : fallbackAssessment;
     return { id, artifact, diff, attempt, assessment };
@@ -1563,6 +1568,7 @@ export class RunService {
     snapshot: RepositorySnapshot,
     files: string[],
     stage: "pre-execution" | "diff-captured",
+    debtMarkers?: { added: number; removed: number },
   ): Promise<RiskAssessment> {
     const riskVector = deriveRiskVector({
       files,
@@ -1573,6 +1579,7 @@ export class RunService {
         snapshot.moduleOwnership,
         files,
       ),
+      ...(debtMarkers ? { debtMarkers } : {}),
     });
     const qualityPreference = task.qualityPreference ?? "BALANCED";
     const assurancePlan = buildAssurancePlan(riskVector, qualityPreference);
@@ -1615,6 +1622,7 @@ export class RunService {
       changedFiles: candidate.diff.changedFiles,
       initialModules,
       moduleOwnership: contextState.snapshot.moduleOwnership,
+      diffPatch: candidate.diff.patch,
     });
     // The report is derived before any reviewer session starts: if a gated dimension already caps
     // promotion at CORRECTNESS_VERIFIED, no verdict — approved or not — can change the outcome, so

@@ -8,7 +8,7 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 - Start branch: `adaptive-harness/runtime-signals-v0.1` at `357ab60` (clean tree).
 - Baseline validation (2026-08-19): `format:check`, `lint`, `typecheck`, `test` (49 passing),
   `build` (server + UI), `compose:check`, `smoke` — all PASS.
-- Current milestone: M7 — Architecture Governance and Technical Debt.
+- Current milestone: M8 — Security Assurance.
 
 ## Confirmed repository facts
 
@@ -36,7 +36,7 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 | M4 | Budget authority (4A–4E) | DONE (VERIFIED) | 0994fa7 |
 | M5 | Task risk profiler + assurance planner | DONE (VERIFIED) | cea4114 |
 | M6 | Quality governance (6A–6G) | DONE (VERIFIED) | f86ef1a |
-| M7 | Architecture governance + debt delta | NOT STARTED | |
+| M7 | Architecture governance + debt delta | DONE (VERIFIED) | (pending) |
 | M8 | Security assurance (8A–8B) | NOT STARTED | |
 | M9 | Performance & runtime assurance | NOT STARTED | |
 | M10 | Production-like resilience | NOT STARTED | |
@@ -607,6 +607,94 @@ CORRECTNESS or the HIGH-security+CRITICAL review rule).
   (test infra only); the reviewer session is not policy-enforced (it only reads); TestQuality
   counts any test file in the diff (informational, ungated).
 - Re-validated after fixes: `format:check`, `lint`, `typecheck`, `test` (179 passing), `build`,
+  `compose:check`, `smoke` — all PASS.
+
+## M7 design (Architecture Governance and Technical Debt)
+
+Starting point: M6 left `DebtDelta` honestly UNKNOWN (`PENDING_CHECKER`) and `DebtRisk`
+`INSUFFICIENT_EVIDENCE`, with the documented contract "when each checker lands, its dimension
+joins `gatedDimensions` and gating activates with no other change." M7 lands both checkers the
+plan already knew how to require. Scope: M7A declared-debt delta checker + M7B deterministic
+layering rule, both reading the candidate's own unified diff.
+
+1. `src/domain/diff-parse.ts` (pure): `parseFilePatches(patch)` — a minimal unified-diff parser
+   producing per-file added/removed lines. Git-shaped headers only (quoted, `/dev/null`, or
+   `a/`/`b/`-prefixed) so source content that begins with `--`/`++` cannot impersonate a header; a
+   deleted file (`+++ /dev/null`) keeps its entry via the preceding `--- a/<file>` header so its
+   removed lines still count (a deleted file's markers ARE removed debt).
+2. `src/domain/debt.ts` (pure, M7A): `deriveDebtDelta(patch)` counts word-bounded declared-debt
+   markers (`TODO`/`FIXME`/`HACK`/`XXX`) in added vs removed lines of source files only. Net ≤ 0
+   PASS, 1–4 WARN, ≥ `DEBT_FAIL_THRESHOLD` (5) FAIL — a rewrite that defers five new TODOs is
+   debt-accumulation-by-another-name. Removed markers offset added ones: paydown is real.
+3. `src/domain/architecture.ts` (pure, M7B): `deriveArchitectureGovernance(patch)` enforces the
+   layering rule implied by M2's module convention (`src/<layer>`): a `src/domain` file's ADDED
+   import resolving outside `src/domain` inverts the dependency direction → FAIL with one
+   violation per offending import. Catches `from`-clause, side-effect `import "..."`, dynamic
+   `import(...)`, and `require(...)` forms; comment lines are skipped so prose mentioning a path
+   cannot fabricate a violation. Non-relative (package/builtin) imports unconstrained; layers
+   above domain unconstrained (application→infrastructure is legitimate); removed lines are not
+   analyzed — only added imports can introduce a violation.
+4. `src/domain/risk.ts`: `DebtRisk` gains the diff-captured inputs. When `debtMarkers` is provided
+   (only at the diff-captured stage — no diff exists pre-execution) it is DETERMINISTIC (net ≥ 5
+   HIGH, ≥ 2 MEDIUM, else LOW); pre-execution stays honestly INSUFFICIENT_EVIDENCE.
+5. `src/domain/assurance.ts`: new `DEBT` check — required when DebtRisk ≥ MEDIUM or the preference
+   is HIGH/CRITICAL, with the usual always-present reason.
+6. `src/domain/quality.ts`: `DebtDelta` joins `gatedDimensions` (→ `DEBT`) — exactly the M6
+   contract, gating activated with no other change. Architecture now runs governance first: a
+   layering violation is reported as FAIL whether or not the plan required ARCHITECTURE (a broken
+   rule is evidence, not a preference) but gating still follows the plan's decision, per M6's
+   plan-gating contract. Both checkers analyze the real patch (`diffPatch` input, wired in
+   `RunService.assessQuality`); `captureCandidate` computes the marker counts once from the real
+   diff and feeds them to the diff-captured risk assessment, so the plan and the DebtDelta result
+   can never disagree (same `deriveDebtDelta` source, same patch).
+7. Fixture (`src/fixtures/native-agent.ts`): "introduce debt" marker appends two TODOs to a real
+   source file, so integration tests exercise a genuinely non-zero debt delta.
+
+## M7 validation log
+
+- `tests/debt.test.ts` (unit, pure, 8 tests): PASS/WARN/FAIL thresholds, paydown net −2, non-source
+  ignored, word-boundary (`TODOS` ≠ marker), empty patch, deleted-file markers counted as removed.
+- `tests/architecture.test.ts` (unit, pure, 10 tests): FAIL for `../application`/
+  `../infrastructure`/`../../application`; PASS for in-domain relative, package, and builtin
+  imports (only relative counted); application→infrastructure unconstrained; non-source ignored;
+  removed-lines-only PASS; side-effect/`require()`/dynamic-import forms all FAIL (no from-clause
+  bypass); comment prose mentioning a path does not fabricate a violation; parser multi-file
+  attribution; `--`/`++`-prefixed content lines not mistaken for headers; deleted-file attribution.
+- `tests/risk.test.ts`, `tests/assurance.test.ts`, `tests/quality.test.ts` (updated): DebtRisk
+  deterministic from markers (LOW/MEDIUM@2/HIGH@5 with net evidence); DEBT plan requirement at
+  MEDIUM or HIGH/CRITICAL preference; DebtDelta deterministic PASS/WARN and gated WARN capping at
+  CORRECTNESS_VERIFIED; layering FAIL reported even when ungated.
+- `tests/quality-governance.integration.test.ts` (end-to-end): the fixture agent genuinely adds
+  two TODOs → DebtRisk MEDIUM/DETERMINISTIC at the diff-captured stage, DEBT plan-required,
+  DebtDelta WARN, trust capped at CORRECTNESS_VERIFIED; low-risk runs now report DebtDelta
+  PASS/DETERMINISTIC (previously UNKNOWN).
+- Full suite: `format:check`, `lint`, `typecheck`, `test` (202 passing), `build`, `compose:check`,
+  `smoke` — all PASS.
+- Fresh-context review (independent subagent, working-tree diff plus full-repo read access; it
+  independently executed the pure functions with crafted probe inputs before reporting) confirmed
+  the gating contract (FAIL always reported, gating plan-bound), threshold consistency between
+  DebtRisk and DEBT_FAIL_THRESHOLD, run-service wiring, and CRLF/multi-file/resolution edge cases.
+  Found 1 MATERIAL and 5 minor issues, fixed before commit:
+  1. **MATERIAL — layering rule bypassable via side-effect imports and `require()`.** The
+     specifier regex only matched `from "..."` and `import(...)` forms, so
+     `import "../application/register-side-effects";` produced a silent PASS over a real
+     domain→outer-layer dependency — a violation of the checker's own one rule and of "never claim
+     verification you didn't perform". Fixed: the regex now catches from-clause, side-effect,
+     dynamic-import, and require forms, with comment lines excluded; regression tests cover all
+     four forms plus the comment false-positive.
+  2. **Deleted files' removed lines were dropped** (`+++ /dev/null` discarded the entry), so a
+     deleted file full of TODOs counted as zero removed markers, and a deletions-only patch
+     produced the false evidence "no source files changed". Fixed via `---`-header attribution
+     (above); regression tests cover both.
+  3. **A removed source line starting with `-- ` could be mistaken for a `--- a/...` header.**
+     Fixed by requiring the header shape (quoted/`/dev/null`/`a|b/`-prefixed) for both headers.
+  Minor, judged acceptable as-is: (4) a `from "..."` inside a mid-line string literal in real code
+     could still match (comment lines are excluded; the innermost statement-level form is not
+     parsed — the checker is a diff heuristic over added lines, not a TypeScript parser); (5) an
+     added line whose content itself begins with `++ a/b/...`-shaped text could impersonate a
+     header (not reachable from the harness's own git diffs); (6) space-separated timestamps in
+     `+++` headers would corrupt the filename (git uses tab/no timestamp).
+- Re-validated after fixes: `format:check`, `lint`, `typecheck`, `test` (207 passing), `build`,
   `compose:check`, `smoke` — all PASS.
 
 ## Blockers

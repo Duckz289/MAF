@@ -139,8 +139,9 @@ describe("quality governance (M6)", () => {
     expect(data.report.Correctness.state).toBe("PASS");
     // No review was required, so none ran and none is claimed.
     expect(data.review).toBeUndefined();
-    // Debt honestly stays UNKNOWN pending the M7 checker.
-    expect(data.report.DebtDelta.state).toBe("UNKNOWN");
+    // The M7A debt checker ran on the real diff: no markers added, deterministic PASS.
+    expect(data.report.DebtDelta.state).toBe("PASS");
+    expect(data.report.DebtDelta.provenance).toBe("DETERMINISTIC");
   });
 
   it("keeps a candidate at PROPOSED when trusted verification fails, without consulting any model review", async () => {
@@ -254,6 +255,45 @@ describe("quality governance (M6)", () => {
       expect(data.trustState).toBe("QUALITY_VERIFIED");
     });
   }
+
+  it("blocks promotion at CORRECTNESS_VERIFIED when the diff declares new debt (M7A end-to-end)", async () => {
+    const fixture = await createHighSecurityFixtureRepository();
+    fixtures.push(fixture);
+    const { service, store } = harness(fixture.sandboxRoot);
+    const created = await service.create({
+      // The fixture agent appends two TODO markers to a real source file, so the diff-captured
+      // DebtRisk reaches MEDIUM and the plan requires DEBT — DebtDelta WARN then gates.
+      prompt: "Harden the auth token session handling. introduce debt",
+      repositoryPath: fixture.path,
+      verification: { expectedFile: "agent-output.md" },
+      qualityPreference: "BALANCED",
+    });
+    await service.waitForIdle(created.id);
+
+    const run = await store.getRun(created.id);
+    expect(run?.state).toBe("COMPLETED");
+    expect(run?.verificationState).toBe("VERIFIED");
+    expect(run?.trustState).toBe("CORRECTNESS_VERIFIED");
+
+    const data = await qualityEvent(service, created.id);
+    expect(data.report.DebtDelta.state).toBe("WARN");
+    expect(data.report.DebtDelta.evidence[0]).toContain("2 debt marker(s) added");
+
+    // DebtRisk at the diff-captured stage is now deterministic evidence in the run's event stream.
+    const events = await service.events(created.id);
+    const profiled = events
+      .filter((event) => event.type === "RiskProfiled")
+      .map(
+        (event) =>
+          event.data as {
+            stage: string;
+            riskVector: { DebtRisk: { level: string; provenance: string } };
+          },
+      );
+    const diffStage = profiled.find((entry) => entry.stage === "diff-captured");
+    expect(diffStage?.riskVector.DebtRisk.level).toBe("MEDIUM");
+    expect(diffStage?.riskVector.DebtRisk.provenance).toBe("DETERMINISTIC");
+  });
 
   it("reports quality dimensions honestly without gating on not-yet-built checkers (warn, don't block)", async () => {
     const fixture = await createSecuritySensitiveFixtureRepository();

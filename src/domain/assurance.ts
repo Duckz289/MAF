@@ -14,6 +14,7 @@ export type AssuranceCheck =
   | "CORRECTNESS"
   | "INTEGRATION"
   | "ARCHITECTURE"
+  | "DEBT"
   | "SECURITY"
   | "PERFORMANCE"
   | "CONCURRENCY"
@@ -68,6 +69,18 @@ export const buildAssurancePlan = (
         : atLeast(dimension(riskVector, "BlastRadius"), "MEDIUM")
           ? "Multiple packages are touched."
           : "Change stays within one module/package boundary.",
+    ),
+    // DEBT gates on the diff's declared-debt delta (the M7A checker). DebtRisk is only measurable
+    // once a diff exists, so pre-execution this fires on preference alone — HIGH/CRITICAL tasks
+    // hold their candidates to "no declared debt added".
+    DEBT: decide(
+      "DEBT",
+      atLeast(dimension(riskVector, "DebtRisk"), "MEDIUM") || highQuality,
+      atLeast(dimension(riskVector, "DebtRisk"), "MEDIUM")
+        ? "The diff's declared-debt marker delta reaches the risk threshold."
+        : highQuality
+          ? `Quality preference is ${qualityPreference}.`
+          : "Declared-debt delta does not reach the threshold and quality preference does not require it.",
     ),
     SECURITY: decide(
       "SECURITY",

@@ -34,6 +34,7 @@ describe("buildAssurancePlan", () => {
       "CORRECTNESS",
       "INTEGRATION",
       "ARCHITECTURE",
+      "DEBT",
       "SECURITY",
       "PERFORMANCE",
       "CONCURRENCY",
@@ -45,6 +46,17 @@ describe("buildAssurancePlan", () => {
       expect(typeof plan.reasons[check]).toBe("string");
     }
     expect([...plan.required, ...plan.notRequired].sort()).toEqual([...allChecks].sort());
+  });
+
+  it("requires the DEBT check when the diff's declared-debt delta reaches MEDIUM (M7A)", () => {
+    const vector = { ...lowRiskVector(), DebtRisk: value("MEDIUM", "DETERMINISTIC") };
+    const plan = buildAssurancePlan(vector, "BALANCED");
+    expect(plan.required).toContain("DEBT");
+    expect(plan.reasons.DEBT).toContain("debt");
+    // LOW debt delta on a BALANCED task keeps the small plan small.
+    expect(buildAssurancePlan(lowRiskVector(), "BALANCED").required).not.toContain("DEBT");
+    // HIGH preference holds candidates to no-debt-added even when the delta is LOW.
+    expect(buildAssurancePlan(lowRiskVector(), "HIGH").required).toContain("DEBT");
   });
 
   it("requires security for a security-sensitive change, matching the auth example", () => {
@@ -102,13 +114,14 @@ describe("buildAssurancePlan", () => {
     expect(plan.required).toContain("RESILIENCE");
   });
 
-  it("a HIGH (not CRITICAL) preference only expands INTEGRATION, not SECURITY or RESILIENCE, on a low-risk change", () => {
+  it("a HIGH (not CRITICAL) preference only expands INTEGRATION and DEBT, not SECURITY or RESILIENCE, on a low-risk change", () => {
     // HIGH and CRITICAL are deliberately not treated the same everywhere: SECURITY and RESILIENCE
     // only expand for CRITICAL specifically, since forcing every HIGH-preference task through a
     // security/resilience check regardless of actual risk would defeat "a small, low-risk change
-    // gets a small plan."
+    // gets a small plan." DEBT is deterministic and cheap, so HIGH does hold it.
     const plan = buildAssurancePlan(lowRiskVector(), "HIGH");
     expect(plan.required).toContain("INTEGRATION");
+    expect(plan.required).toContain("DEBT");
     expect(plan.required).not.toContain("SECURITY");
     expect(plan.required).not.toContain("RESILIENCE");
   });
