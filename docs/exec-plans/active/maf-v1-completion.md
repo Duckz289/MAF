@@ -8,19 +8,22 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 - Start branch: `adaptive-harness/runtime-signals-v0.1` at `357ab60` (clean tree).
 - Baseline validation (2026-08-19): `format:check`, `lint`, `typecheck`, `test` (49 passing),
   `build` (server + UI), `compose:check`, `smoke` — all PASS.
-- Current milestone: M8 — Security Assurance.
+- Current milestone: M9 — Performance and Runtime Assurance.
 
 ## Confirmed repository facts
 
-- `Run.executionMode` is mutated by `AdaptiveModeController.apply` the moment a decision is made
-  (`src/domain/mode-controller.ts`, `src/application/run-service.ts#observeAndDecide`); a running
-  native session keeps the policy/context/env (`HARNESS_MODE`) it started with. The M1 gap exists.
-- Agent sessions are one-shot processes today (fixture reads one stdin line, works, exits);
-  decisions made mid-session are never delivered to the session.
-- `LocalRepositoryIndex` truncates silently: `git ls-files` capped at 4 000 files, source parsing
-  capped at 500 files, per-file cap 1 MB (`src/infrastructure/project-brain.ts`). The M2 gap exists.
-- Verification: `CommandVerifier` (command / expectedFile / diff-nonempty), one bounded repair
-  attempt, verified-only handoff. No recovery plane, no budget authority, no risk profiling.
+- M1 now separates desired from effective mode and enforces transitions through acknowledged live
+  updates or bounded session boundaries; an unenforced desired mode is never reported as effective.
+- M2 now performs a full path-only inventory with an honest 100 000-file safety ceiling and a
+  bounded digest-aware scoped parse. Runtime observations receive the incrementally grown graph.
+- M3 persists recovery capsules, preserves candidate-lineage metadata, bounds new-session retries,
+  refuses stale/unknown revision resumes, and provides an evidence-preserving emergency stop.
+- M4–M7 add budget authority, deterministic risk/assurance planning, candidate-bound quality
+  governance, bounded independent review, debt delta, and architecture-layer checks.
+- M8's deterministic security checker and unconditional Security FAIL gate landed at `07337bc`;
+  the independently reproduced global-RegExp state leak and the wider persistence/unknown-state
+  boundary were repaired at `539f000`. Two fresh-context reviews and composed API/storage tests
+  now support VERIFIED status; the bounded pattern matcher is not represented as universal DLP.
 - Store: `RunStore` (in-memory + Postgres, payload-jsonb pattern). Migrations numbered under
   `migrations/`.
 - UI: Fluent-UI product workspace, recently redesigned — do not redesign; extend minimally.
@@ -37,7 +40,7 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 | M5 | Task risk profiler + assurance planner | DONE (VERIFIED) | cea4114 |
 | M6 | Quality governance (6A–6G) | DONE (VERIFIED) | f86ef1a |
 | M7 | Architecture governance + debt delta | DONE (VERIFIED) | 48fbfde |
-| M8 | Security assurance (8A–8B) | NOT STARTED | |
+| M8 | Security assurance (8A–8B) | DONE (VERIFIED) | 07337bc + 539f000 |
 | M9 | Performance & runtime assurance | NOT STARTED | |
 | M10 | Production-like resilience | NOT STARTED | |
 | M11 | Longitudinal governance | NOT STARTED | |
@@ -696,6 +699,50 @@ layering rule, both reading the candidate's own unified diff.
      `+++` headers would corrupt the filename (git uses tab/no timestamp).
 - Re-validated after fixes: `format:check`, `lint`, `typecheck`, `test` (207 passing), `build`,
   `compose:check`, `smoke` — all PASS.
+
+## M8 repair design (Security Assurance)
+
+Starting point: commit `07337bc` had the intended deterministic secret-leak gate and persistence
+redactor, but `redactPatchPreview` called `.test()` on a shared global regular expression. A focused
+regression using two consecutive private-key files failed before the fix: `RegExp.lastIndex` state
+made suppression depend on call order and retained one unsigned PEM body in the durable preview.
+
+1. All test/search expressions are stateless per call. Structured formats cover permanent and STS
+   AWS access-key IDs, GitHub/Slack tokens, and complete private-key blocks including encrypted
+   PKCS#8. Generic matching covers common quoted/template, env/config namespace, Go `:=`, and YAML
+   block-scalar assignment forms. Findings never contain the matched literal.
+2. Patch previews suppress every added line of a credential-bearing file. Reversible binary patch
+   bodies are removed. Binary, gitlink, and rename/copy-only destinations are `NOT_CHECKED` because
+   their complete bytes are absent from the textual diff; a required Security check therefore
+   blocks rather than becoming a synthetic PASS.
+3. The same recursive sanitizer now covers stored task text, run errors/changed paths, verifier
+   command/output, direct controller-created mode events, runtime-signal snapshots, recovery text
+   and locators, repair/reviewer prompts, artifacts, and API/SSE values. Secret-shaped execution
+   locators are rejected before persistence. Reference-shaped keys preserve only validated,
+   secret-free `credential://` locators or known capability labels.
+4. Exact candidate/digest binding and deterministic precedence are unchanged: a Security FAIL gates
+   promotion regardless of plan selection or model approval; `NOT_CHECKED` never becomes PASS.
+
+## M8 repair validation log
+
+- Pre-fix reproduction: consecutive private-key persistence regression failed against `07337bc`,
+  proving the global-RegExp `lastIndex` leak rather than inferring it from source alone.
+- Focused/unit/integration coverage now exercises adjacent and encrypted PEMs, repeated and
+  namespaced assignments, spaced/template passphrases, Go/YAML forms, AKIA/ASIA identifiers,
+  Git-quoted UTF-8 binary paths, binary/gitlink/rename unknown states, raw verifier/failure text,
+  mode evidence, invalid reference exemptions, recovery locators, and adversarial filenames across
+  actual RunService, store, artifact, telemetry, recovery, HTTP, runtime-signal, and SSE boundaries.
+- First fresh-context review found four MATERIAL classes: incomplete credential forms, binary PASS
+  plus reversible payload retention, raw verifier persistence, and raw task/run/recovery fields.
+  All were repaired and regression-tested.
+- Second fresh-context adversarial review found additional reachable retention forms and boundary
+  exceptions (mode-event direct append, reference-key trust, locators/filenames/snapshots, quoted Git
+  paths, config namespaces and assignment syntaxes, gitlinks/renames). After fixes, its final verdict
+  was **no material findings remain**; the only minor limitation is intentionally pattern-based
+  detection rather than universal entropy/DLP coverage, accurately bounded in the security docs.
+- Final post-review gate: `format:check`, `lint`, `typecheck`, `test` (252 passing), `build`,
+  `compose:check`, and `smoke` — all PASS. No dependency or schema change; audit/migration smoke was
+  not applicable. Repair commit: `539f000`.
 
 ## Blockers
 
