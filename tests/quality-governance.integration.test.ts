@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { GuidedContextBuilder } from "../src/application/context-builder";
 import { RunService } from "../src/application/run-service";
 import { EvidenceRuntimeSignalCollector } from "../src/application/runtime-signal-collector";
-import type { PerformanceVerifierPort } from "../src/domain/ports";
+import type { PerformanceVerifierPort, ResilienceVerifierPort } from "../src/domain/ports";
 import { LocalWorktreeSandbox } from "../src/infrastructure/local-worktree";
 import { InMemoryRunStore } from "../src/infrastructure/memory-store";
 import { NativeCliAdapter } from "../src/infrastructure/native-cli-adapter";
@@ -24,7 +24,11 @@ afterEach(async () => {
   await Promise.all(fixtures.splice(0).map((fixture) => fixture.cleanup()));
 });
 
-const harness = (sandboxRoot: string, performanceVerifier?: PerformanceVerifierPort) => {
+const harness = (
+  sandboxRoot: string,
+  performanceVerifier?: PerformanceVerifierPort,
+  resilienceVerifier?: ResilienceVerifierPort,
+) => {
   const store = new InMemoryRunStore();
   const brain = new InMemoryProjectBrain();
   const telemetry = new DomainTelemetryRecorder();
@@ -41,6 +45,7 @@ const harness = (sandboxRoot: string, performanceVerifier?: PerformanceVerifierP
     sandbox: new LocalWorktreeSandbox(sandboxRoot, "none"),
     verifier: new CommandVerifier(),
     ...(performanceVerifier ? { performanceVerifier } : {}),
+    ...(resilienceVerifier ? { resilienceVerifier } : {}),
     repositoryIndex: new LocalRepositoryIndex(),
     projectBrain: brain,
     contextBuilder: new GuidedContextBuilder(brain),
@@ -57,6 +62,21 @@ const createPerformanceFixtureRepository = async (): Promise<FixtureRepository> 
   await writeFile(target, "export const queryName = 'widgets';\n", "utf8");
   await runProcess("git", ["add", "."], { cwd: fixture.path });
   await runProcess("git", ["commit", "-m", "performance fixture"], { cwd: fixture.path });
+  return fixture;
+};
+
+/**
+ * A repository whose server module the fixture agent extends with an outbound `fetch` call, so the
+ * diff-captured content derives fault-scenario relevance and a CRITICAL plan's RESILIENCE
+ * requirement has something real to verify.
+ */
+const createResilienceFixtureRepository = async (): Promise<FixtureRepository> => {
+  const fixture = await createFixtureRepository();
+  const target = path.join(fixture.path, "src/server/dependency-client.ts");
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, "export const clientName = 'widgets';\n", "utf8");
+  await runProcess("git", ["add", "."], { cwd: fixture.path });
+  await runProcess("git", ["commit", "-m", "resilience fixture"], { cwd: fixture.path });
   return fixture;
 };
 
@@ -98,6 +118,7 @@ interface QualityAssessedData {
     Correctness: QualityCheckData;
     Security: QualityCheckData;
     Performance: QualityCheckData;
+    Resilience: QualityCheckData;
     DebtDelta: QualityCheckData;
     TestQuality: QualityCheckData;
   } & Record<string, QualityCheckData | undefined>;
@@ -230,7 +251,10 @@ describe("quality governance (M6)", () => {
     const run = await store.getRun(created.id);
     expect(run?.verificationState).toBe("VERIFIED");
     // The reviewer approved, but it also modified a file after the candidate diff was captured:
-    // the verdict is INVALID and the candidate stays below MERGE_ELIGIBLE.
+    // the verdict is INVALID and the candidate stays below MERGE_ELIGIBLE. The rung is
+    // QUALITY_VERIFIED: the CRITICAL plan requires RESILIENCE, but this diff has no fault-relevant
+    // signal, so the resilience PASS is heuristic/deterministic — not measured — and cannot
+    // support the DURABLE_VERIFIED claim that scenarios actually ran.
     expect(run?.trustState).toBe("QUALITY_VERIFIED");
 
     const data = await qualityEvent(service, created.id);
@@ -262,7 +286,10 @@ describe("quality governance (M6)", () => {
       expect(run?.state).toBe("COMPLETED");
       expect(run?.verificationState).toBe("VERIFIED");
       // Deterministic verification passed, so the run completes — but without an approved
-      // identity-bound review the candidate cannot become merge-eligible.
+      // identity-bound review the candidate cannot become merge-eligible. The rung is
+      // QUALITY_VERIFIED: the CRITICAL plan requires RESILIENCE, but the plain fixture's diff
+      // has no fault-relevant signal, so the resilience PASS is deterministic rather than
+      // measured and does not reach DURABLE_VERIFIED.
       expect(run?.trustState).toBe("QUALITY_VERIFIED");
 
       const data = await qualityEvent(service, created.id);
@@ -565,6 +592,254 @@ describe("quality governance (M6)", () => {
     await started;
     expect((await service.cancel(created.id)).state).toBe("CANCELLED");
     releaseMeasurement();
+    await service.waitForIdle(created.id);
+
+    expect(await store.getRun(created.id)).toMatchObject({
+      state: "CANCELLED",
+      verificationState: "CANCELLED",
+    });
+    expect((await service.events(created.id)).some((event) => event.type === "RunCompleted")).toBe(
+      false,
+    );
+  });
+
+  it("binds executed resilience scenarios to the candidate and promotes only when all pass (M10)", async () => {
+    const fixture = await createResilienceFixtureRepository();
+    fixtures.push(fixture);
+    const resilienceVerifier: ResilienceVerifierPort = {
+      verify: async ({ candidateId, diffDigest, relevance }) => ({
+        state: "EXECUTED",
+        candidateId,
+        diffDigest,
+        scenarios: relevance.scenarios.map((scenario) => ({
+          scenario,
+          outcome: "PASSED",
+          exitCode: 0,
+          evidence: ["scenario command exited 0"],
+        })),
+        evidence: ["scenario(s) executed with the configured trusted command"],
+      }),
+    };
+    // The same fetch signal also makes PERFORMANCE plan-required, so a passing measurement is
+    // supplied too — this test isolates the resilience gate, not the performance one.
+    const performanceVerifier: PerformanceVerifierPort = {
+      measure: async ({ candidateId, diffDigest }) => ({
+        state: "MEASURED",
+        candidateId,
+        diffDigest,
+        metrics: [
+          {
+            name: "p95 latency",
+            unit: "ms",
+            baseline: 100,
+            candidate: 101,
+            lowerIsBetter: true,
+          },
+        ],
+        evidence: ["fixture trusted measurement"],
+      }),
+    };
+    const { service, store } = harness(
+      fixture.sandboxRoot,
+      performanceVerifier,
+      resilienceVerifier,
+    );
+    const created = await service.create({
+      prompt: "Introduce a network dependency. review verdict: approve",
+      repositoryPath: fixture.path,
+      verification: { expectedFile: "agent-output.md" },
+      qualityPreference: "CRITICAL",
+      performance: { command: "fixture-measure", metric: "p95 latency", maxRegressionPercent: 10 },
+      resilience: { command: "npm run test:resilience" },
+    });
+    await service.waitForIdle(created.id);
+
+    const run = await store.getRun(created.id);
+    const data = await qualityEvent(service, created.id);
+    // CRITICAL preference requires both RESILIENCE and INDEPENDENT_REVIEW; the approved
+    // identity-bound review plus the passing scenario run reach MERGE_ELIGIBLE.
+    expect(data.report.Resilience.state).toBe("PASS");
+    expect(data.report.Resilience.provenance).toBe("MEASURED");
+    expect(run?.trustState).toBe("MERGE_ELIGIBLE");
+
+    const events = await service.events(created.id);
+    const resilience = events.find((event) => event.type === "ResilienceAssessed");
+    expect(resilience?.data).toMatchObject({
+      candidateId: data.candidateId,
+      diffDigest: data.diffDigest,
+      posture: { state: "PASS" },
+      measurementState: "EXECUTED",
+    });
+    const assessed = resilience?.data as { relevantScenarios: string[] };
+    expect(assessed.relevantScenarios).toContain("TIMEOUT");
+    // Local execution is honest about what it is: never a production-verification claim.
+    expect(data.report.Resilience.evidence.join(" ")).toContain("not production verification");
+  });
+
+  it("blocks promotion at CORRECTNESS_VERIFIED when a relevant resilience scenario fails (M10)", async () => {
+    const fixture = await createResilienceFixtureRepository();
+    fixtures.push(fixture);
+    const resilienceVerifier: ResilienceVerifierPort = {
+      verify: async ({ candidateId, diffDigest, relevance }) => ({
+        state: "EXECUTED",
+        candidateId,
+        diffDigest,
+        scenarios: relevance.scenarios.map((scenario, index) => ({
+          scenario,
+          outcome: index === 0 ? "FAILED" : "PASSED",
+          exitCode: index === 0 ? 1 : 0,
+          evidence: ["fixture scenario result"],
+        })),
+        evidence: ["scenario(s) executed with the configured trusted command"],
+      }),
+    };
+    const { service, store } = harness(fixture.sandboxRoot, undefined, resilienceVerifier);
+    const created = await service.create({
+      prompt: "Introduce a network dependency. review verdict: approve",
+      repositoryPath: fixture.path,
+      verification: { expectedFile: "agent-output.md" },
+      qualityPreference: "CRITICAL",
+      resilience: { command: "npm run test:resilience" },
+    });
+    await service.waitForIdle(created.id);
+
+    const run = await store.getRun(created.id);
+    const data = await qualityEvent(service, created.id);
+    expect(data.report.Resilience.state).toBe("FAIL");
+    expect(data.report.Resilience.provenance).toBe("MEASURED");
+    // Even the approved independent review cannot lift a failed scenario past the gate.
+    expect(run?.trustState).toBe("CORRECTNESS_VERIFIED");
+    expect(
+      (await service.listSummaries()).find((summary) => summary.id === created.id),
+    ).toMatchObject({ operationalStatus: "ASSURANCE_BLOCKED" });
+  });
+
+  it("keeps required resilience NOT_CHECKED when relevant scenarios exist but no spec is configured (M10)", async () => {
+    const fixture = await createResilienceFixtureRepository();
+    fixtures.push(fixture);
+    const resilienceVerifier: ResilienceVerifierPort = {
+      verify: async () => {
+        throw new Error("verifier must not be consulted without a resilience spec");
+      },
+    };
+    const { service, store } = harness(fixture.sandboxRoot, undefined, resilienceVerifier);
+    const created = await service.create({
+      prompt: "Introduce a network dependency",
+      repositoryPath: fixture.path,
+      verification: { expectedFile: "agent-output.md" },
+      qualityPreference: "CRITICAL",
+    });
+    await service.waitForIdle(created.id);
+
+    const run = await store.getRun(created.id);
+    const data = await qualityEvent(service, created.id);
+    expect(data.report.Resilience.state).toBe("NOT_CHECKED");
+    expect(data.report.Resilience.evidence.join(" ")).toContain(
+      "no resilience verification specification",
+    );
+    expect(run?.trustState).toBe("CORRECTNESS_VERIFIED");
+
+    const events = await service.events(created.id);
+    const resilience = events.find((event) => event.type === "ResilienceAssessed");
+    expect(resilience?.data).toMatchObject({ measurementState: "NOT_CHECKED" });
+  });
+
+  it("passes resilience deterministically when the plan requires it but no scenario is relevant (M10)", async () => {
+    const fixture = await createFixtureRepository();
+    fixtures.push(fixture);
+    const resilienceVerifier: ResilienceVerifierPort = {
+      verify: async () => {
+        throw new Error("verifier must not be consulted when nothing is relevant");
+      },
+    };
+    const { service, store } = harness(fixture.sandboxRoot, undefined, resilienceVerifier);
+    const created = await service.create({
+      // No fault-relevant signal in this diff: only the ordinary agent-output.md artifact.
+      prompt: "Create the requested output",
+      repositoryPath: fixture.path,
+      verification: { expectedFile: "agent-output.md" },
+      qualityPreference: "CRITICAL",
+    });
+    await service.waitForIdle(created.id);
+
+    const run = await store.getRun(created.id);
+    const data = await qualityEvent(service, created.id);
+    expect(data.report.Resilience.state).toBe("PASS");
+    expect(data.report.Resilience.provenance).toBe("DETERMINISTIC");
+    // The plain fixture keeps SecuritySensitivity LOW, so CRITICAL forces RESILIENCE but not
+    // INDEPENDENT_REVIEW — with the deterministic relevance-empty PASS there is nothing left to
+    // await, and the run promotes. (The DURABLE_VERIFIED awaiting-review rung is covered by the
+    // review-verdict and tamper tests above.)
+    expect(run?.trustState).toBe("MERGE_ELIGIBLE");
+
+    const events = await service.events(created.id);
+    const resilience = events.find((event) => event.type === "ResilienceAssessed");
+    expect(resilience?.data).toMatchObject({
+      relevantScenarios: [],
+      posture: { state: "PASS" },
+      measurementState: "NOT_CHECKED",
+    });
+  });
+
+  it("sanitizes resilience labels at the durable task boundary (M10)", async () => {
+    const fixture = await createFixtureRepository();
+    fixtures.push(fixture);
+    const { service, store } = harness(fixture.sandboxRoot);
+    const rawToken = `ghp_${"B".repeat(36)}`;
+    const created = await service.create({
+      prompt: "Create the requested output",
+      repositoryPath: fixture.path,
+      verification: { expectedFile: "agent-output.md" },
+      resilience: {
+        command: `MAF_TOKEN=${rawToken} npm run test:resilience`,
+        composeFile: `compose-${rawToken}.yaml`,
+      },
+    });
+    await service.waitForIdle(created.id);
+
+    expect(JSON.stringify(await store.getTask(created.taskId))).not.toContain(rawToken);
+  });
+
+  it("does not resurrect a run cancelled during resilience verification (M10)", async () => {
+    const fixture = await createResilienceFixtureRepository();
+    fixtures.push(fixture);
+    let verificationStarted!: () => void;
+    let releaseVerification!: () => void;
+    const started = new Promise<void>((resolve) => {
+      verificationStarted = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      releaseVerification = resolve;
+    });
+    const resilienceVerifier: ResilienceVerifierPort = {
+      verify: async ({ candidateId, diffDigest, relevance }) => {
+        verificationStarted();
+        await blocked;
+        return {
+          state: "EXECUTED",
+          candidateId,
+          diffDigest,
+          scenarios: relevance.scenarios.map((scenario) => ({
+            scenario,
+            outcome: "PASSED",
+            exitCode: 0,
+            evidence: ["released fixture scenario"],
+          })),
+          evidence: ["scenario(s) executed with the configured trusted command"],
+        };
+      },
+    };
+    const { service, store } = harness(fixture.sandboxRoot, undefined, resilienceVerifier);
+    const created = await service.create({
+      prompt: "Introduce a network dependency",
+      repositoryPath: fixture.path,
+      verification: { expectedFile: "agent-output.md" },
+      qualityPreference: "CRITICAL",
+      resilience: { command: "npm run test:resilience" },
+    });
+    await started;
+    expect((await service.cancel(created.id)).state).toBe("CANCELLED");
+    releaseVerification();
     await service.waitForIdle(created.id);
 
     expect(await store.getRun(created.id)).toMatchObject({

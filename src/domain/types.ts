@@ -40,6 +40,9 @@ export type VerificationState =
  * Evidence-backed trust ladder for a run's final candidate (M6A). Absent on legacy runs; PROPOSED
  * until deterministic verification succeeds. Never a display-only value: it is derived from the
  * quality report and (when required) an approved independent review, and gates merge eligibility.
+ * DURABLE_VERIFIED (M10) additionally requires measured resilience evidence: the plan's relevant
+ * fault scenarios were actually executed against this candidate and passed locally — a
+ * heuristic "nothing relevant" verdict is not enough.
  */
 export type TrustState =
   | "PROPOSED"
@@ -65,6 +68,8 @@ export interface Task {
   verification: VerificationSpec;
   /** Optional trusted baseline/candidate command used only when the assurance plan requires it. */
   performance?: PerformanceSpec;
+  /** Optional trusted fault-injection command used only when the assurance plan requires it. */
+  resilience?: ResilienceSpec;
   signals?: RuntimeSignals;
   /** Absent means no budget was requested for this run — fully permissive, nothing to enforce. */
   budget?: { mode: "ADVISORY" | "HARD"; limitUsd: number };
@@ -80,6 +85,34 @@ export interface PerformanceSpec {
   maxRegressionPercent: number;
   lowerIsBetter?: boolean | undefined;
   samples?: number | undefined;
+  timeoutMs?: number | undefined;
+}
+
+/**
+ * Production-like failure scenarios the M10 resilience boundary can execute (M10). The candidate's
+ * command runs once per relevant scenario with MAF_RESILIENCE_SCENARIO set to the scenario name,
+ * so the project's own fault harness decides how each fault is injected.
+ */
+export type ResilienceScenario =
+  | "HIGH_LATENCY"
+  | "TIMEOUT"
+  | "CONNECTION_RESET"
+  | "DUPLICATE_REQUEST"
+  | "OUT_OF_ORDER_RESPONSE"
+  | "MALFORMED_UPSTREAM_RESPONSE"
+  | "RATE_LIMITING";
+
+/**
+ * Optional trusted resilience fault-injection command used only when the assurance plan requires
+ * RESILIENCE. `composeFile` optionally brings up a bounded ephemeral environment via
+ * `docker compose up -d --wait` before the scenarios run (and tears it down afterwards) — Docker
+ * Compose is the ceiling here; there is deliberately no Kubernetes path.
+ */
+export interface ResilienceSpec {
+  command: string;
+  /** Restrict execution to these scenarios; absent means every plan-relevant scenario runs. */
+  scenarios?: ResilienceScenario[] | undefined;
+  composeFile?: string | undefined;
   timeoutMs?: number | undefined;
 }
 

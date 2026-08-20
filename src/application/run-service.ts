@@ -26,6 +26,12 @@ import {
   type PerformancePostureResult,
 } from "../domain/performance";
 import {
+  deriveResiliencePosture,
+  deriveResilienceRelevance,
+  type ResilienceMeasurement,
+  type ResiliencePostureResult,
+} from "../domain/resilience";
+import {
   defaultEnforcementPolicy,
   type EnforcementPolicy,
   type PendingModeEnforcement,
@@ -40,6 +46,7 @@ import type {
   ProjectBrain,
   RepositoryIndex,
   RepositorySnapshot,
+  ResilienceVerifierPort,
   RunStore,
   RuntimeSignalCollector,
   Sandbox,
@@ -75,6 +82,7 @@ import {
   type ModeEnforcementMethod,
   type PerformanceSpec,
   type RecoveryCapsule,
+  type ResilienceSpec,
   type Run,
   type RuntimeSignalSnapshot,
   type RuntimeSignals,
@@ -93,6 +101,7 @@ export interface CreateRunRequest {
   mode?: ExecutionMode | undefined;
   verification?: VerificationSpec | undefined;
   performance?: PerformanceSpec | undefined;
+  resilience?: ResilienceSpec | undefined;
   signals?: RuntimeSignals | undefined;
   agent?: string | undefined;
   model?: string | undefined;
@@ -152,6 +161,7 @@ interface RunServiceDependencies {
   sandbox: SandboxProvider;
   verifier: VerifierPort;
   performanceVerifier?: PerformanceVerifierPort;
+  resilienceVerifier?: ResilienceVerifierPort;
   repositoryIndex: RepositoryIndex;
   projectBrain: ProjectBrain;
   contextBuilder: ContextBuilderPort;
@@ -230,6 +240,11 @@ interface ActiveRunState {
    * persisted state from the enforcement events already appended to the log.
    */
   run: Run;
+  /**
+   * Aborted by cancel() so in-flight trusted verification subprocesses (M10 resilience scenarios)
+   * are killed immediately rather than running to their full timeout after the run is cancelled.
+   */
+  verificationAbort: AbortController;
 }
 
 /** Mutable holder so the current session context can be rebuilt when policy changes. */
@@ -323,6 +338,7 @@ export class RunService {
       createdAt: now,
       verification: request.verification ?? {},
       ...(request.performance ? { performance: request.performance } : {}),
+      ...(request.resilience ? { resilience: request.resilience } : {}),
       ...(request.signals ? { signals: request.signals } : {}),
       ...(request.budget ? { budget: request.budget } : {}),
       ...(request.qualityPreference ? { qualityPreference: request.qualityPreference } : {}),
@@ -373,6 +389,17 @@ export class RunService {
             },
           }
         : {}),
+      ...(task.resilience
+        ? {
+            resilience: {
+              ...task.resilience,
+              command: redactSensitiveText(task.resilience.command),
+              ...(task.resilience.composeFile
+                ? { composeFile: redactSensitiveText(task.resilience.composeFile) }
+                : {}),
+            },
+          }
+        : {}),
     });
     await this.dependencies.store.createRun(run);
     await this.event(run.id, "RunCreated", {
@@ -404,6 +431,7 @@ export class RunService {
       budgetExhaustedObserved: false,
       transitionState: newTransitionState(),
       run,
+      verificationAbort: new AbortController(),
     });
     // Re-check immediately before starting execution, with no `await` in between: an emergency
     // stop synchronously iterates `this.active` the instant it is called, so a stop that lands
@@ -443,7 +471,8 @@ export class RunService {
         const operationalStatus: RunSummary["operationalStatus"] =
           run.verificationState === "VERIFIED" && run.trustState === "MERGE_ELIGIBLE"
             ? "VERIFIED"
-            : run.verificationState === "VERIFIED" && run.trustState === "QUALITY_VERIFIED"
+            : run.verificationState === "VERIFIED" &&
+                (run.trustState === "QUALITY_VERIFIED" || run.trustState === "DURABLE_VERIFIED")
               ? "AWAITING_REVIEW"
               : run.verificationState === "VERIFIED"
                 ? "ASSURANCE_BLOCKED"
@@ -515,6 +544,7 @@ export class RunService {
     const run = active ? active.run : await this.requireRun(id);
     if (!active || run.state === "COMPLETED" || run.state === "FAILED") return structuredClone(run);
     active.cancelled = true;
+    active.verificationAbort.abort();
     await this.dependencies.verifier.cancel(id);
     run.state = "CANCELLED";
     run.verificationState = "CANCELLED";
@@ -603,6 +633,7 @@ export class RunService {
       budgetExhaustedObserved: false,
       transitionState: newTransitionState(),
       run,
+      verificationAbort: new AbortController(),
     });
     // Same closed-window re-check as create(): no `await` between here and kicking off execute().
     if (this.emergencyStopped) {
@@ -1733,6 +1764,9 @@ export class RunService {
     );
     if (this.active.get(run.id)?.cancelled)
       throw new Error("Run cancelled during performance assurance");
+    const resiliencePosture = await this.verifyResilience(run, task, sandbox, candidate);
+    if (this.active.get(run.id)?.cancelled)
+      throw new Error("Run cancelled during resilience assurance");
     const report: QualityReport = deriveQualityReport({
       verificationState: verification.state,
       verificationCommand: task.verification.command ?? null,
@@ -1745,6 +1779,7 @@ export class RunService {
       moduleOwnership: contextState.snapshot.moduleOwnership,
       diffPatch: candidate.diff.patch,
       ...(performancePosture ? { performancePosture } : {}),
+      ...(resiliencePosture ? { resiliencePosture } : {}),
     });
     // The report is derived before any reviewer session starts: if a gated dimension already caps
     // promotion at CORRECTNESS_VERIFIED, no verdict — approved or not — can change the outcome, so
@@ -1875,6 +1910,101 @@ export class RunService {
     await this.event(run.id, "PerformanceAssessed", {
       candidateId: candidate.id,
       diffDigest: candidateDigest,
+      posture,
+      measurementState: measurement?.state ?? "NOT_CHECKED",
+    });
+    return posture;
+  }
+
+  /**
+   * M10 candidate-bound fault-injection verification. Scenario relevance is derived from the
+   * candidate's own diff (plus the plan's CONCURRENCY decision), and only relevant scenarios are
+   * executed — never a blanket scenario sweep. All evidence is bound to this candidate's id + diff
+   * digest, and the workspace digest is re-collected afterwards so any mutation during scenario
+   * execution invalidates the evidence. Local execution stays honestly labeled: this is resilience
+   * evidence in a bounded local environment, never production verification.
+   */
+  private async verifyResilience(
+    run: Run,
+    task: Task,
+    sandbox: Sandbox,
+    candidate: Candidate,
+  ): Promise<ResiliencePostureResult | undefined> {
+    const plan = candidate.assessment.assurancePlan;
+    if (!plan.required.includes("RESILIENCE")) return undefined;
+    const candidateDigest = candidate.artifact.digest ?? "";
+    const relevance = deriveResilienceRelevance(
+      candidate.diff.patch,
+      plan.required.includes("CONCURRENCY"),
+    );
+    let measurement: ResilienceMeasurement | undefined;
+    if (relevance.scenarios.length === 0) {
+      // Zero relevant scenarios is deterministic diff evidence: there is nothing to inject, so no
+      // verifier is consulted and no spec is demanded (see deriveResiliencePosture).
+      measurement = undefined;
+    } else if (!task.resilience) {
+      measurement = {
+        state: "NOT_CHECKED",
+        candidateId: candidate.id,
+        diffDigest: candidateDigest,
+        scenarios: [],
+        evidence: ["no resilience verification specification was configured"],
+      };
+    } else if (!this.dependencies.resilienceVerifier) {
+      measurement = {
+        state: "NOT_CHECKED",
+        candidateId: candidate.id,
+        diffDigest: candidateDigest,
+        scenarios: [],
+        evidence: ["no trusted resilience verifier is available"],
+      };
+    } else {
+      try {
+        measurement = await this.dependencies.resilienceVerifier.verify({
+          run,
+          task,
+          sandbox,
+          candidateId: candidate.id,
+          diffDigest: candidateDigest,
+          relevance,
+          ...(this.active.get(run.id)
+            ? { signal: this.active.get(run.id)!.verificationAbort.signal }
+            : {}),
+        });
+        if (this.active.get(run.id)?.cancelled)
+          throw new Error("Run cancelled during resilience verification");
+        const afterVerification = await this.dependencies.sandbox.collectDiff(sandbox);
+        if (this.active.get(run.id)?.cancelled)
+          throw new Error("Run cancelled during resilience verification");
+        if (LocalWorktreeSandbox.digest(afterVerification) !== candidateDigest) {
+          measurement = {
+            state: "NOT_CHECKED",
+            candidateId: candidate.id,
+            diffDigest: candidateDigest,
+            scenarios: [],
+            evidence: [
+              "candidate workspace changed during resilience verification; evidence was invalidated",
+            ],
+          };
+        }
+      } catch (error) {
+        if (this.active.get(run.id)?.cancelled) throw error;
+        measurement = {
+          state: "NOT_CHECKED",
+          candidateId: candidate.id,
+          diffDigest: candidateDigest,
+          scenarios: [],
+          evidence: [
+            `resilience verification failed: ${redactSensitiveText(error instanceof Error ? error.message : String(error))}`,
+          ],
+        };
+      }
+    }
+    const posture = deriveResiliencePosture(measurement, candidate.id, candidateDigest, relevance);
+    await this.event(run.id, "ResilienceAssessed", {
+      candidateId: candidate.id,
+      diffDigest: candidateDigest,
+      relevantScenarios: relevance.scenarios,
       posture,
       measurementState: measurement?.state ?? "NOT_CHECKED",
     });

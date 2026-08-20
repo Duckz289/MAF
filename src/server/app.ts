@@ -29,6 +29,7 @@ import {
 } from "../infrastructure/project-brain";
 import { DomainTelemetryRecorder, PostgresTelemetrySink } from "../infrastructure/telemetry";
 import { CommandPerformanceVerifier } from "../infrastructure/performance-verifier";
+import { CommandResilienceVerifier } from "../infrastructure/resilience-verifier";
 import { CommandVerifier } from "../infrastructure/verifier";
 
 const createRunSchema = z.object({
@@ -51,6 +52,27 @@ const createRunSchema = z.object({
       maxRegressionPercent: z.number().nonnegative().max(10_000),
       lowerIsBetter: z.boolean().optional(),
       samples: z.number().int().min(1).max(10).optional(),
+      timeoutMs: z.number().int().positive().max(600_000).optional(),
+    })
+    .optional(),
+  resilience: z
+    .object({
+      command: z.string().min(1).max(4_000),
+      scenarios: z
+        .array(
+          z.enum([
+            "HIGH_LATENCY",
+            "TIMEOUT",
+            "CONNECTION_RESET",
+            "DUPLICATE_REQUEST",
+            "OUT_OF_ORDER_RESPONSE",
+            "MALFORMED_UPSTREAM_RESPONSE",
+            "RATE_LIMITING",
+          ]),
+        )
+        .max(7)
+        .optional(),
+      composeFile: z.string().min(1).max(1_000).optional(),
       timeoutMs: z.number().int().positive().max(600_000).optional(),
     })
     .optional(),
@@ -216,6 +238,7 @@ export const createApp = async (): Promise<AppRuntime> => {
     sandbox: new LocalWorktreeSandbox(sandboxRoot, retention),
     verifier: new CommandVerifier(),
     performanceVerifier: new CommandPerformanceVerifier(),
+    resilienceVerifier: new CommandResilienceVerifier(),
     repositoryIndex,
     projectBrain: brain,
     contextBuilder: new GuidedContextBuilder(brain),

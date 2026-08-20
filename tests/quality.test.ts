@@ -44,6 +44,30 @@ const passingPerformance = {
   metrics: [],
 };
 
+/** A passing candidate-bound resilience posture (M10): every relevant scenario passed locally. */
+const passingResilience = {
+  state: "PASS" as const,
+  evidence: ["all relevant scenario(s) executed and passed in the bounded local environment"],
+  scenarios: [
+    {
+      scenario: "TIMEOUT" as const,
+      outcome: "PASSED" as const,
+      exitCode: 0,
+      evidence: ["scenario command exited 0"],
+    },
+  ],
+};
+
+/**
+ * A relevance-empty PASS (M10): deterministic heuristic absence of fault-relevant signal. Enough
+ * to clear the gate, but never enough for DURABLE_VERIFIED — scenarios were not executed.
+ */
+const relevanceEmptyResilience = {
+  state: "PASS" as const,
+  evidence: ["no production-like failure scenario is relevant to this candidate"],
+  scenarios: [],
+};
+
 const reportInput = (overrides: Partial<QualityReportInput> = {}): QualityReportInput => ({
   verificationState: "VERIFIED",
   verificationCommand: "npm test",
@@ -89,15 +113,17 @@ describe("deriveQualityReport", () => {
     }
   });
 
-  it("marks plan-required dimensions with no checker yet as UNKNOWN, never a silent PASS", () => {
+  it("marks plan-required dimensions with no candidate-bound evidence as NOT_CHECKED, never a silent PASS", () => {
     const report = deriveQualityReport(
       reportInput({ assurancePlan: criticalSecurePlan, diffRisk: securityHighRiskVector }),
     );
     // The M8A checker now runs when SECURITY is plan-required (PASS: no secrets in this diff).
     expect(report.Security.state).toBe("PASS");
     expect(report.Security.provenance).toBe("DETERMINISTIC");
-    // Network-sensitive paths were touched, so RESILIENCE is plan-required and still UNKNOWN (M10).
-    expect(report.Resilience.state).toBe("UNKNOWN");
+    // CRITICAL preference makes RESILIENCE plan-required; with no candidate-bound posture it is
+    // NOT_CHECKED (M10) and blocks promotion — never silently counted as verified.
+    expect(report.Resilience.state).toBe("NOT_CHECKED");
+    expect(report.Resilience.provenance).toBe("DETERMINISTIC");
     // Auth API paths alone do not fabricate performance sensitivity.
     expect(report.Performance.state).toBe("NOT_REQUIRED");
   });
@@ -284,11 +310,14 @@ describe("deriveQualityReport", () => {
       diffPatch: patch,
     });
     const performancePlan = buildAssurancePlan(performanceRisk, "BALANCED");
+    // The same query-heavy signal that requires PERFORMANCE also requires RESILIENCE, so the
+    // promote-side fixture carries a passing resilience posture too.
     const base = {
       assurancePlan: performancePlan,
       preExecutionRisk: performanceRisk,
       diffRisk: performanceRisk,
       diffPatch: patch,
+      resiliencePosture: passingResilience,
     };
     const failed = deriveQualityReport(
       reportInput({
@@ -333,6 +362,7 @@ describe("deriveTrustState", () => {
         "src/domain/permission.ts",
       ],
       performancePosture: passingPerformance,
+      resiliencePosture: passingResilience,
     }),
   );
 
@@ -387,6 +417,7 @@ describe("deriveTrustState", () => {
         preExecutionRisk: securityHighRiskVector,
         diffRisk: securityHighRiskVector,
         performancePosture: passingPerformance,
+        resiliencePosture: passingResilience,
       }),
     );
     expect(report.Security.state).toBe("PASS");
@@ -491,26 +522,88 @@ describe("deriveTrustState", () => {
     expect(deriveTrustState("VERIFIED", report, plan, undefined)).toBe("CORRECTNESS_VERIFIED");
   });
 
-  it("stays at QUALITY_VERIFIED when review is required but not (yet) approved", () => {
-    expect(deriveTrustState("VERIFIED", reviewRequiredReport, criticalSecurePlan, undefined)).toBe(
-      "QUALITY_VERIFIED",
-    );
-    expect(deriveTrustState("VERIFIED", reviewRequiredReport, criticalSecurePlan, false)).toBe(
-      "QUALITY_VERIFIED",
-    );
-  });
-
   it("reaches MERGE_ELIGIBLE only when a required review is actually approved", () => {
     expect(deriveTrustState("VERIFIED", reviewRequiredReport, criticalSecurePlan, true)).toBe(
       "MERGE_ELIGIBLE",
     );
   });
 
-  it("never returns DURABLE_VERIFIED (that rung requires the M10 durability checker)", () => {
+  it("reaches DURABLE_VERIFIED when plan-required resilience passed and review is pending (M10)", () => {
+    expect(deriveTrustState("VERIFIED", reviewRequiredReport, criticalSecurePlan, undefined)).toBe(
+      "DURABLE_VERIFIED",
+    );
+    expect(deriveTrustState("VERIFIED", reviewRequiredReport, criticalSecurePlan, false)).toBe(
+      "DURABLE_VERIFIED",
+    );
+  });
+
+  it("keeps a relevance-empty resilience PASS at QUALITY_VERIFIED, never DURABLE_VERIFIED (M10)", () => {
+    // Heuristic absence of a fault-relevant signal is not proof that nothing is relevant: the
+    // relevance regexes provably miss risk-relevant diffs, so DURABLE_VERIFIED (which claims
+    // scenarios were actually executed and held) must require MEASURED evidence.
+    const report = deriveQualityReport(
+      reportInput({
+        assurancePlan: criticalSecurePlan,
+        preExecutionRisk: securityHighRiskVector,
+        diffRisk: securityHighRiskVector,
+        performancePosture: passingPerformance,
+        resiliencePosture: relevanceEmptyResilience,
+      }),
+    );
+    expect(report.Resilience.state).toBe("PASS");
+    expect(report.Resilience.provenance).toBe("DETERMINISTIC");
+    expect(deriveTrustState("VERIFIED", report, criticalSecurePlan, undefined)).toBe(
+      "QUALITY_VERIFIED",
+    );
+    // Once the review approves, the rung above is reachable normally.
+    expect(deriveTrustState("VERIFIED", report, criticalSecurePlan, true)).toBe("MERGE_ELIGIBLE");
+  });
+
+  it("caps at CORRECTNESS_VERIFIED when plan-required Resilience is NOT_CHECKED (M10)", () => {
+    const report = deriveQualityReport(
+      reportInput({
+        assurancePlan: criticalSecurePlan,
+        preExecutionRisk: securityHighRiskVector,
+        diffRisk: securityHighRiskVector,
+        performancePosture: passingPerformance,
+      }),
+    );
+    expect(report.Resilience.state).toBe("NOT_CHECKED");
+    expect(deriveTrustState("VERIFIED", report, criticalSecurePlan, undefined)).toBe(
+      "CORRECTNESS_VERIFIED",
+    );
+  });
+
+  it("caps at CORRECTNESS_VERIFIED when a measured resilience scenario FAILs (M10)", () => {
+    const report = deriveQualityReport(
+      reportInput({
+        assurancePlan: criticalSecurePlan,
+        preExecutionRisk: securityHighRiskVector,
+        diffRisk: securityHighRiskVector,
+        performancePosture: passingPerformance,
+        resiliencePosture: {
+          state: "FAIL",
+          evidence: ["scenario TIMEOUT failed with exit code 1"],
+          scenarios: [],
+        },
+      }),
+    );
+    expect(report.Resilience.state).toBe("FAIL");
+    expect(report.Resilience.provenance).toBe("MEASURED");
+    // Even an approved independent review cannot lift a failed scenario past the gate.
+    expect(deriveTrustState("VERIFIED", report, criticalSecurePlan, true)).toBe(
+      "CORRECTNESS_VERIFIED",
+    );
+  });
+
+  it("keeps DURABLE_VERIFIED unreachable when the plan does not require RESILIENCE", () => {
+    // DURABLE_VERIFIED is reserved for plans that require RESILIENCE evidence AND measured it.
+    // Any plan that requires INDEPENDENT_REVIEW also requires RESILIENCE (review implies CRITICAL
+    // preference), so a review-requiring plan without resilience is not reachable through real
+    // plans today — but a plan that skips both must never land on DURABLE_VERIFIED either way.
     const states = new Set<string>();
     for (const approved of [undefined, false, true]) {
       states.add(deriveTrustState("VERIFIED", passingReport, balancedLowPlan, approved));
-      states.add(deriveTrustState("VERIFIED", passingReport, criticalSecurePlan, approved));
     }
     expect(states.has("DURABLE_VERIFIED")).toBe(false);
   });

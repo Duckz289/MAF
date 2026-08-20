@@ -8,7 +8,7 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 - Start branch: `adaptive-harness/runtime-signals-v0.1` at `357ab60` (clean tree).
 - Baseline validation (2026-08-19): `format:check`, `lint`, `typecheck`, `test` (49 passing),
   `build` (server + UI), `compose:check`, `smoke` — all PASS.
-- Current milestone: M10 — Production-like Resilience (M9 committed locally).
+- Current milestone: M11 — Codebase Health Ledger (M10 committed locally).
 
 ## Confirmed repository facts
 
@@ -819,6 +819,81 @@ made suppression depend on call order and retained one unsigned PEM body in the 
   `compose:check`, `smoke` — all PASS.
 
 
+
+## M10 design (Production-like Resilience)
+
+1. `deriveResilienceRelevance(patch, concurrencyRequired)` (src/domain/resilience.ts) — which
+   production-like failure scenarios THIS candidate owes, derived deterministically from the
+   diff's added/removed non-comment production code only. Outbound dependency calls (fetch,
+   axios, http(s) methods, grpc/graphql, redis/memcached, s3/sqs/sns/kafka/rabbitmq/amqp/mqtt,
+   `WebSocket`, `new *Client(`, SQL text, `prisma.`) imply the network family: HIGH_LATENCY,
+   TIMEOUT, CONNECTION_RESET, MALFORMED_UPSTREAM_RESPONSE, RATE_LIMITING. Consistency-critical
+   write paths imply DUPLICATE_REQUEST; concurrent completion paths imply OUT_OF_ORDER_RESPONSE;
+   a plan-required CONCURRENCY check forces the interleaving pair regardless of markers.
+   Comments, fault-suggestive filenames/identifiers, and test/fixture/script paths are not
+   evidence. A binary (GIT binary patch) hunk on an evidence-bearing path marks the relevance
+   `uninspectable` — absence of a signal we could not look for is unknown, not empty, and fails
+   closed to NOT_CHECKED rather than the zero-relevance PASS.
+2. `CommandResilienceVerifier` (src/infrastructure/resilience-verifier.ts) — the trusted
+   fault-injection boundary. Runs the project's own command once per relevant scenario in the
+   candidate sandbox with `MAF_RESILIENCE_SCENARIO` set (the project's harness decides how the
+   fault is injected; MAF never guesses). Optional `composeFile` brings up a bounded ephemeral
+   environment (`docker compose up -d --wait`, 120s, torn down with `down -v --remove-orphans`);
+   Docker Compose is the ceiling — no Kubernetes, by design. On Windows the command is suffixed
+   with `; exit $LASTEXITCODE` because `powershell -Command` otherwise collapses every nonzero
+   native exit code to 1 (found by the real-process tests; exit codes are scenario evidence).
+3. `deriveResiliencePosture(measurement, candidateId, diffDigest, relevance)` — the measurement
+   must be bound to the current candidate id and diff digest; the workspace digest is
+   re-collected afterwards so mutation invalidates the evidence. Zero relevant scenarios is a
+   deterministic PASS (unless uninspectable); missing spec/verifier, stale binding, an unexecuted
+   or NOT_RUN relevant scenario is NOT_CHECKED; any FAILED scenario is deterministic FAIL; both
+   gate promotion. Evidence states verbatim that local scenario execution is resilience evidence,
+   not production verification.
+4. Trust ladder: `DURABLE_VERIFIED` additionally requires plan-required RESILIENCE with MEASURED
+   provenance and a PASS verdict — a heuristic relevance-empty PASS caps the rung at
+   QUALITY_VERIFIED.
+5. Cancellation: `ActiveRunState.verificationAbort` (AbortController) is aborted in `cancel()`
+   and flows through `ResilienceVerifyInput.signal` into every subprocess (compose up/down and
+   each scenario); `runProcess` escalates SIGTERM then a forced tree kill (taskkill /T /F on
+   Windows) after 5s and resolves on exit+grace so orphaned grandchildren holding stdio pipes
+   cannot hang the quality gate. A cancelled run stays CANCELLED and never emits RunCompleted.
+
+## M10 validation log
+
+- Real-subprocess verifier tests (tests/resilience-verifier.test.ts) pin the contract the design
+  rests on: `MAF_RESILIENCE_SCENARIO` actually reaches the child (a typo in the env name cannot
+  pass), exit codes survive the Windows shell (`; exit $LASTEXITCODE` fix), output tails become
+  scenario evidence, timeouts bound execution (30s command, 1.5s timeout, FAILED with "timed
+  out"), spec.scenarios allowlists filter execution, mid-sweep cancellation rejects within 10s
+  (vs a 30s timeout), and a missing spec returns NOT_CHECKED without running anything.
+- Domain tests (tests/resilience.test.ts): WebSocket/SDK-client dependency shapes count as
+  network boundaries; a binary patch on a code path is uninspectable and never gets the
+  relevance-empty PASS (a binary asset outside evidence paths does not); relevance, binding,
+  missing/failed scenario gating, and honesty wording.
+- Quality-governance integration tests: executed scenarios bind to the candidate (the
+  performance fake must supply real metrics — empty metrics are NOT_CHECKED per M9);
+  relevance-empty deterministic PASS caps at QUALITY_VERIFIED while a MEASURED scenario PASS
+  promotes to DURABLE_VERIFIED when the plan requires RESILIENCE.
+- process-utils hardening found necessary by testing: the minimal child env now passes through
+  PATHEXT/SystemDrive — without PATHEXT, shell children cannot resolve node/.cmd shims and every
+  scenario command died with CommandNotFoundException.
+- Fresh-context independent review (post-implementation, reviewer not primed with correctness):
+  REQUEST_CHANGES with MATERIAL B1 (heuristic blind spots — widened signal regexes,
+  binary/uninspectable fail-closed, DURABLE_VERIFIED requires MEASURED provenance), M1 (a wedged
+  subprocess could hang the gate — kill-tree escalation + exit-grace resolution), M2
+  (cancellation did not reach in-flight scenario subprocesses — AbortController propagation),
+  M3 (the real verifier was entirely untested — the real-process suite above). All fixed and
+  tested. MINOR m2 (NOT_RUN treated as failure) now maps to NOT_CHECKED.
+- Known/deferred (recorded, not fixed): m4 compose runs against the base repo path rather than a
+  candidate-sandboxed compose file, and `composeFile` is not path-validated; m5 programmatic
+  Tasks lack a timeout cap (spec.timeoutMs default 120s bounds scenarios, not the Task); m6 SQL
+  `--` comment lines count as code evidence; m7 scenario output redaction is pattern-only tails;
+  m8 gitignored mutations escape the digest re-check; m9 minor test nits.
+- FRONTIER_REVIEW_RECOMMENDED (MAX reasoning effort): M10 production trust claims — the relevance
+  heuristics and honesty gates are exactly the kind of evidence-boundary reasoning that benefits
+  from an independent frontier pass.
+- Final gate: `format:check`, `lint`, `typecheck`, `test` (30 files, 311 passing), `build`,
+  `compose:check`, `smoke` — all PASS.
 
 - None.
 

@@ -16,6 +16,7 @@ import type {
   RuntimeSignals,
 } from "./types";
 import type { PerformanceMeasurement } from "./performance";
+import type { ResilienceMeasurement, ResilienceRelevanceEvidence } from "./resilience";
 
 export interface RunStore {
   createTask(task: Task): Promise<void>;
@@ -101,6 +102,31 @@ export interface PerformanceMeasureInput {
 /** Trusted local measurement boundary. Implementations compare the baseline and candidate. */
 export interface PerformanceVerifierPort {
   measure(input: PerformanceMeasureInput): Promise<PerformanceMeasurement>;
+}
+
+export interface ResilienceVerifyInput {
+  run: Run;
+  task: Task;
+  sandbox: Sandbox;
+  candidateId: string;
+  diffDigest: string;
+  /** The plan-relevant scenarios derived from this candidate's own diff (M10). */
+  relevance: ResilienceRelevanceEvidence;
+  /**
+   * Aborted when the run is cancelled: implementations must kill in-flight scenario subprocesses
+   * promptly instead of letting them run to their timeouts. An aborted verify() may throw or
+   * return partial evidence — the run is already cancelled and the caller rethrows.
+   */
+  signal?: AbortSignal;
+}
+
+/**
+ * Trusted local fault-injection boundary (M10). Implementations execute each relevant
+ * production-like failure scenario against the candidate workspace in a bounded ephemeral
+ * environment. Local execution is resilience evidence — it is never production verification.
+ */
+export interface ResilienceVerifierPort {
+  verify(input: ResilienceVerifyInput): Promise<ResilienceMeasurement>;
 }
 
 export interface RepositorySnapshot {

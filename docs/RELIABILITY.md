@@ -67,6 +67,28 @@ command, identity mismatch, zero baseline, or workspace mutation is `NOT_CHECKED
 measured regression above `maxRegressionPercent` is `FAIL`; either state blocks the required quality
 gate. Performance commands are skipped for plan-exempt ordinary work.
 
+## Resilience assurance
+
+M10 derives which production-like failure scenarios are relevant to a candidate from the diff's
+added code content alone — outbound dependency calls imply the network family (high latency,
+timeout, connection reset, malformed upstream response, rate limiting), consistency-critical write
+paths imply duplicate request, concurrent completion paths imply out-of-order response, and a plan
+requiring `CONCURRENCY` forces the interleaving pair. Comments, filenames, and test/fixture/script
+paths are not evidence. When the plan requires `RESILIENCE`, `CommandResilienceVerifier` runs the
+configured trusted command once per relevant scenario with `MAF_RESILIENCE_SCENARIO` set (optionally
+managing a bounded Docker Compose environment, 120s up/down, no Kubernetes), binds the result to the
+candidate ID and diff digest, and re-collects the workspace digest afterwards so mutation
+invalidates the evidence. Missing specification/verifier, stale binding, an unexecuted relevant
+scenario, or a failed scenario yields `NOT_CHECKED`/`FAIL`, never PASS, and gates promotion. A
+diff with no relevant scenario passes deterministically without consulting the verifier (an
+uninspectable binary patch on an evidence path fails closed to `NOT_CHECKED` instead). Evidence
+states this in plain language: local scenario execution is resilience evidence, not production
+verification. Cancellation during verification is honored — a cancelled run stays `CANCELLED` and
+never emits `RunCompleted`; in-flight scenario subprocesses are terminated promptly (SIGTERM, then
+a forced tree kill after 5s) rather than awaited, and on Windows the scenario command's real exit
+code is propagated explicitly (`exit $LASTEXITCODE`) because `powershell -Command` otherwise
+collapses every nonzero native exit to 1.
+
 ## Recovery
 
 An unhandled execution failure is classified deterministically (`src/domain/recovery.ts`) into one
@@ -113,6 +135,11 @@ Automated tests cover VERIFIED, QUARANTINED, CLI native execution, ACP native ex
 mode changes, reversible `STRICT`, stable and invalidated scopes, bounded repair, retry exhaustion,
 trusted repair success, false stabilization, anti-oscillation, worktree cleanup, runtime-graph
 derivation, real baseline/candidate performance measurement, performance regression/unknown gating,
+fault-scenario relevance derivation, executed-scenario candidate binding, failed/unexecuted
+scenario gating, deterministic relevance-empty pass, resilience label sanitization, and
+cancellation during resilience verification, real-subprocess verifier behavior (scenario env
+delivery, exit-code fidelity through the Windows shell, timeout bounding, spec allowlists, and
+prompt mid-sweep cancellation kills),
 fact staleness, verified-only mission gating, API control, signal-explanation endpoints, SSE,
 bounded auto-recovery with a fresh session, capsule capture and pause on a non-retryable failure,
 resume from a preserved worktree, revision-conflict refusal, and emergency stop.

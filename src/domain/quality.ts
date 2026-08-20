@@ -2,6 +2,7 @@ import { deriveArchitectureGovernance } from "./architecture";
 import type { AssuranceCheck, AssurancePlan } from "./assurance";
 import { deriveDebtDelta } from "./debt";
 import type { PerformancePostureResult } from "./performance";
+import type { ResiliencePostureResult } from "./resilience";
 import { riskLevelRank, type RiskVector } from "./risk";
 import { deriveSecurityPosture } from "./security";
 import type { TrustState, VerificationState } from "./types";
@@ -52,12 +53,11 @@ export type QualityReport = Record<QualityDimension, QualityCheckResult>;
 
 /**
  * M6A trust-state ladder (see {@link TrustState} in types.ts for the authoritative definition).
- * DURABLE_VERIFIED is part of the type because the roadmap names it as part of the full model, but
- * `deriveTrustState` never returns it -- it requires production-like resilience verification,
- * which does not exist until the M10 roadmap milestone is built. Claiming it here would violate
- * "never claim capabilities/verification that don't exist". MERGE_ELIGIBLE is therefore reached
- * today via QUALITY_VERIFIED without the durability rung; when M10 lands, durability evidence
- * becomes an additional requirement on that step.
+ * Since M10, DURABLE_VERIFIED is reachable: it is the quality-verified rung plus plan-required
+ * resilience evidence — every relevant production-like failure scenario executed and passed in
+ * the bounded local environment (MEASURED provenance; a heuristic relevance-empty PASS is not
+ * enough). Local execution is honest about what it is: DURABLE_VERIFIED means durability was
+ * checked, never that production behavior was verified.
  */
 export type { TrustState } from "./types";
 
@@ -75,6 +75,8 @@ export interface QualityReportInput {
   diffPatch: string;
   /** Candidate/digest-bound result from M9's trusted baseline/candidate measurement boundary. */
   performancePosture?: PerformancePostureResult;
+  /** Candidate/digest-bound result from M10's trusted fault-injection boundary. */
+  resiliencePosture?: ResiliencePostureResult;
 }
 
 const requiredCheck = (plan: AssurancePlan, check: AssuranceCheck): boolean =>
@@ -88,19 +90,6 @@ const deterministic = (state: QualityCheckState, evidence: string[]): QualityChe
 
 const notRequiredResult = (plan: AssurancePlan, check: AssuranceCheck): QualityCheckResult =>
   deterministic("NOT_REQUIRED", [plan.reasons[check]]);
-
-/**
- * A dimension the assurance plan requires but for which no deterministic checker exists yet
- * (RESILIENCE -> M10). Honestly UNKNOWN -- flagged as an
- * explicit gap, never a silent PASS the plan never actually checked.
- */
-const pendingCheckerResult = (milestone: string): QualityCheckResult => ({
-  state: "UNKNOWN",
-  evidence: [
-    `required by the assurance plan; no deterministic checker exists yet (see the ${milestone} roadmap milestone)`,
-  ],
-  provenance: "PENDING_CHECKER",
-});
 
 const testFilePattern = /\.(test|spec)\.[jt]sx?$|(^|\/)(tests?|__tests__)\//iu;
 
@@ -241,6 +230,7 @@ export const deriveQualityReport = (input: QualityReportInput): QualityReport =>
     moduleOwnership,
     diffPatch,
     performancePosture,
+    resiliencePosture,
   } = input;
   const debt = deriveDebtDelta(diffPatch);
 
@@ -262,7 +252,21 @@ export const deriveQualityReport = (input: QualityReportInput): QualityReport =>
           ]),
     Resilience: !requiredCheck(assurancePlan, "RESILIENCE")
       ? notRequiredResult(assurancePlan, "RESILIENCE")
-      : pendingCheckerResult("M10"),
+      : resiliencePosture
+        ? {
+            state: resiliencePosture.state,
+            evidence: resiliencePosture.evidence,
+            // A PASS with no executed scenarios is the deterministic relevance-empty verdict
+            // (derived from the diff itself); only executed scenario evidence is MEASURED.
+            provenance:
+              resiliencePosture.state === "NOT_CHECKED" ||
+              (resiliencePosture.state === "PASS" && resiliencePosture.scenarios.length === 0)
+                ? "DETERMINISTIC"
+                : "MEASURED",
+          }
+        : deterministic("NOT_CHECKED", [
+            "required by the assurance plan; no candidate-bound resilience evidence was produced",
+          ]),
     TestQuality: deriveTestQuality(changedFiles),
     // DebtDelta is the M7A declared-debt checker: deterministic from the diff's own patch. The
     // result is always reported; whether it gates promotion follows the plan's DEBT decision (the
@@ -277,9 +281,9 @@ export const deriveQualityReport = (input: QualityReportInput): QualityReport =>
 
 /**
  * Dimensions whose result is bound to an assurance check the plan can require AND for which a
- * deterministic checker already exists. Performance joined in M9: a required measurement must be
- * exactly PASS, while missing infrastructure/evidence is NOT_CHECKED and blocks. Resilience remains
- * absent until M10; its required state stays honestly UNKNOWN without fabricating a pass.
+ * deterministic checker already exists. Performance joined in M9 and Resilience in M10: a required
+ * measurement must be exactly PASS, while missing infrastructure/evidence is NOT_CHECKED and
+ * blocks promotion rather than silently counting as verified.
  */
 const gatedDimensions: Partial<Record<QualityDimension, AssuranceCheck>> = {
   Correctness: "CORRECTNESS",
@@ -287,15 +291,15 @@ const gatedDimensions: Partial<Record<QualityDimension, AssuranceCheck>> = {
   DebtDelta: "DEBT",
   Security: "SECURITY",
   Performance: "PERFORMANCE",
+  Resilience: "RESILIENCE",
 };
 
 /**
  * A gated dimension blocks promotion unless it is exactly PASS: FAIL is deterministic evidence of
  * a problem, WARN is "checked, flagged" (e.g. architectural footprint expanded beyond estimate) --
- * neither may silently count as verified. Only NOT_REQUIRED dims, ungated informational dims
- * (Maintainability, TestQuality), and the not-yet-implemented Resilience dimension don't gate:
- * the assurance plan
- * already decided what was required; these are the checks that can actually be run today.
+ * neither may silently count as verified. Only NOT_REQUIRED dims and ungated informational dims
+ * (Maintainability, TestQuality) don't gate: the assurance plan already decided what was
+ * required; these are the checks that can actually be run today.
  *
  * One deliberate exception to plan-bound gating: a Security FAIL — a structured secret format in
  * a production file — gates unconditionally. Plan requirements are derived from path-keyword risk,
@@ -318,7 +322,8 @@ const gatesPromotion = (
  * climb past PROPOSED no matter what any model says. QUALITY_VERIFIED requires every plan-gated
  * dimension to be PASS; MERGE_ELIGIBLE additionally requires independent review approval whenever
  * the plan requires INDEPENDENT_REVIEW (the author alone can never be the final judge there).
- * DURABLE_VERIFIED is unreachable until M10 -- see the TrustState doc comment.
+ * When the plan requires RESILIENCE and its evidence held, the awaiting-review rung is
+ * DURABLE_VERIFIED rather than QUALITY_VERIFIED — the durability step was actually climbed.
  */
 export const deriveTrustState = (
   verificationState: VerificationState,
@@ -333,5 +338,13 @@ export const deriveTrustState = (
   if (blocked) return "CORRECTNESS_VERIFIED";
   const reviewRequired = assurancePlan.required.includes("INDEPENDENT_REVIEW");
   if (!reviewRequired || independentReviewApproved === true) return "MERGE_ELIGIBLE";
-  return "QUALITY_VERIFIED";
+  // DURABLE_VERIFIED claims fault scenarios were actually executed against this candidate and
+  // held. A relevance-empty PASS (provenance DETERMINISTIC) is only heuristic absence-of-signal —
+  // the relevance heuristics provably miss risk-relevant diffs — so it cannot support that claim;
+  // the run stays QUALITY_VERIFIED pending review.
+  const durabilityMeasured =
+    assurancePlan.required.includes("RESILIENCE") &&
+    report.Resilience.provenance === "MEASURED" &&
+    report.Resilience.state === "PASS";
+  return durabilityMeasured ? "DURABLE_VERIFIED" : "QUALITY_VERIFIED";
 };

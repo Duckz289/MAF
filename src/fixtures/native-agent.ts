@@ -321,6 +321,22 @@ const runTask = async (input: FixtureInput): Promise<void> => {
       changedFiles.push(performancePath);
     }
   }
+  // M10 integration scenario: append an outbound dependency call to an existing source file so
+  // the diff-captured content (not a filename or comment) derives fault-scenario relevance.
+  if (/introduce a network dependency/iu.test(input.task.prompt)) {
+    const dependencyPath = "src/server/dependency-client.ts";
+    const absolute = path.resolve(dependencyPath);
+    const existing = await readFile(absolute, "utf8").catch(() => undefined);
+    if (existing !== undefined) {
+      await writeFile(
+        absolute,
+        `${existing}\nexport const fetchWidget = async (url: string): Promise<unknown> => fetch(url);\n`,
+        "utf8",
+      );
+      emit("tool", { tool: "edit_file", operation: "edit", path: dependencyPath });
+      changedFiles.push(dependencyPath);
+    }
+  }
   const content = [
     "# Native agent fixture output",
     "",

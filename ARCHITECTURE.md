@@ -367,9 +367,28 @@ bounded sample count. `src/domain/performance.ts` compares the measured delta ag
 `maxRegressionPercent`. Missing infrastructure/specification, command failure, dirty or mismatched
 baseline, zero/non-finite metrics, stale candidate/digest binding, or benchmark workspace mutation
 is `NOT_CHECKED`, never PASS; required `NOT_CHECKED` and measured FAIL both gate promotion. Plan-
-exempt ordinary work does not run the command. `CONCURRENCY` and `RESILIENCE` remain pending M10 and
-honestly UNKNOWN when required. `ReasoningDifficulty` remains `INSUFFICIENT_EVIDENCE` for every run
-until a real source exists (nothing is planned yet for it).
+exempt ordinary work does not run the command. `ReasoningDifficulty` remains `INSUFFICIENT_EVIDENCE`
+for every run until a real source exists (nothing is planned yet for it).
+
+`RESILIENCE` gained its M10 checker. `src/domain/resilience.ts` derives which production-like failure
+scenarios are relevant to a candidate deterministically from the diff's added code content only —
+outbound dependency calls imply the network family (high latency, timeout, connection reset,
+malformed upstream response, rate limiting), consistency-critical write paths imply duplicate
+request, concurrent completion paths imply out-of-order response, and a plan requiring
+`CONCURRENCY` forces the interleaving pair. Comments, filenames, and test/fixture/script paths are
+not evidence. When no scenario is relevant, the verdict is a deterministic PASS (the diff itself
+shows there is nothing to inject). When the plan requires Resilience and scenarios are relevant,
+`CommandResilienceVerifier` runs one project-supplied trusted command once per scenario with
+`MAF_RESILIENCE_SCENARIO` set, optionally bringing up and tearing down a bounded Docker Compose
+environment (120s, no Kubernetes). The measurement is bound to the candidate id and diff digest;
+the workspace digest is re-collected afterwards so any mutation invalidates the evidence. Missing
+specification or verifier, stale binding, an unexecuted relevant scenario, or a failed scenario is
+`NOT_CHECKED`/`FAIL`, never PASS, and both gate promotion. Evidence records verbatim that local
+scenario execution is resilience evidence, not production verification. `DURABLE_VERIFIED`
+additionally requires a MEASURED resilience PASS — the plan's relevant scenarios were actually
+executed against this candidate and passed; a heuristic relevance-empty PASS (the diff shows
+nothing to inject) caps the rung at `QUALITY_VERIFIED`. `CONCURRENCY` as a standalone check
+remains pending and honestly UNKNOWN when required without one of the above signals.
 
 ## Durable state
 
