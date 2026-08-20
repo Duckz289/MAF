@@ -1,6 +1,7 @@
 import { deriveArchitectureGovernance } from "./architecture";
 import type { AssuranceCheck, AssurancePlan } from "./assurance";
 import { deriveDebtDelta } from "./debt";
+import type { PerformancePostureResult } from "./performance";
 import { riskLevelRank, type RiskVector } from "./risk";
 import { deriveSecurityPosture } from "./security";
 import type { TrustState, VerificationState } from "./types";
@@ -15,8 +16,8 @@ import type { TrustState, VerificationState } from "./types";
  */
 
 /**
- * UNKNOWN means "no evidence either way" (e.g. PERFORMANCE is required but no deterministic
- * performance checker exists until the M9 roadmap milestone). It is distinct from WARN ("checked,
+ * UNKNOWN means "no evidence either way" for legacy/pending dimensions. M9 uses NOT_CHECKED when
+ * PERFORMANCE is required but no candidate-bound measurement exists. It is distinct from WARN ("checked,
  * flagged, worth attention") and from FAIL ("deterministic evidence says this is wrong"). UNKNOWN
  * must never be promoted to PASS -- unknown remains unknown.
  */
@@ -29,7 +30,7 @@ export type QualityCheckState =
   | "NOT_REQUIRED";
 
 /** Where a dimension's result came from. Deterministic evidence outranks model confidence. */
-export type QualityProvenance = "DETERMINISTIC" | "PENDING_CHECKER";
+export type QualityProvenance = "DETERMINISTIC" | "MEASURED" | "PENDING_CHECKER";
 
 export type QualityDimension =
   | "Correctness"
@@ -72,6 +73,8 @@ export interface QualityReportInput {
   moduleOwnership: Record<string, string>;
   /** The candidate's full unified diff patch — the M7 checkers' evidence source. */
   diffPatch: string;
+  /** Candidate/digest-bound result from M9's trusted baseline/candidate measurement boundary. */
+  performancePosture?: PerformancePostureResult;
 }
 
 const requiredCheck = (plan: AssurancePlan, check: AssuranceCheck): boolean =>
@@ -88,7 +91,7 @@ const notRequiredResult = (plan: AssurancePlan, check: AssuranceCheck): QualityC
 
 /**
  * A dimension the assurance plan requires but for which no deterministic checker exists yet
- * (PERFORMANCE -> M9, RESILIENCE -> M10). Honestly UNKNOWN -- flagged as an
+ * (RESILIENCE -> M10). Honestly UNKNOWN -- flagged as an
  * explicit gap, never a silent PASS the plan never actually checked.
  */
 const pendingCheckerResult = (milestone: string): QualityCheckResult => ({
@@ -237,6 +240,7 @@ export const deriveQualityReport = (input: QualityReportInput): QualityReport =>
     initialModules,
     moduleOwnership,
     diffPatch,
+    performancePosture,
   } = input;
   const debt = deriveDebtDelta(diffPatch);
 
@@ -247,7 +251,15 @@ export const deriveQualityReport = (input: QualityReportInput): QualityReport =>
     Security: deriveSecurity(assurancePlan, diffPatch),
     Performance: !requiredCheck(assurancePlan, "PERFORMANCE")
       ? notRequiredResult(assurancePlan, "PERFORMANCE")
-      : pendingCheckerResult("M9"),
+      : performancePosture
+        ? {
+            state: performancePosture.state,
+            evidence: performancePosture.evidence,
+            provenance: performancePosture.state === "NOT_CHECKED" ? "DETERMINISTIC" : "MEASURED",
+          }
+        : deterministic("NOT_CHECKED", [
+            "required by the assurance plan; no candidate-bound performance measurement was produced",
+          ]),
     Resilience: !requiredCheck(assurancePlan, "RESILIENCE")
       ? notRequiredResult(assurancePlan, "RESILIENCE")
       : pendingCheckerResult("M10"),
@@ -265,27 +277,24 @@ export const deriveQualityReport = (input: QualityReportInput): QualityReport =>
 
 /**
  * Dimensions whose result is bound to an assurance check the plan can require AND for which a
- * deterministic checker already exists. Performance/Resilience are deliberately absent: their
- * checkers arrive in M9/M10, so until then those dimensions are honestly reported as UNKNOWN
- * (never PASS) but cannot gate — an unbuilt checker must not deadlock MERGE_ELIGIBLE for every
- * performance-adjacent change, and must not silently pass anything either. When each checker
- * lands, its dimension joins this table and gating activates with no other change. DebtDelta
- * joined at M7A, Security at M8A; Architecture's governance checker (M7B) reports through the
- * existing ARCHITECTURE gate.
+ * deterministic checker already exists. Performance joined in M9: a required measurement must be
+ * exactly PASS, while missing infrastructure/evidence is NOT_CHECKED and blocks. Resilience remains
+ * absent until M10; its required state stays honestly UNKNOWN without fabricating a pass.
  */
 const gatedDimensions: Partial<Record<QualityDimension, AssuranceCheck>> = {
   Correctness: "CORRECTNESS",
   Architecture: "ARCHITECTURE",
   DebtDelta: "DEBT",
   Security: "SECURITY",
+  Performance: "PERFORMANCE",
 };
 
 /**
  * A gated dimension blocks promotion unless it is exactly PASS: FAIL is deterministic evidence of
  * a problem, WARN is "checked, flagged" (e.g. architectural footprint expanded beyond estimate) --
  * neither may silently count as verified. Only NOT_REQUIRED dims, ungated informational dims
- * (Maintainability, TestQuality), and not-yet-implemented dims (Performance,
- * Resilience — reported UNKNOWN pending their milestone's checker) don't gate: the assurance plan
+ * (Maintainability, TestQuality), and the not-yet-implemented Resilience dimension don't gate:
+ * the assurance plan
  * already decided what was required; these are the checks that can actually be run today.
  *
  * One deliberate exception to plan-bound gating: a Security FAIL — a structured secret format in

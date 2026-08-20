@@ -28,6 +28,7 @@ import {
   OptionalCodebaseMemoryIndex,
 } from "../infrastructure/project-brain";
 import { DomainTelemetryRecorder, PostgresTelemetrySink } from "../infrastructure/telemetry";
+import { CommandPerformanceVerifier } from "../infrastructure/performance-verifier";
 import { CommandVerifier } from "../infrastructure/verifier";
 
 const createRunSchema = z.object({
@@ -39,6 +40,17 @@ const createRunSchema = z.object({
     .object({
       command: z.string().max(4_000).optional(),
       expectedFile: z.string().max(1_000).optional(),
+      timeoutMs: z.number().int().positive().max(600_000).optional(),
+    })
+    .optional(),
+  performance: z
+    .object({
+      command: z.string().min(1).max(4_000),
+      metric: z.string().min(1).max(120),
+      unit: z.string().min(1).max(40).optional(),
+      maxRegressionPercent: z.number().nonnegative().max(10_000),
+      lowerIsBetter: z.boolean().optional(),
+      samples: z.number().int().min(1).max(10).optional(),
       timeoutMs: z.number().int().positive().max(600_000).optional(),
     })
     .optional(),
@@ -203,6 +215,7 @@ export const createApp = async (): Promise<AppRuntime> => {
     agent,
     sandbox: new LocalWorktreeSandbox(sandboxRoot, retention),
     verifier: new CommandVerifier(),
+    performanceVerifier: new CommandPerformanceVerifier(),
     repositoryIndex,
     projectBrain: brain,
     contextBuilder: new GuidedContextBuilder(brain),

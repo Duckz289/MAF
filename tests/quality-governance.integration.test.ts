@@ -5,9 +5,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { GuidedContextBuilder } from "../src/application/context-builder";
 import { RunService } from "../src/application/run-service";
 import { EvidenceRuntimeSignalCollector } from "../src/application/runtime-signal-collector";
+import type { PerformanceVerifierPort } from "../src/domain/ports";
 import { LocalWorktreeSandbox } from "../src/infrastructure/local-worktree";
 import { InMemoryRunStore } from "../src/infrastructure/memory-store";
 import { NativeCliAdapter } from "../src/infrastructure/native-cli-adapter";
+import { runProcess } from "../src/infrastructure/process-utils";
 import { InMemoryProjectBrain, LocalRepositoryIndex } from "../src/infrastructure/project-brain";
 import { DomainTelemetryRecorder } from "../src/infrastructure/telemetry";
 import { CommandVerifier } from "../src/infrastructure/verifier";
@@ -16,14 +18,13 @@ import {
   createSecuritySensitiveFixtureRepository,
   type FixtureRepository,
 } from "./helpers";
-import { runProcess } from "../src/infrastructure/process-utils";
 
 const fixtures: FixtureRepository[] = [];
 afterEach(async () => {
   await Promise.all(fixtures.splice(0).map((fixture) => fixture.cleanup()));
 });
 
-const harness = (sandboxRoot: string) => {
+const harness = (sandboxRoot: string, performanceVerifier?: PerformanceVerifierPort) => {
   const store = new InMemoryRunStore();
   const brain = new InMemoryProjectBrain();
   const telemetry = new DomainTelemetryRecorder();
@@ -39,6 +40,7 @@ const harness = (sandboxRoot: string) => {
     }),
     sandbox: new LocalWorktreeSandbox(sandboxRoot, "none"),
     verifier: new CommandVerifier(),
+    ...(performanceVerifier ? { performanceVerifier } : {}),
     repositoryIndex: new LocalRepositoryIndex(),
     projectBrain: brain,
     contextBuilder: new GuidedContextBuilder(brain),
@@ -46,6 +48,16 @@ const harness = (sandboxRoot: string) => {
     runtimeSignals: new EvidenceRuntimeSignalCollector(),
   });
   return { service, store, telemetry };
+};
+
+const createPerformanceFixtureRepository = async (): Promise<FixtureRepository> => {
+  const fixture = await createFixtureRepository();
+  const target = path.join(fixture.path, "src/server/database-query.ts");
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, "export const queryName = 'widgets';\n", "utf8");
+  await runProcess("git", ["add", "."], { cwd: fixture.path });
+  await runProcess("git", ["commit", "-m", "performance fixture"], { cwd: fixture.path });
+  return fixture;
 };
 
 /**
@@ -85,6 +97,7 @@ interface QualityAssessedData {
   report: {
     Correctness: QualityCheckData;
     Security: QualityCheckData;
+    Performance: QualityCheckData;
     DebtDelta: QualityCheckData;
     TestQuality: QualityCheckData;
   } & Record<string, QualityCheckData | undefined>;
@@ -408,5 +421,158 @@ describe("quality governance (M6)", () => {
     // WARN (informational), never allowed to silently pass, and never allowed to block.
     expect(data.report.TestQuality.state).toBe("WARN");
     expect(data.trustState).toBe("MERGE_ELIGIBLE");
+  });
+
+  it("binds a measured performance regression to the candidate and blocks promotion", async () => {
+    const fixture = await createPerformanceFixtureRepository();
+    fixtures.push(fixture);
+    const performanceVerifier: PerformanceVerifierPort = {
+      measure: async ({ candidateId, diffDigest }) => ({
+        state: "MEASURED",
+        candidateId,
+        diffDigest,
+        metrics: [
+          {
+            name: "p95 latency",
+            unit: "ms",
+            baseline: 100,
+            candidate: 130,
+            lowerIsBetter: true,
+          },
+        ],
+        evidence: ["fixture trusted measurement"],
+      }),
+    };
+    const { service, store } = harness(fixture.sandboxRoot, performanceVerifier);
+    const created = await service.create({
+      prompt: "Introduce performance regression",
+      repositoryPath: fixture.path,
+      verification: { expectedFile: "agent-output.md" },
+      performance: {
+        command: "fixture-measure",
+        metric: "p95 latency",
+        unit: "ms",
+        maxRegressionPercent: 10,
+      },
+    });
+    await service.waitForIdle(created.id);
+
+    const run = await store.getRun(created.id);
+    const data = await qualityEvent(service, created.id);
+    expect(data.report.Performance.state).toBe("FAIL");
+    expect(data.report.Performance.provenance).toBe("MEASURED");
+    expect(run?.trustState).toBe("CORRECTNESS_VERIFIED");
+    expect(
+      (await service.listSummaries()).find((summary) => summary.id === created.id),
+    ).toMatchObject({
+      operationalStatus: "ASSURANCE_BLOCKED",
+      currentPhase: "Assurance blocked",
+    });
+    const events = await service.events(created.id);
+    const runtimeGraph = events.find((event) => event.type === "RuntimeGraphDerived");
+    const performance = events.find((event) => event.type === "PerformanceAssessed");
+    expect(runtimeGraph?.data).toMatchObject({
+      candidateId: data.candidateId,
+      diffDigest: data.diffDigest,
+    });
+    expect(performance?.data).toMatchObject({
+      candidateId: data.candidateId,
+      diffDigest: data.diffDigest,
+      posture: { state: "FAIL" },
+    });
+  });
+
+  it("keeps required performance NOT_CHECKED when no measurement evidence exists", async () => {
+    const fixture = await createPerformanceFixtureRepository();
+    fixtures.push(fixture);
+    const { service, store } = harness(fixture.sandboxRoot);
+    const created = await service.create({
+      prompt: "Introduce performance regression without a benchmark",
+      repositoryPath: fixture.path,
+      verification: { expectedFile: "agent-output.md" },
+    });
+    await service.waitForIdle(created.id);
+
+    const data = await qualityEvent(service, created.id);
+    expect(data.report.Performance.state).toBe("NOT_CHECKED");
+    expect((await store.getRun(created.id))?.trustState).toBe("CORRECTNESS_VERIFIED");
+  });
+
+  it("sanitizes performance labels at the durable task boundary", async () => {
+    const fixture = await createFixtureRepository();
+    fixtures.push(fixture);
+    const { service, store } = harness(fixture.sandboxRoot);
+    const rawToken = `ghp_${"A".repeat(36)}`;
+    const created = await service.create({
+      prompt: "Create the requested output",
+      repositoryPath: fixture.path,
+      verification: { expectedFile: "agent-output.md" },
+      performance: {
+        command: "echo 1",
+        metric: rawToken,
+        unit: rawToken,
+        maxRegressionPercent: 10,
+      },
+    });
+    await service.waitForIdle(created.id);
+
+    expect(JSON.stringify(await store.getTask(created.taskId))).not.toContain(rawToken);
+  });
+
+  it("does not resurrect a run cancelled during performance measurement", async () => {
+    const fixture = await createPerformanceFixtureRepository();
+    fixtures.push(fixture);
+    let measurementStarted!: () => void;
+    let releaseMeasurement!: () => void;
+    const started = new Promise<void>((resolve) => {
+      measurementStarted = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      releaseMeasurement = resolve;
+    });
+    const performanceVerifier: PerformanceVerifierPort = {
+      measure: async ({ candidateId, diffDigest }) => {
+        measurementStarted();
+        await blocked;
+        return {
+          state: "MEASURED",
+          candidateId,
+          diffDigest,
+          metrics: [
+            {
+              name: "p95 latency",
+              unit: "ms",
+              baseline: 100,
+              candidate: 101,
+              lowerIsBetter: true,
+            },
+          ],
+          evidence: ["released fixture measurement"],
+        };
+      },
+    };
+    const { service, store } = harness(fixture.sandboxRoot, performanceVerifier);
+    const created = await service.create({
+      prompt: "Introduce performance regression",
+      repositoryPath: fixture.path,
+      verification: { expectedFile: "agent-output.md" },
+      performance: {
+        command: "fixture-measure",
+        metric: "p95 latency",
+        maxRegressionPercent: 10,
+      },
+    });
+    await started;
+    expect((await service.cancel(created.id)).state).toBe("CANCELLED");
+    releaseMeasurement();
+    await service.waitForIdle(created.id);
+
+    expect(await store.getRun(created.id)).toMatchObject({
+      state: "CANCELLED",
+      verificationState: "CANCELLED",
+    });
+    expect((await service.events(created.id)).some((event) => event.type === "RunCompleted")).toBe(
+      false,
+    );
   });
 });

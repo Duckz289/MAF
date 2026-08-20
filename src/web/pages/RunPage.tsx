@@ -37,6 +37,18 @@ interface CostEstimatedData {
   estimate: { low: number; high: number; confidence: string; basis: string } | null;
 }
 
+interface QualityAssessedData {
+  report?: Record<string, { state: string; evidence: string[] }>;
+}
+
+const qualityStateLabel = (state: string | undefined): string => {
+  if (state === "PASS") return "Đã xác minh";
+  if (state === "FAIL") return "Phát hiện hồi quy";
+  if (state === "NOT_REQUIRED") return "Không yêu cầu";
+  if (state === "WARN") return "Có cảnh báo";
+  return "Chưa kiểm tra";
+};
+
 const useStyles = makeStyles({
   back: { marginBottom: "12px" },
   header: {
@@ -167,6 +179,9 @@ export function RunPage({
   const costEstimated = events.find((event) => event.type === "CostEstimated")?.data as
     | CostEstimatedData
     | undefined;
+  const quality = events.filter((event) => event.type === "QualityAssessed").at(-1)?.data as
+    | QualityAssessedData
+    | undefined;
   if (!run)
     return (
       <EmptyState
@@ -249,9 +264,11 @@ export function RunPage({
         <MessageBarBody>
           {needsAttention
             ? "Tác vụ cần bạn xem lại. Mở chi tiết lỗi bên dưới để xác định bước tiếp theo."
-            : run.verificationState === "VERIFIED"
-              ? "Tác vụ đã vượt qua xác minh và sẵn sàng bàn giao."
-              : "Không cần thao tác lúc này. MAF sẽ chỉ bàn giao sau khi có kết quả xác minh."}
+            : run.verificationState === "VERIFIED" && run.trustState === "MERGE_ELIGIBLE"
+              ? "Tác vụ đã vượt qua các kiểm tra bắt buộc và sẵn sàng bàn giao."
+              : run.verificationState === "VERIFIED"
+                ? "Đã xác minh tính đúng đắn, nhưng bằng chứng đảm bảo bắt buộc chưa đủ để bàn giao."
+                : "Không cần thao tác lúc này. MAF sẽ chỉ bàn giao sau khi có kết quả xác minh."}
         </MessageBarBody>
       </MessageBar>
       <div className={styles.layout}>
@@ -432,6 +449,20 @@ export function RunPage({
                     Chưa có tín hiệu được ghi nhận.
                   </Text>
                 )}
+              </div>
+              <div>
+                <Text weight="semibold">Bằng chứng chất lượng</Text>
+                {(["Security", "Performance"] as const).map((dimension) => {
+                  const result = quality?.report?.[dimension];
+                  return (
+                    <div className={styles.signal} key={dimension}>
+                      <Text size={200}>{dimension}</Text>
+                      <Text className={styles.quiet} size={200}>
+                        {qualityStateLabel(result?.state)}
+                      </Text>
+                    </div>
+                  );
+                })}
               </div>
               <div>
                 <Text weight="semibold">Chuyển đổi chế độ</Text>

@@ -15,6 +15,7 @@ import type {
   RuntimeSignalSnapshot,
   RuntimeSignals,
 } from "./types";
+import type { PerformanceMeasurement } from "./performance";
 
 export interface RunStore {
   createTask(task: Task): Promise<void>;
@@ -87,6 +88,19 @@ export interface SandboxProvider {
 export interface VerifierPort {
   verify(run: Run, task: Task, sandbox: Sandbox, diff: SandboxDiff): Promise<Verification>;
   cancel(runId: string): Promise<void>;
+}
+
+export interface PerformanceMeasureInput {
+  run: Run;
+  task: Task;
+  sandbox: Sandbox;
+  candidateId: string;
+  diffDigest: string;
+}
+
+/** Trusted local measurement boundary. Implementations compare the baseline and candidate. */
+export interface PerformanceVerifierPort {
+  measure(input: PerformanceMeasureInput): Promise<PerformanceMeasurement>;
 }
 
 export interface RepositorySnapshot {

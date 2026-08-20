@@ -38,6 +38,11 @@ const securityHighRiskVector = deriveRiskVector({
 
 const balancedLowPlan = buildAssurancePlan(lowRiskVector, "BALANCED");
 const criticalSecurePlan = buildAssurancePlan(securityHighRiskVector, "CRITICAL");
+const passingPerformance = {
+  state: "PASS" as const,
+  evidence: ["candidate-bound performance measurement stayed within threshold"],
+  metrics: [],
+};
 
 const reportInput = (overrides: Partial<QualityReportInput> = {}): QualityReportInput => ({
   verificationState: "VERIFIED",
@@ -80,7 +85,7 @@ describe("deriveQualityReport", () => {
     );
     for (const result of Object.values(report)) {
       expect(result.evidence.length).toBeGreaterThan(0);
-      expect(["DETERMINISTIC", "PENDING_CHECKER"]).toContain(result.provenance);
+      expect(["DETERMINISTIC", "MEASURED", "PENDING_CHECKER"]).toContain(result.provenance);
     }
   });
 
@@ -93,7 +98,7 @@ describe("deriveQualityReport", () => {
     expect(report.Security.provenance).toBe("DETERMINISTIC");
     // Network-sensitive paths were touched, so RESILIENCE is plan-required and still UNKNOWN (M10).
     expect(report.Resilience.state).toBe("UNKNOWN");
-    // No performance-sensitive evidence, so PERFORMANCE is plan-exempt: NOT_REQUIRED, not UNKNOWN.
+    // Auth API paths alone do not fabricate performance sensitivity.
     expect(report.Performance.state).toBe("NOT_REQUIRED");
   });
 
@@ -238,6 +243,80 @@ describe("deriveQualityReport", () => {
     );
     expect(report.Maintainability.state).toBe("WARN");
   });
+
+  it("keeps required Performance NOT_CHECKED without candidate-bound measurements", () => {
+    const patch = patchFor("src/infrastructure/query.ts", [
+      'await database.query("SELECT * FROM widgets");',
+    ]);
+    const performanceRisk = deriveRiskVector({
+      files: ["src/infrastructure/query.ts"],
+      moduleOwnership: { "src/infrastructure/query.ts": "infrastructure" },
+      packageOwnership: { "src/infrastructure/query.ts": "src" },
+      crossModuleEdgeCount: 0,
+      diffPatch: patch,
+    });
+    const performancePlan = buildAssurancePlan(performanceRisk, "BALANCED");
+    const report = deriveQualityReport(
+      reportInput({
+        assurancePlan: performancePlan,
+        preExecutionRisk: performanceRisk,
+        diffRisk: performanceRisk,
+        diffPatch: patch,
+      }),
+    );
+
+    expect(performancePlan.required).toContain("PERFORMANCE");
+    expect(report.Performance.state).toBe("NOT_CHECKED");
+    expect(deriveTrustState("VERIFIED", report, performancePlan, undefined)).toBe(
+      "CORRECTNESS_VERIFIED",
+    );
+  });
+
+  it("gates on measured Performance regression and promotes a candidate within threshold", () => {
+    const patch = patchFor("src/infrastructure/query.ts", [
+      'await database.query("SELECT * FROM widgets");',
+    ]);
+    const performanceRisk = deriveRiskVector({
+      files: ["src/infrastructure/query.ts"],
+      moduleOwnership: { "src/infrastructure/query.ts": "infrastructure" },
+      packageOwnership: { "src/infrastructure/query.ts": "src" },
+      crossModuleEdgeCount: 0,
+      diffPatch: patch,
+    });
+    const performancePlan = buildAssurancePlan(performanceRisk, "BALANCED");
+    const base = {
+      assurancePlan: performancePlan,
+      preExecutionRisk: performanceRisk,
+      diffRisk: performanceRisk,
+      diffPatch: patch,
+    };
+    const failed = deriveQualityReport(
+      reportInput({
+        ...base,
+        performancePosture: {
+          state: "FAIL",
+          evidence: ["latency regressed 30%"],
+          metrics: [],
+        },
+      }),
+    );
+    const passed = deriveQualityReport(
+      reportInput({
+        ...base,
+        performancePosture: {
+          state: "PASS",
+          evidence: ["latency stayed within threshold"],
+          metrics: [],
+        },
+      }),
+    );
+
+    expect(failed.Performance.provenance).toBe("MEASURED");
+    expect(deriveTrustState("VERIFIED", failed, performancePlan, undefined)).toBe(
+      "CORRECTNESS_VERIFIED",
+    );
+    expect(deriveTrustState("VERIFIED", passed, performancePlan, undefined)).toBe("MERGE_ELIGIBLE");
+  });
 });
 
 describe("deriveTrustState", () => {
@@ -253,6 +332,7 @@ describe("deriveTrustState", () => {
         "src/api/auth/credential-store.ts",
         "src/domain/permission.ts",
       ],
+      performancePosture: passingPerformance,
     }),
   );
 
@@ -274,6 +354,7 @@ describe("deriveTrustState", () => {
         assurancePlan: criticalSecurePlan,
         preExecutionRisk: securityHighRiskVector,
         diffRisk: securityHighRiskVector,
+        performancePosture: passingPerformance,
         diffPatch: patchFor("src/config/prod.ts", ['const key = "AKIAIOSFODNN7EXAMPLE";']),
       }),
     );
@@ -305,6 +386,7 @@ describe("deriveTrustState", () => {
         assurancePlan: criticalSecurePlan,
         preExecutionRisk: securityHighRiskVector,
         diffRisk: securityHighRiskVector,
+        performancePosture: passingPerformance,
       }),
     );
     expect(report.Security.state).toBe("PASS");

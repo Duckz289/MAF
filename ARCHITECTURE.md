@@ -293,7 +293,9 @@ the plan is inspectable evidence, never a hidden internal value: once right afte
 from the context builder's selected `initialFiles` (a pre-execution estimate — the only thing
 available before any diff exists), and again from the actual diff's `changedFiles` after
 `captureCandidate` resolves one (ground truth, refining the estimate with what was actually
-touched rather than what was expected to be).
+touched rather than what was expected to be). M9's diff-captured vector additionally scans concrete
+DB/query, pagination/index, network, bundle, serialization, payload, hot-path, and memory signals;
+ordinary work with no such evidence remains LOW rather than being labeled performance-sensitive.
 
 Two of the plan's checks gained deterministic checkers at M7, both reading the candidate's own
 unified diff (parsed by `src/domain/diff-parse.ts`): `DEBT` (M7A) — `src/domain/debt.ts` counts
@@ -347,12 +349,27 @@ paths; they do not prove that arbitrary native agent processes, external verifie
 sandbox files cannot disclose a secret outside the harness. `Security` joined the gated dimensions
 at M8B.
 
-Still not implemented: deterministic checkers for `PERFORMANCE`, `CONCURRENCY`, and `RESILIENCE` —
-that is M9-M10's job. `INDEPENDENT_REVIEW` is already backed by M6's one bounded, candidate-bound
-fresh session. A plan requiring `PERFORMANCE` today does not cause a benchmark to run; it records,
-with evidence, that one is required while the quality vector remains `UNKNOWN`. `ReasoningDifficulty`
-remains `INSUFFICIENT_EVIDENCE` for every run until a real source exists (nothing is planned yet
-for it).
+`PERFORMANCE` gained its M9 checker without pretending code inspection is a benchmark.
+`src/domain/runtime-graph.ts` derives a Runtime Graph distinct from M2's Project Graph and emits it
+as candidate/digest-bound evidence; only topology and edge attributes present in changed paths/code
+are represented, while timeout/retry/auth/rate-limit/payload/consistency properties remain null when
+unknown. Nodes require content evidence (SQL shapes, named technologies like redis/s3, actual
+fetch/axios calls) — filenames and generic identifiers (`cache.ts`, a local `Map`, `fs.writeFile`,
+a variable named `database`) do not fabricate deployment topology. A server-side network call
+becomes ownership-unknown `SERVICE` unless the diff explicitly
+identifies an external API; a URL alone does not prove organizational ownership. Sensitivity
+signals are calibrated so one ubiquitous weak line (a lone `JSON.parse`) stays LOW, while
+removing query bounds/schema structure counts as evidence even though only removed lines changed.
+When the plan
+requires Performance, `CommandPerformanceVerifier` runs one project-supplied
+bounded numeric command in an ephemeral detached baseline worktree and the candidate worktree for a
+bounded sample count. `src/domain/performance.ts` compares the measured delta against the task's
+`maxRegressionPercent`. Missing infrastructure/specification, command failure, dirty or mismatched
+baseline, zero/non-finite metrics, stale candidate/digest binding, or benchmark workspace mutation
+is `NOT_CHECKED`, never PASS; required `NOT_CHECKED` and measured FAIL both gate promotion. Plan-
+exempt ordinary work does not run the command. `CONCURRENCY` and `RESILIENCE` remain pending M10 and
+honestly UNKNOWN when required. `ReasoningDifficulty` remains `INSUFFICIENT_EVIDENCE` for every run
+until a real source exists (nothing is planned yet for it).
 
 ## Durable state
 

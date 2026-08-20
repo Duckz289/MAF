@@ -96,6 +96,15 @@ describe("buildAssurancePlan", () => {
     expect(plan.required).toContain("CONCURRENCY");
   });
 
+  it("requires performance for a network-sensitive measured area without requiring it for ordinary work", () => {
+    const plan = buildAssurancePlan(
+      { ...lowRiskVector(), PerformanceSensitivity: value("MEDIUM", "DETERMINISTIC") },
+      "BALANCED",
+    );
+    expect(plan.required).toContain("PERFORMANCE");
+    expect(buildAssurancePlan(lowRiskVector(), "BALANCED").required).not.toContain("PERFORMANCE");
+  });
+
   it("requires integration and architecture checks for a multi-module, coupled change", () => {
     const vector = {
       ...lowRiskVector(),

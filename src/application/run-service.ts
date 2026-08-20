@@ -1,11 +1,42 @@
 import { existsSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
+import {
+  type AssurancePlan,
+  buildAssurancePlan,
+  type QualityPreference,
+} from "../domain/assurance";
+import {
+  authorizeSpend,
+  type BudgetAllocation,
+  type BudgetCategory,
+  BudgetExhaustedError,
+  type BudgetReservationPolicy,
+  computeAllocation,
+  defaultBudgetReservationPolicy,
+  estimateFromHistory,
+  sanitizeReportedCost,
+} from "../domain/budget";
+import { ProviderCircuitBreaker, ProviderCircuitOpenError } from "../domain/circuit-breaker";
+import { deriveDebtDelta } from "../domain/debt";
+import { AdaptiveModeController, type ModeDecision } from "../domain/mode-controller";
+import {
+  derivePerformancePosture,
+  type PerformanceMeasurement,
+  type PerformancePostureResult,
+} from "../domain/performance";
+import {
+  defaultEnforcementPolicy,
+  type EnforcementPolicy,
+  type PendingModeEnforcement,
+  planEnforcement,
+} from "../domain/policy-enforcement";
 import type {
   AgentAdapter,
   AgentSession,
-  ContextBuildResult,
   ContextBuilderPort,
+  ContextBuildResult,
+  PerformanceVerifierPort,
   ProjectBrain,
   RepositoryIndex,
   RepositorySnapshot,
@@ -17,33 +48,7 @@ import type {
   TelemetrySink,
   VerifierPort,
 } from "../domain/ports";
-import {
-  authorizeSpend,
-  BudgetExhaustedError,
-  computeAllocation,
-  defaultBudgetReservationPolicy,
-  estimateFromHistory,
-  sanitizeReportedCost,
-  type BudgetAllocation,
-  type BudgetCategory,
-  type BudgetReservationPolicy,
-} from "../domain/budget";
-import {
-  buildAssurancePlan,
-  type AssurancePlan,
-  type QualityPreference,
-} from "../domain/assurance";
-import { deriveDebtDelta } from "../domain/debt";
 import { deriveQualityReport, deriveTrustState, type QualityReport } from "../domain/quality";
-import { buildReviewPrompt, parseReviewVerdict, type ReviewVerdict } from "../domain/review";
-import { ProviderCircuitBreaker, ProviderCircuitOpenError } from "../domain/circuit-breaker";
-import { AdaptiveModeController, type ModeDecision } from "../domain/mode-controller";
-import {
-  defaultEnforcementPolicy,
-  planEnforcement,
-  type EnforcementPolicy,
-  type PendingModeEnforcement,
-} from "../domain/policy-enforcement";
 import {
   AgentReportedFailure,
   buildRecoveryCapsule,
@@ -51,32 +56,35 @@ import {
   isAutoRetryable,
   verificationSeverity,
 } from "../domain/recovery";
+import { buildReviewPrompt, parseReviewVerdict, type ReviewVerdict } from "../domain/review";
 import { countCrossModuleEdges, deriveRiskVector, type RiskVector } from "../domain/risk";
+import { deriveRuntimeGraph } from "../domain/runtime-graph";
 import {
   isSafeCredentialReference,
   redactPatchPreview,
   redactSensitiveData,
   redactSensitiveText,
 } from "../domain/security";
-import { extractFileCandidates, findRepositoryFile, normalizeFile } from "./file-candidates";
 import {
-  emptyCost,
-  emptyUsage,
   type Artifact,
   type Event,
   type ExecutionMode,
+  emptyCost,
+  emptyUsage,
   type FailureClassification,
   type ModeEnforcementMethod,
+  type PerformanceSpec,
   type RecoveryCapsule,
   type Run,
-  type RuntimeSignals,
   type RuntimeSignalSnapshot,
+  type RuntimeSignals,
   type Task,
   type Verification,
   type VerificationSpec,
 } from "../domain/types";
 import { LocalWorktreeSandbox } from "../infrastructure/local-worktree";
 import { runProcess } from "../infrastructure/process-utils";
+import { extractFileCandidates, findRepositoryFile, normalizeFile } from "./file-candidates";
 
 export interface CreateRunRequest {
   prompt: string;
@@ -84,6 +92,7 @@ export interface CreateRunRequest {
   revision?: string | undefined;
   mode?: ExecutionMode | undefined;
   verification?: VerificationSpec | undefined;
+  performance?: PerformanceSpec | undefined;
   signals?: RuntimeSignals | undefined;
   agent?: string | undefined;
   model?: string | undefined;
@@ -107,6 +116,8 @@ export interface RunSummary extends Run {
     | "RUNNING"
     | "STUCK"
     | "VERIFIED"
+    | "ASSURANCE_BLOCKED"
+    | "AWAITING_REVIEW"
     | "PAUSED"
     | "FAILED"
     | "CANCELLED";
@@ -140,6 +151,7 @@ interface RunServiceDependencies {
   agent: AgentAdapter;
   sandbox: SandboxProvider;
   verifier: VerifierPort;
+  performanceVerifier?: PerformanceVerifierPort;
   repositoryIndex: RepositoryIndex;
   projectBrain: ProjectBrain;
   contextBuilder: ContextBuilderPort;
@@ -310,6 +322,7 @@ export class RunService {
       revision: requestedRevision,
       createdAt: now,
       verification: request.verification ?? {},
+      ...(request.performance ? { performance: request.performance } : {}),
       ...(request.signals ? { signals: request.signals } : {}),
       ...(request.budget ? { budget: request.budget } : {}),
       ...(request.qualityPreference ? { qualityPreference: request.qualityPreference } : {}),
@@ -348,6 +361,18 @@ export class RunService {
           ? { expectedFile: redactSensitiveText(task.verification.expectedFile) }
           : {}),
       },
+      ...(task.performance
+        ? {
+            performance: {
+              ...task.performance,
+              command: redactSensitiveText(task.performance.command),
+              metric: redactSensitiveText(task.performance.metric),
+              ...(task.performance.unit
+                ? { unit: redactSensitiveText(task.performance.unit) }
+                : {}),
+            },
+          }
+        : {}),
     });
     await this.dependencies.store.createRun(run);
     await this.event(run.id, "RunCreated", {
@@ -416,17 +441,21 @@ export class RunService {
         const snapshots = await this.dependencies.store.listSignalSnapshots(run.id);
         const elapsed = Date.now() - Date.parse(run.startedAt ?? run.createdAt);
         const operationalStatus: RunSummary["operationalStatus"] =
-          run.verificationState === "VERIFIED"
+          run.verificationState === "VERIFIED" && run.trustState === "MERGE_ELIGIBLE"
             ? "VERIFIED"
-            : run.state === "FAILED"
-              ? "FAILED"
-              : run.state === "CANCELLED"
-                ? "CANCELLED"
-                : run.state === "COMPLETED"
-                  ? "VERIFIED"
-                  : run.state === "RUNNING" && elapsed > 5 * 60_000
-                    ? "STUCK"
-                    : run.state;
+            : run.verificationState === "VERIFIED" && run.trustState === "QUALITY_VERIFIED"
+              ? "AWAITING_REVIEW"
+              : run.verificationState === "VERIFIED"
+                ? "ASSURANCE_BLOCKED"
+                : run.state === "FAILED"
+                  ? "FAILED"
+                  : run.state === "CANCELLED"
+                    ? "CANCELLED"
+                    : run.state === "COMPLETED"
+                      ? "VERIFIED"
+                      : run.state === "RUNNING" && elapsed > 5 * 60_000
+                        ? "STUCK"
+                        : run.state;
         const last = events.at(-1);
         return {
           ...run,
@@ -927,6 +956,9 @@ export class RunService {
         // review is consulted (let alone able to lift it), because deterministic evidence
         // outranks model confidence.
         run.trustState = "PROPOSED";
+      }
+      if (this.active.get(run.id)?.cancelled) {
+        throw new Error("Run cancelled during quality assurance");
       }
       run.verificationState = verification.state;
       run.state = verification.state === "VERIFIED" ? "COMPLETED" : "FAILED";
@@ -1620,6 +1652,7 @@ export class RunService {
             diff.changedFiles,
             "diff-captured",
             { added: debtDelta.addedMarkers, removed: debtDelta.removedMarkers },
+            diff.patch,
           )
         : fallbackAssessment;
     return { id, artifact, diff, attempt, assessment };
@@ -1639,6 +1672,7 @@ export class RunService {
     files: string[],
     stage: "pre-execution" | "diff-captured",
     debtMarkers?: { added: number; removed: number },
+    diffPatch?: string,
   ): Promise<RiskAssessment> {
     const riskVector = deriveRiskVector({
       files,
@@ -1650,6 +1684,7 @@ export class RunService {
         files,
       ),
       ...(debtMarkers ? { debtMarkers } : {}),
+      ...(diffPatch !== undefined ? { diffPatch } : {}),
     });
     const qualityPreference = task.qualityPreference ?? "BALANCED";
     const assurancePlan = buildAssurancePlan(riskVector, qualityPreference);
@@ -1682,6 +1717,22 @@ export class RunService {
     preExecutionAssessment: RiskAssessment,
   ): Promise<void> {
     const assessment = candidate.assessment;
+    if (this.active.get(run.id)?.cancelled) throw new Error("Run cancelled before assurance");
+    const runtimeGraph = deriveRuntimeGraph(candidate.diff.patch);
+    await this.event(run.id, "RuntimeGraphDerived", {
+      candidateId: candidate.id,
+      diffDigest: candidate.artifact.digest,
+      graph: runtimeGraph,
+    });
+    const performancePosture = await this.measurePerformance(
+      run,
+      task,
+      sandbox,
+      candidate,
+      verification,
+    );
+    if (this.active.get(run.id)?.cancelled)
+      throw new Error("Run cancelled during performance assurance");
     const report: QualityReport = deriveQualityReport({
       verificationState: verification.state,
       verificationCommand: task.verification.command ?? null,
@@ -1693,6 +1744,7 @@ export class RunService {
       initialModules,
       moduleOwnership: contextState.snapshot.moduleOwnership,
       diffPatch: candidate.diff.patch,
+      ...(performancePosture ? { performancePosture } : {}),
     });
     // The report is derived before any reviewer session starts: if a gated dimension already caps
     // promotion at CORRECTNESS_VERIFIED, no verdict — approved or not — can change the outcome, so
@@ -1737,6 +1789,96 @@ export class RunService {
         : {}),
       ...(reviewSkipped ? { reviewSkipped } : {}),
     });
+  }
+
+  /** M9 candidate-bound baseline/candidate measurement. Missing evidence remains NOT_CHECKED. */
+  private async measurePerformance(
+    run: Run,
+    task: Task,
+    sandbox: Sandbox,
+    candidate: Candidate,
+    verification: Verification,
+  ): Promise<PerformancePostureResult | undefined> {
+    if (!candidate.assessment.assurancePlan.required.includes("PERFORMANCE")) return undefined;
+    const candidateDigest = candidate.artifact.digest ?? "";
+    let measurement: PerformanceMeasurement | undefined;
+    if (verification.state !== "VERIFIED") {
+      measurement = {
+        state: "NOT_CHECKED",
+        candidateId: candidate.id,
+        diffDigest: candidateDigest,
+        metrics: [],
+        evidence: [
+          "trusted correctness verification did not pass; performance command was skipped",
+        ],
+      };
+    } else if (!task.performance) {
+      measurement = {
+        state: "NOT_CHECKED",
+        candidateId: candidate.id,
+        diffDigest: candidateDigest,
+        metrics: [],
+        evidence: ["no project performance measurement specification was configured"],
+      };
+    } else if (!this.dependencies.performanceVerifier) {
+      measurement = {
+        state: "NOT_CHECKED",
+        candidateId: candidate.id,
+        diffDigest: candidateDigest,
+        metrics: [],
+        evidence: ["no trusted performance verifier is available"],
+      };
+    } else {
+      try {
+        measurement = await this.dependencies.performanceVerifier.measure({
+          run,
+          task,
+          sandbox,
+          candidateId: candidate.id,
+          diffDigest: candidateDigest,
+        });
+        if (this.active.get(run.id)?.cancelled)
+          throw new Error("Run cancelled during performance measurement");
+        const afterMeasurement = await this.dependencies.sandbox.collectDiff(sandbox);
+        if (this.active.get(run.id)?.cancelled)
+          throw new Error("Run cancelled during performance measurement");
+        if (LocalWorktreeSandbox.digest(afterMeasurement) !== candidateDigest) {
+          measurement = {
+            state: "NOT_CHECKED",
+            candidateId: candidate.id,
+            diffDigest: candidateDigest,
+            metrics: [],
+            evidence: [
+              "candidate workspace changed during performance measurement; evidence was invalidated",
+            ],
+          };
+        }
+      } catch (error) {
+        if (this.active.get(run.id)?.cancelled) throw error;
+        measurement = {
+          state: "NOT_CHECKED",
+          candidateId: candidate.id,
+          diffDigest: candidateDigest,
+          metrics: [],
+          evidence: [
+            `performance measurement failed: ${redactSensitiveText(error instanceof Error ? error.message : String(error))}`,
+          ],
+        };
+      }
+    }
+    const posture = derivePerformancePosture(
+      measurement,
+      candidate.id,
+      candidateDigest,
+      task.performance?.maxRegressionPercent ?? 0,
+    );
+    await this.event(run.id, "PerformanceAssessed", {
+      candidateId: candidate.id,
+      diffDigest: candidateDigest,
+      posture,
+      measurementState: measurement?.state ?? "NOT_CHECKED",
+    });
+    return posture;
   }
 
   /**
@@ -2236,7 +2378,8 @@ export class RunService {
 
   private currentPhase(run: Run, lastEvent?: string): string {
     if (run.verificationState === "VERIFYING") return "Verification";
-    if (run.verificationState === "VERIFIED") return "Verified handoff";
+    if (run.verificationState === "VERIFIED")
+      return run.trustState === "MERGE_ELIGIBLE" ? "Verified handoff" : "Assurance blocked";
     if (run.verificationState === "QUARANTINED") return "Quarantine review";
     if (run.state === "QUEUED") return "Queued";
     if (lastEvent === "ContextBuilt") return "Agent execution";

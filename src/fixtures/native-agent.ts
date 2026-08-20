@@ -307,6 +307,20 @@ const runTask = async (input: FixtureInput): Promise<void> => {
     emit("tool", { tool: "write_file", operation: "create", path: secretShapedPath });
     changedFiles.push(secretShapedPath);
   }
+  if (/introduce performance regression/iu.test(input.task.prompt)) {
+    const performancePath = "src/server/database-query.ts";
+    const absolute = path.resolve(performancePath);
+    const existing = await readFile(absolute, "utf8").catch(() => undefined);
+    if (existing !== undefined) {
+      await writeFile(
+        absolute,
+        `${existing}\nexport const loadAllWidgets = async (database: { query(sql: string): Promise<unknown> }): Promise<unknown> => database.query("SELECT * FROM widgets");\n`,
+        "utf8",
+      );
+      emit("tool", { tool: "edit_file", operation: "edit", path: performancePath });
+      changedFiles.push(performancePath);
+    }
+  }
   const content = [
     "# Native agent fixture output",
     "",

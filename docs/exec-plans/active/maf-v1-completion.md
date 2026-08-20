@@ -8,7 +8,7 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 - Start branch: `adaptive-harness/runtime-signals-v0.1` at `357ab60` (clean tree).
 - Baseline validation (2026-08-19): `format:check`, `lint`, `typecheck`, `test` (49 passing),
   `build` (server + UI), `compose:check`, `smoke` — all PASS.
-- Current milestone: M9 — Performance and Runtime Assurance.
+- Current milestone: M10 — Production-like Resilience (M9 committed locally).
 
 ## Confirmed repository facts
 
@@ -41,7 +41,7 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 | M6 | Quality governance (6A–6G) | DONE (VERIFIED) | f86ef1a |
 | M7 | Architecture governance + debt delta | DONE (VERIFIED) | 48fbfde |
 | M8 | Security assurance (8A–8B) | DONE (VERIFIED) | 07337bc + 539f000 |
-| M9 | Performance & runtime assurance | NOT STARTED | |
+| M9 | Performance & runtime assurance | DONE (VERIFIED) | pending commit |
 | M10 | Production-like resilience | NOT STARTED | |
 | M11 | Longitudinal governance | NOT STARTED | |
 | M12 | Frontier baselines + strategy learning | NOT STARTED | |
@@ -744,7 +744,81 @@ made suppression depend on call order and retained one unsigned PEM body in the 
   `compose:check`, and `smoke` — all PASS. No dependency or schema change; audit/migration smoke was
   not applicable. Repair commit: `539f000`.
 
-## Blockers
+## M9 design (Performance and Runtime Assurance)
+
+1. `derivePerformanceSensitivity(files, patch?)` (src/domain/performance.ts) — diff-scan of added
+   non-comment production lines across 9 signal kinds (DB_QUERY, PAGINATION, SCHEMA_INDEX,
+   NETWORK_CALL, LARGE_PAYLOAD, BUNDLE, HOT_LOOP, SERIALIZATION, MEMORY). With a patch the
+   provenance is DETERMINISTIC; without one, path heuristics only, provenance HEURISTIC. Signals
+   are calibrated strong/weak: a single ubiquitous weak signal (one `JSON.parse`, one `.limit(`)
+   stays LOW and cannot force a required measurement; SQL text, DDL, network calls, and
+   bundle/hot-path markers are strong. Removals of DB_QUERY/PAGINATION/SCHEMA_INDEX lines count
+   as evidence too — deleting a `.limit(10)` or a `DROP` of an index is the archetypal regression
+   and added-lines-only scanning would miss it. It feeds RiskVector.PerformanceSensitivity.
+2. `deriveRuntimeGraph(patch)` (src/domain/runtime-graph.ts) — deployment topology, deliberately
+   separate from the M2 source Project Graph. Nodes are created only from content evidence: SQL
+   statement shapes, `prisma.`/`sequelize`/`typeorm`, named cache/object-storage technologies
+   (redis/memcached, s3/object storage), `fetch`/`axios`/explicit "external api" text, or
+   migration/`.sql`/`.prisma` paths. Filenames and generic identifiers (`cache.ts`, a local
+   `Map`, `fs.writeFile`, a variable named `database`, an inbound `webhook` route) do not
+   fabricate topology. SERVICE vs EXTERNAL_SERVICE follows the ownership rule: fetch/network
+   evidence alone yields SERVICE; only code that itself identifies an external API yields
+   EXTERNAL_SERVICE. Unknown edge attributes (timeoutMs, retryPolicy, authenticationBoundary,
+   rateLimiting, payloadBehavior, consistencyAssumption) stay null and are surfaced as explicit
+   unknowns. Emitted as a `RuntimeGraphDerived` event bound to candidateId + diffDigest.
+3. `CommandPerformanceVerifier` (src/infrastructure/performance-verifier.ts) — measures the same
+   bounded command against a clean-source baseline worktree and the candidate sandbox (median of
+   ≤10 samples; last stdout line parsed as a number or `{value}`). A dirty source repository, a
+   baseline revision mismatch with candidate HEAD, command failure, or non-numeric output yields
+   NOT_CHECKED, never a synthetic PASS. Baseline worktree teardown failure (e.g. Windows file
+   locks) does not invalidate a completed measurement.
+4. `derivePerformancePosture(measurement, expectedCandidateId, expectedDiffDigest,
+   maxRegressionPercent)` — the measurement must be bound to the current candidate id and diff
+   digest, MEASURED, non-empty, with finite non-zero baselines and finite candidates; otherwise
+   NOT_CHECKED. Regression over threshold → FAIL. In run-service, the diff is re-collected after
+   measurement and a digest change invalidates the result (NOT_CHECKED).
+5. Quality gate: Performance joined the gated dimensions. A plan that requires PERFORMANCE with
+   no candidate-bound measurement produces a deterministic NOT_CHECKED that caps the run at
+   CORRECTNESS_VERIFIED (new operationalStatus ASSURANCE_BLOCKED; QUALITY_VERIFIED awaiting
+   review is now shown as AWAITING_REVIEW rather than blocked). Performance spec labels are
+   sanitized with redactSensitiveText at the durable task boundary.
+
+## M9 validation log
+
+- Fresh-context independent review (post-implementation, reviewer not primed with correctness)
+  returned 3 MATERIAL, 5 MINOR, 6 OBSERVATIONS:
+  - MATERIAL 1 (over-blocking): a single added `JSON.parse`/`.query(` line forced MEDIUM →
+    PERFORMANCE required → NOT_CHECKED block on mundane changes. Fixed by dropping `\.query\s*\(`
+    from DB_QUERY and the strong/weak calibration above; regression-tested ("keeps a single
+    ubiquitous weak signal (one JSON.parse) at LOW").
+  - MATERIAL 2 (under-detection): removal-only diffs (deleting `.limit(10)` / a query) escaped
+    added-lines-only scanning. Fixed by scanning removed lines for removal-sensitive kinds;
+    regression-tested ("raises sensitivity when a diff removes query bounds or schema
+    structure").
+  - MATERIAL 3 (fabricated topology): filenames/identifier words (`cache.ts`, `upload`,
+    `fs.writeFile`, a `database` variable) created CACHE/STORAGE/DATABASE nodes. Fixed by
+    content-only signals; regression-tested ("does not fabricate CACHE/STORAGE topology from
+    filenames or local in-memory/fs code") plus a positive named-technology test.
+  - MINOR 5 (Windows worktree cleanup could invalidate a valid measurement): `rm` wrapped in
+    catch. MINOR 7 (QUALITY_VERIFIED-awaiting-review displayed as ASSURANCE_BLOCKED): added
+    AWAITING_REVIEW operational status (run-service, web types/badge/translation). MINOR 8
+    (inbound `webhook` handler produced an outbound CALLS edge; browser branch matched the whole
+    file instead of the external lines): both fixed and tested.
+  - MINOR 4 (LocalWorktreeSandbox.digest used through the SandboxProvider abstraction): verified
+    the digest is a pure sha256 of the patch text (semantically provider-neutral) — left as a
+    layering note. MINOR 6 (stripped child env for npm-based commands) and OBSERVATIONS 11/12
+    (baseline worktree lacks dependency bootstrap; RuntimeGraph is event-only with no consumer
+    yet): left as documented limitations consistent with existing CommandVerifier parity; the
+    graph is an M9 deliverable as evidence, and bootstrapping dependencies in baseline worktrees
+    is unbudgeted wall time deferred to M10 where production-like resilience is in scope.
+  - OBSERVATIONS 9/10 (model/verdict precedence, stale-evidence/NaN defenses) and the
+    SERVICE/EXTERNAL_SERVICE ownership semantics were verified good by the reviewer.
+- All 13 acceptance requirements from the handoff are covered by tests, including the positive
+  EXTERNAL_SERVICE case (code that itself says "external api").
+- Final gate: `format:check`, `lint`, `typecheck`, `test` (28 files, 279 passing), `build`,
+  `compose:check`, `smoke` — all PASS.
+
+
 
 - None.
 

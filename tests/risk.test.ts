@@ -62,6 +62,21 @@ describe("deriveRiskVector", () => {
     const vector = deriveRiskVector(evidence({ files: ["migrations/006_add_column.sql"] }));
     expect(vector.DataConsistencyRisk.level).not.toBe("LOW");
     expect(vector.DataConsistencyRisk.provenance).toBe("DETERMINISTIC");
+    expect(vector.PerformanceSensitivity.level).not.toBe("LOW");
+  });
+
+  it("derives diff-backed performance sensitivity from DB and network operations", () => {
+    const diffPatch = [
+      "--- a/src/server/client.ts",
+      "+++ b/src/server/client.ts",
+      "@@ -1,1 +1,3 @@",
+      "+await fetch('https://example.invalid/data');",
+      "+await database.query('SELECT * FROM data');",
+    ].join("\n");
+    const vector = deriveRiskVector(evidence({ files: ["src/server/client.ts"], diffPatch }));
+    expect(vector.PerformanceSensitivity.level).toBe("MEDIUM");
+    expect(vector.PerformanceSensitivity.provenance).toBe("DETERMINISTIC");
+    expect(vector.PerformanceSensitivity.evidence.join(" ")).toContain("NETWORK_CALL");
   });
 
   it("raises CodeCoupling and BlastRadius with the number of distinct modules/packages touched", () => {

@@ -11,6 +11,8 @@ export const translatedValue = (value: string) =>
     QUEUED: "Đang chờ",
     RUNNING: "Đang chạy",
     VERIFIED: "Đã xác minh",
+    ASSURANCE_BLOCKED: "Bằng chứng chưa đủ",
+    AWAITING_REVIEW: "Chờ đánh giá",
     FAILED: "Thất bại",
     CANCELLED: "Đã hủy",
     STUCK: "Cần xử lý",
@@ -22,6 +24,7 @@ export const translatedValue = (value: string) =>
     "Agent execution": "Đang triển khai",
     Verification: "Đang xác minh",
     "Verified handoff": "Đã bàn giao",
+    "Assurance blocked": "Bằng chứng chưa đủ để bàn giao",
     "Quarantine review": "Đang xem xét",
   })[value] ?? value;
 
@@ -45,7 +48,9 @@ export const formatRelativeTime = (value: string) => {
 };
 
 export const runNeedsAttention = (run: Run) =>
-  run.state === "FAILED" || run.operationalStatus === "STUCK";
+  run.state === "FAILED" ||
+  run.operationalStatus === "STUCK" ||
+  run.operationalStatus === "ASSURANCE_BLOCKED";
 
 export const readJson = async <T>(url: string): Promise<T> => {
   const response = await fetch(url);

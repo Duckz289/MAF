@@ -13,6 +13,8 @@ create detached worktree
 run native agent
 capture attempt-linked candidate diff and artifact digest
 verify (at most twice with one bounded repair)
+derive candidate runtime graph
+measure baseline/candidate performance when required and configured
 emit VERIFIED or QUARANTINED
 apply retention
 emit SandboxFinalized
@@ -46,6 +48,24 @@ The repair policy defaults to one repair and two total verification attempts. Ve
 diff previews sent to repair are each capped at 12,000 characters. Every attempt is stored with a
 candidate ID; candidate artifacts record their parent. Exhaustion or a worse verification state
 stops the loop and retains `QUARANTINED` evidence. An agent completion message never changes trust.
+
+## Runtime and performance assurance
+
+The source Project Graph and deployment Runtime Graph are separate models. M9 derives only runtime
+nodes/edges evidenced by changed paths and added code (browser, application/API, database, cache,
+storage, service). A server-side network call remains a service with unknown ownership unless the
+diff explicitly identifies an external API. Edge properties such as timeout, retry,
+authentication, rate limiting, payload behavior, and consistency stay `null`/unknown unless the
+diff supplies evidence.
+
+Performance-sensitive DB/query, pagination/index, network, bundle, serialization, payload, hot-path,
+and memory signals refine `PerformanceSensitivity` at the diff-captured stage. When the assurance
+plan requires `PERFORMANCE`, `CommandPerformanceVerifier` runs the configured bounded command in a
+fresh detached baseline worktree and the candidate worktree, takes bounded samples, and binds the
+result to the candidate ID and full diff digest. A dirty/unresolvable baseline, failed/non-numeric
+command, identity mismatch, zero baseline, or workspace mutation is `NOT_CHECKED`, never PASS. A
+measured regression above `maxRegressionPercent` is `FAIL`; either state blocks the required quality
+gate. Performance commands are skipped for plan-exempt ordinary work.
 
 ## Recovery
 
@@ -91,7 +111,8 @@ process (after a restart) re-seeds that history from empty, since it is not itse
 
 Automated tests cover VERIFIED, QUARANTINED, CLI native execution, ACP native execution, adaptive
 mode changes, reversible `STRICT`, stable and invalidated scopes, bounded repair, retry exhaustion,
-trusted repair success, false stabilization, anti-oscillation, worktree cleanup,
+trusted repair success, false stabilization, anti-oscillation, worktree cleanup, runtime-graph
+derivation, real baseline/candidate performance measurement, performance regression/unknown gating,
 fact staleness, verified-only mission gating, API control, signal-explanation endpoints, SSE,
 bounded auto-recovery with a fresh session, capsule capture and pause on a non-retryable failure,
 resume from a preserved worktree, revision-conflict refusal, and emergency stop.

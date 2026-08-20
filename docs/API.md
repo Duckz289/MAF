@@ -4,7 +4,7 @@ All routes are versioned under `/api/v1`.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
-| `POST` | `/runs` | Create an asynchronous run; accepts an optional `budget: { mode, limitUsd }` and `qualityPreference` (`FAST`/`BALANCED`/`HIGH`/`CRITICAL`, defaults to `BALANCED`) |
+| `POST` | `/runs` | Create an asynchronous run; accepts optional budget/quality preferences and a bounded `performance: { command, metric, unit?, maxRegressionPercent, lowerIsBetter?, samples?, timeoutMs? }` measurement spec |
 | `GET` | `/runs` | List operational summaries for all runs |
 | `GET` | `/runs/:id` | Inspect one run |
 | `GET` | `/runs/:id/events` | Stream SSE lifecycle events; `follow=false` returns a snapshot |
@@ -51,11 +51,13 @@ estimate with ground truth). `RiskProfiled.riskVector` always carries all ten di
 a `level` and a `provenance` (`DETERMINISTIC`/`HEURISTIC`/`INSUFFICIENT_EVIDENCE` — never a guessed
 value presented as fact). `AssurancePlanned.plan` lists `required`/`notRequired` checks with a
 `reasons` entry for every check. `CORRECTNESS` is enforced by the trusted verifier;
-`ARCHITECTURE`, `DEBT`, and `SECURITY` have deterministic diff-bound checkers; and
+`ARCHITECTURE`, `DEBT`, and `SECURITY` have deterministic diff-bound checkers; `PERFORMANCE` has a
+candidate/digest-bound clean-baseline measurement boundary; and
 `INDEPENDENT_REVIEW` has one bounded candidate/digest-bound reviewer session when required.
-`PERFORMANCE`, `CONCURRENCY`, and `RESILIENCE` still have no checker: a required dimension remains
-`UNKNOWN`/not verified, never a synthetic pass. See ARCHITECTURE.md's "Task risk profiler and
-assurance planner" section for the exact gating rules.
+Missing/invalid performance evidence is `NOT_CHECKED` and blocks when required; a measured delta
+over the project threshold is `FAIL`. `CONCURRENCY` and `RESILIENCE` still have no checker and remain
+`UNKNOWN`, never a synthetic pass. `RuntimeGraphDerived` exposes the evidence-backed deployment
+topology inferred from the candidate without conflating it with the source Project Graph.
 
 Security redaction is applied before run/task errors, changed filenames/runtime signals,
 verification output, recovery capsules, mode-transition evidence, events, and artifact previews

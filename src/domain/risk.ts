@@ -6,6 +6,8 @@
  * when nothing reliable exists yet. Never calls a model to assess risk.
  */
 
+import { derivePerformanceSensitivity } from "./performance";
+
 export type RiskDimension =
   | "ReasoningDifficulty"
   | "CodeCoupling"
@@ -46,6 +48,8 @@ export interface RiskEvidenceInput {
    * exists, so pre-execution vectors stay INSUFFICIENT_EVIDENCE for DebtRisk.
    */
   debtMarkers?: { added: number; removed: number };
+  /** Candidate patch when available; makes performance signals diff-backed rather than path-only. */
+  diffPatch?: string;
 }
 
 const securitySensitivePattern =
@@ -110,7 +114,8 @@ const coverageProvenance = (files: string[], ownership: Record<string, string>):
 };
 
 export const deriveRiskVector = (input: RiskEvidenceInput): RiskVector => {
-  const { files, moduleOwnership, packageOwnership, crossModuleEdgeCount, debtMarkers } = input;
+  const { files, moduleOwnership, packageOwnership, crossModuleEdgeCount, debtMarkers, diffPatch } =
+    input;
   const touchedModules = new Set(files.map((file) => moduleOwnership[file]).filter(Boolean));
   const touchedPackages = new Set(files.map((file) => packageOwnership[file]).filter(Boolean));
   const moduleCoverage = coverageProvenance(files, moduleOwnership);
@@ -120,6 +125,7 @@ export const deriveRiskVector = (input: RiskEvidenceInput): RiskVector => {
   const dataMatches = matches(files, dataSensitivePattern);
   const networkMatches = matches(files, networkSensitivePattern);
   const operationalMatches = matches(files, operationalSensitivePattern);
+  const performance = derivePerformanceSensitivity(files, diffPatch);
 
   return {
     CodeCoupling: {
@@ -172,11 +178,9 @@ export const deriveRiskVector = (input: RiskEvidenceInput): RiskVector => {
           : ["no data/migration-sensitive path pattern matched among touched files"],
     },
     PerformanceSensitivity: {
-      level: level(dataMatches, 2, 4),
-      provenance: "HEURISTIC",
-      evidence: [
-        "proxied from data/query-sensitive path matches; no runtime measurement exists yet",
-      ],
+      level: performance.level,
+      provenance: performance.provenance,
+      evidence: performance.evidence,
     },
     NetworkBoundaryChanges: {
       level: level(networkMatches, 1, 3),

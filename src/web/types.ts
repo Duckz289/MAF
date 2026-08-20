@@ -7,6 +7,7 @@ export interface Run {
   state: RunState;
   executionMode: "STRICT" | "GUIDED" | "SOLO_NATIVE";
   verificationState: string;
+  trustState?: string;
   agent: string;
   model: string;
   provider: string;

@@ -19,6 +19,8 @@ const statusAppearance = (status: string): { color: BadgeColor; icon: ReactEleme
     return { color: "danger", icon: <ErrorCircle20Regular /> };
   if (status === "UNAVAILABLE" || status === "AUTHENTICATION_REQUIRED" || status === "PAUSED")
     return { color: "warning", icon: <DismissCircle20Regular /> };
+  if (status === "ASSURANCE_BLOCKED" || status === "AWAITING_REVIEW")
+    return { color: "warning", icon: <QuestionCircle20Regular /> };
   if (status === "RUNNING" || status === "QUEUED")
     return { color: "informative", icon: <Clock20Regular /> };
   return { color: "subtle", icon: <QuestionCircle20Regular /> };
@@ -34,7 +36,6 @@ export function StatusBadge({ label, status }: { label?: string | undefined; sta
 }
 
 export function RunStatusBadge({ run }: { run: Run }) {
-  const status =
-    run.verificationState === "VERIFIED" ? "VERIFIED" : (run.operationalStatus ?? run.state);
+  const status = run.operationalStatus ?? run.state;
   return <StatusBadge status={status} />;
 }

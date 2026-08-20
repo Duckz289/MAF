@@ -63,11 +63,24 @@ export interface Task {
   revision: string;
   createdAt: string;
   verification: VerificationSpec;
+  /** Optional trusted baseline/candidate command used only when the assurance plan requires it. */
+  performance?: PerformanceSpec;
   signals?: RuntimeSignals;
   /** Absent means no budget was requested for this run — fully permissive, nothing to enforce. */
   budget?: { mode: "ADVISORY" | "HARD"; limitUsd: number };
   /** Absent defaults to BALANCED. Not "which model to use" — shapes assurance depth (see M5A). */
   qualityPreference?: "FAST" | "BALANCED" | "HIGH" | "CRITICAL";
+}
+
+export interface PerformanceSpec {
+  command: string;
+  metric: string;
+  unit?: string | undefined;
+  /** Candidate regression above this percentage fails the Performance quality dimension. */
+  maxRegressionPercent: number;
+  lowerIsBetter?: boolean | undefined;
+  samples?: number | undefined;
+  timeoutMs?: number | undefined;
 }
 
 export interface VerificationSpec {
