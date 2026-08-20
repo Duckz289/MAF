@@ -52,7 +52,7 @@ import {
   verificationSeverity,
 } from "../domain/recovery";
 import { countCrossModuleEdges, deriveRiskVector, type RiskVector } from "../domain/risk";
-import { redactSensitiveData } from "../domain/security";
+import { redactPatchPreview, redactSensitiveData } from "../domain/security";
 import { extractFileCandidates, findRepositoryFile, normalizeFile } from "./file-candidates";
 import {
   emptyCost,
@@ -1513,7 +1513,10 @@ export class RunService {
         parentCandidateId: parentCandidateId ?? null,
         changedFiles: diff.changedFiles,
         bytes: Buffer.byteLength(diff.patch),
-        preview: diff.patch.slice(0, this.repairPolicy.maxDiffPreviewChars),
+        // Whole-line suppression for files with credential-shaped added lines — token-level
+        // redaction leaves a private key's base64 body intact, and the preview is durable
+        // harness evidence (see redactPatchPreview).
+        preview: redactPatchPreview(diff.patch).slice(0, this.repairPolicy.maxDiffPreviewChars),
       }) as Record<string, unknown>,
       createdAt: new Date().toISOString(),
     };

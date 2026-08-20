@@ -186,9 +186,10 @@ describe("quality governance (M6)", () => {
     expect(run?.trustState).toBe("MERGE_ELIGIBLE");
 
     const data = await qualityEvent(service, created.id);
-    // SECURITY is plan-required but has no checker until M8: honestly UNKNOWN, never PASS.
-    expect(data.report.Security.state).toBe("UNKNOWN");
-    expect(data.report.Security.provenance).toBe("PENDING_CHECKER");
+    // The M8A security checker ran on the real diff: no secrets, deterministic PASS.
+    expect(data.report.Security.state).toBe("PASS");
+    expect(data.report.Security.provenance).toBe("DETERMINISTIC");
+    expect(data.report.Security.evidence[0]).toContain("no credential or secret patterns");
     // The review verdict echoes the exact candidate under review.
     expect(data.review?.status).toBe("APPROVED");
     expect(data.review?.candidateId).toBe(data.candidateId);
@@ -293,6 +294,35 @@ describe("quality governance (M6)", () => {
     const diffStage = profiled.find((entry) => entry.stage === "diff-captured");
     expect(diffStage?.riskVector.DebtRisk.level).toBe("MEDIUM");
     expect(diffStage?.riskVector.DebtRisk.provenance).toBe("DETERMINISTIC");
+  });
+
+  it("blocks promotion at CORRECTNESS_VERIFIED when the diff leaks a structured secret (M8A end-to-end)", async () => {
+    const fixture = await createHighSecurityFixtureRepository();
+    fixtures.push(fixture);
+    const { service, store } = harness(fixture.sandboxRoot);
+    const created = await service.create({
+      // The fixture agent writes a real-shaped (fake) GitHub token into a production config file;
+      // auth paths drive SecuritySensitivity to MEDIUM+, so BALANCED already requires SECURITY.
+      prompt: "Harden the auth token session handling. leak a secret",
+      repositoryPath: fixture.path,
+      verification: { expectedFile: "agent-output.md" },
+      qualityPreference: "BALANCED",
+    });
+    await service.waitForIdle(created.id);
+
+    const run = await store.getRun(created.id);
+    expect(run?.state).toBe("COMPLETED");
+    expect(run?.verificationState).toBe("VERIFIED");
+    expect(run?.trustState).toBe("CORRECTNESS_VERIFIED");
+
+    const data = await qualityEvent(service, created.id);
+    expect(data.report.Security.state).toBe("FAIL");
+    expect(data.report.Security.provenance).toBe("DETERMINISTIC");
+    // The leaked value itself must never appear in the harness's own event stream.
+    expect(JSON.stringify(data.report.Security)).not.toContain(
+      "ghp_AAAA1111BBBB2222CCCC3333DDDD4444EEEE",
+    );
+    expect(JSON.stringify(data.report.Security)).toContain("redacted");
   });
 
   it("reports quality dimensions honestly without gating on not-yet-built checkers (warn, don't block)", async () => {

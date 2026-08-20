@@ -2,6 +2,7 @@ import { deriveArchitectureGovernance } from "./architecture";
 import type { AssuranceCheck, AssurancePlan } from "./assurance";
 import { deriveDebtDelta } from "./debt";
 import { riskLevelRank, type RiskVector } from "./risk";
+import { deriveSecurityPosture } from "./security";
 import type { TrustState, VerificationState } from "./types";
 
 /**
@@ -14,10 +15,10 @@ import type { TrustState, VerificationState } from "./types";
  */
 
 /**
- * UNKNOWN means "no evidence either way" (e.g. SECURITY is required but no deterministic security
- * checker exists until the M8 roadmap milestone). It is distinct from WARN ("checked, flagged,
- * worth attention") and from FAIL ("deterministic evidence says this is wrong"). UNKNOWN must
- * never be promoted to PASS -- unknown remains unknown.
+ * UNKNOWN means "no evidence either way" (e.g. PERFORMANCE is required but no deterministic
+ * performance checker exists until the M9 roadmap milestone). It is distinct from WARN ("checked,
+ * flagged, worth attention") and from FAIL ("deterministic evidence says this is wrong"). UNKNOWN
+ * must never be promoted to PASS -- unknown remains unknown.
  */
 export type QualityCheckState = "PASS" | "WARN" | "FAIL" | "UNKNOWN" | "NOT_REQUIRED";
 
@@ -81,7 +82,7 @@ const notRequiredResult = (plan: AssurancePlan, check: AssuranceCheck): QualityC
 
 /**
  * A dimension the assurance plan requires but for which no deterministic checker exists yet
- * (SECURITY -> M8, PERFORMANCE -> M9, RESILIENCE -> M10). Honestly UNKNOWN -- flagged as an
+ * (PERFORMANCE -> M9, RESILIENCE -> M10). Honestly UNKNOWN -- flagged as an
  * explicit gap, never a silent PASS the plan never actually checked.
  */
 const pendingCheckerResult = (milestone: string): QualityCheckResult => ({
@@ -196,6 +197,25 @@ const deriveTestQuality = (changedFiles: string[]): QualityCheckResult => {
   ]);
 };
 
+/**
+ * M8A: the Security dimension runs the deterministic credential-leak checker on the real diff. A
+ * FAIL is reported whether or not the plan required SECURITY (a leaked secret is evidence, not a
+ * preference) — and unlike other dimensions it also GATES unconditionally (see gatesPromotion):
+ * plan requirements are path-keyword heuristics, and a leak into an unkeyworded path must not
+ * slip past on that technicality. WARN stays plan-bound. When the check is not required, the
+ * checker's evidence still rides along in NOT_REQUIRED so the result is never silent.
+ */
+const deriveSecurity = (plan: AssurancePlan, diffPatch: string): QualityCheckResult => {
+  const posture = deriveSecurityPosture(diffPatch);
+  if (posture.state === "FAIL") {
+    return deterministic("FAIL", [...posture.evidence, ...posture.findings]);
+  }
+  if (!requiredCheck(plan, "SECURITY")) {
+    return deterministic("NOT_REQUIRED", [plan.reasons.SECURITY, ...posture.evidence]);
+  }
+  return deterministic(posture.state, [...posture.evidence, ...posture.findings]);
+};
+
 export const deriveQualityReport = (input: QualityReportInput): QualityReport => {
   const {
     verificationState,
@@ -215,9 +235,7 @@ export const deriveQualityReport = (input: QualityReportInput): QualityReport =>
     Correctness: deriveCorrectness(verificationState, verificationCommand, verificationExitCode),
     Architecture: deriveArchitecture(assurancePlan, preExecutionRisk, diffRisk, diffPatch),
     Maintainability: deriveMaintainability(changedFiles, initialModules, moduleOwnership),
-    Security: !requiredCheck(assurancePlan, "SECURITY")
-      ? notRequiredResult(assurancePlan, "SECURITY")
-      : pendingCheckerResult("M8"),
+    Security: deriveSecurity(assurancePlan, diffPatch),
     Performance: !requiredCheck(assurancePlan, "PERFORMANCE")
       ? notRequiredResult(assurancePlan, "PERFORMANCE")
       : pendingCheckerResult("M9"),
@@ -238,33 +256,41 @@ export const deriveQualityReport = (input: QualityReportInput): QualityReport =>
 
 /**
  * Dimensions whose result is bound to an assurance check the plan can require AND for which a
- * deterministic checker already exists. Security/Performance/Resilience are deliberately absent:
- * their checkers arrive in M8/M9/M10, so until then those dimensions are honestly reported as
- * UNKNOWN (never PASS) but cannot gate — an unbuilt checker must not deadlock MERGE_ELIGIBLE for
- * every security-adjacent change for three milestones, and must not silently pass anything either.
- * When each checker lands, its dimension joins this table and gating activates with no other
- * change. DebtDelta joined at M7A; Architecture's governance checker (M7B) reports through the
+ * deterministic checker already exists. Performance/Resilience are deliberately absent: their
+ * checkers arrive in M9/M10, so until then those dimensions are honestly reported as UNKNOWN
+ * (never PASS) but cannot gate — an unbuilt checker must not deadlock MERGE_ELIGIBLE for every
+ * performance-adjacent change, and must not silently pass anything either. When each checker
+ * lands, its dimension joins this table and gating activates with no other change. DebtDelta
+ * joined at M7A, Security at M8A; Architecture's governance checker (M7B) reports through the
  * existing ARCHITECTURE gate.
  */
 const gatedDimensions: Partial<Record<QualityDimension, AssuranceCheck>> = {
   Correctness: "CORRECTNESS",
   Architecture: "ARCHITECTURE",
   DebtDelta: "DEBT",
+  Security: "SECURITY",
 };
 
 /**
  * A gated dimension blocks promotion unless it is exactly PASS: FAIL is deterministic evidence of
  * a problem, WARN is "checked, flagged" (e.g. architectural footprint expanded beyond estimate) --
  * neither may silently count as verified. Only NOT_REQUIRED dims, ungated informational dims
- * (Maintainability, TestQuality), and not-yet-implemented dims (Security, Performance,
+ * (Maintainability, TestQuality), and not-yet-implemented dims (Performance,
  * Resilience — reported UNKNOWN pending their milestone's checker) don't gate: the assurance plan
  * already decided what was required; these are the checks that can actually be run today.
+ *
+ * One deliberate exception to plan-bound gating: a Security FAIL — a structured secret format in
+ * a production file — gates unconditionally. Plan requirements are derived from path-keyword risk,
+ * so a leak written to a path with no auth/token/credential keywords would otherwise pass the gate
+ * with deterministic leak evidence in hand. "Facts require evidence" cuts both ways: when the
+ * evidence exists, it cannot be waived by the plan's heuristics. Security WARN stays plan-bound.
  */
 const gatesPromotion = (
   dimension: QualityDimension,
   result: QualityCheckResult,
   plan: AssurancePlan,
 ): boolean => {
+  if (dimension === "Security" && result.state === "FAIL") return true;
   const check = gatedDimensions[dimension];
   return check !== undefined && requiredCheck(plan, check) && result.state !== "PASS";
 };

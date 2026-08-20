@@ -307,11 +307,32 @@ the innermost layer, must not add an import resolving outside itself; a violatio
 gating still follows the plan's decision. Both checkers analyze added lines only — a removed
 violation or a paid-down marker is improvement, not a new finding.
 
-Not yet implemented: wiring the plan's required checks to actual verifiers. `SECURITY`,
+`SECURITY` gained its checker at M8A: `src/domain/security.ts` scans the diff's added lines (all
+file types — secrets live in `.env`/yaml/json, not just source) for credential patterns, in both
+quoted source form and unquoted `.env`/yaml `key=value` form. A match against a structured secret
+format (AWS access key ID, GitHub/Slack token, private key block) in a production file is
+deterministic evidence of a leak — `FAIL` on the Security quality dimension, reported whether or
+not the plan required the check, and (uniquely among the dimensions) gating unconditionally: plan
+requirements are path-keyword heuristics, and a leak written to an unkeyworded path must not pass
+the gate on that technicality. Structured matches
+confined to test/fixture files and generic literal assignments to credential-shaped names in
+production files are `WARN` (checked, flagged); dummy credentials confined to tests pass with
+disclosure; placeholders and references (`process.env.*`, `${...}`, `<...>`) are not literals.
+Every finding is redacted before it becomes evidence — prefix + `…(redacted)` — and two further
+layers guard the harness's own records: `redactSensitiveData` (key-based `[REDACTED]` plus
+value-based structured-secret replacement) is applied to untrusted values (verifier output,
+external hints) on their way into the event stream, and the persisted diff preview is built by
+`redactPatchPreview`, which suppresses EVERY added line of any file whose additions carry
+credential-shaped content — token-level redaction would leave a private key's base64 body intact,
+since the body lines carry no pattern of their own. The harness must never copy a detected secret
+into its own records, where it would live forever. `Security` joined the gated dimensions at M8B.
+
+Not yet implemented: wiring the plan's remaining required checks to actual verifiers.
 `PERFORMANCE`, `CONCURRENCY`, `RESILIENCE`, and `INDEPENDENT_REVIEW` are not yet backed by real
-checkers — that is M6-M10's job. A plan requiring `SECURITY` today does not cause a security scan
-to run; it only records, with evidence, that one should. `ReasoningDifficulty` remains
-`INSUFFICIENT_EVIDENCE` for every run until a real source exists (nothing is planned yet for it).
+checkers — that is M9-M10's job (INDEPENDENT_REVIEW is model-review territory, M6C). A plan
+requiring `PERFORMANCE` today does not cause a benchmark to run; it only records, with evidence,
+that one should. `ReasoningDifficulty` remains `INSUFFICIENT_EVIDENCE` for every run until a real
+source exists (nothing is planned yet for it).
 
 ## Durable state
 

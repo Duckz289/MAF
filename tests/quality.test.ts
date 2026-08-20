@@ -88,10 +88,10 @@ describe("deriveQualityReport", () => {
     const report = deriveQualityReport(
       reportInput({ assurancePlan: criticalSecurePlan, diffRisk: securityHighRiskVector }),
     );
-    expect(report.Security.state).toBe("UNKNOWN");
-    expect(report.Security.provenance).toBe("PENDING_CHECKER");
-    expect(report.Security.evidence[0]).toContain("M8");
-    // Network-sensitive paths were touched, so RESILIENCE is plan-required and also UNKNOWN (M10).
+    // The M8A checker now runs when SECURITY is plan-required (PASS: no secrets in this diff).
+    expect(report.Security.state).toBe("PASS");
+    expect(report.Security.provenance).toBe("DETERMINISTIC");
+    // Network-sensitive paths were touched, so RESILIENCE is plan-required and still UNKNOWN (M10).
     expect(report.Resilience.state).toBe("UNKNOWN");
     // No performance-sensitive evidence, so PERFORMANCE is plan-exempt: NOT_REQUIRED, not UNKNOWN.
     expect(report.Performance.state).toBe("NOT_REQUIRED");
@@ -101,7 +101,9 @@ describe("deriveQualityReport", () => {
     const report = deriveQualityReport(reportInput());
     expect(report.Security.state).toBe("NOT_REQUIRED");
     expect(report.Security.provenance).toBe("DETERMINISTIC");
-    expect(report.Security.evidence).toEqual([balancedLowPlan.reasons.SECURITY]);
+    expect(report.Security.evidence[0]).toBe(balancedLowPlan.reasons.SECURITY);
+    // The checker's evidence rides along even when the check is exempt — never silent.
+    expect(report.Security.evidence[1]).toContain("no credential or secret patterns");
   });
 
   it("fails Correctness deterministically when trusted verification did not pass", () => {
@@ -266,7 +268,38 @@ describe("deriveTrustState", () => {
     );
   });
 
-  it("reports a required-but-checkerless dimension as UNKNOWN without gating — and never as PASS", () => {
+  it("caps at CORRECTNESS_VERIFIED when the plan-gated Security dimension FAILs on a leaked secret (M8)", () => {
+    const report = deriveQualityReport(
+      reportInput({
+        assurancePlan: criticalSecurePlan,
+        preExecutionRisk: securityHighRiskVector,
+        diffRisk: securityHighRiskVector,
+        diffPatch: patchFor("src/config/prod.ts", ['const key = "AKIAIOSFODNN7EXAMPLE";']),
+      }),
+    );
+    expect(report.Security.state).toBe("FAIL");
+    // Even an approved independent review cannot lift a leaked secret past the gate.
+    expect(deriveTrustState("VERIFIED", report, criticalSecurePlan, true)).toBe(
+      "CORRECTNESS_VERIFIED",
+    );
+  });
+
+  it("caps at CORRECTNESS_VERIFIED when Security FAILs even if the plan did not require SECURITY (M8 review fix)", () => {
+    // Plan requirements are path-keyword heuristics; a leak into an unkeyworded path must not
+    // slip past the gate on that technicality — deterministic leak evidence cannot be waived.
+    const report = deriveQualityReport(
+      reportInput({
+        assurancePlan: balancedLowPlan,
+        diffPatch: patchFor("src/util/helpers.ts", ['const key = "AKIAIOSFODNN7EXAMPLE";']),
+      }),
+    );
+    expect(report.Security.state).toBe("FAIL");
+    expect(deriveTrustState("VERIFIED", report, balancedLowPlan, undefined)).toBe(
+      "CORRECTNESS_VERIFIED",
+    );
+  });
+
+  it("reaches MERGE_ELIGIBLE when a plan-required Security check passes (M8)", () => {
     const report = deriveQualityReport(
       reportInput({
         assurancePlan: criticalSecurePlan,
@@ -274,9 +307,7 @@ describe("deriveTrustState", () => {
         diffRisk: securityHighRiskVector,
       }),
     );
-    expect(report.Security.state).toBe("UNKNOWN");
-    // The SECURITY gate activates with the M8 checker; until then an approved review can still
-    // reach MERGE_ELIGIBLE, but the report never claims the unchecked dimension passed.
+    expect(report.Security.state).toBe("PASS");
     expect(deriveTrustState("VERIFIED", report, criticalSecurePlan, true)).toBe("MERGE_ELIGIBLE");
   });
 

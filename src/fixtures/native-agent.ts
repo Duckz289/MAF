@@ -1,5 +1,5 @@
 import { createInterface } from "node:readline";
-import { access, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 interface FixtureInput {
@@ -231,6 +231,18 @@ const runTask = async (input: FixtureInput): Promise<void> => {
         changedFiles.push("src/domain/auth-service.ts");
       }
     }
+  }
+  // M8A integration scenario: write a real-shaped (but fake) credential into a production config
+  // file, so the diff-captured Security posture has deterministic evidence of a leak.
+  if (/leak a secret/iu.test(input.task.prompt)) {
+    await mkdir(path.dirname(path.resolve("src/config/prod-tokens.ts")), { recursive: true });
+    await writeFile(
+      path.resolve("src/config/prod-tokens.ts"),
+      'export const deployToken = "ghp_AAAA1111BBBB2222CCCC3333DDDD4444EEEE";\n',
+      "utf8",
+    );
+    emit("tool", { tool: "write_file", operation: "create", path: "src/config/prod-tokens.ts" });
+    changedFiles.push("src/config/prod-tokens.ts");
   }
   const content = [
     "# Native agent fixture output",
