@@ -41,7 +41,7 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 | M6 | Quality governance (6A–6G) | DONE (VERIFIED) | f86ef1a |
 | M7 | Architecture governance + debt delta | DONE (VERIFIED) | 48fbfde |
 | M8 | Security assurance (8A–8B) | DONE (VERIFIED) | 07337bc + 539f000 |
-| M9 | Performance & runtime assurance | DONE (VERIFIED) | pending commit |
+| M9 | Performance & runtime assurance | DONE (VERIFIED) | 461a33d |
 | M10 | Production-like resilience | NOT STARTED | |
 | M11 | Longitudinal governance | NOT STARTED | |
 | M12 | Frontier baselines + strategy learning | NOT STARTED | |
