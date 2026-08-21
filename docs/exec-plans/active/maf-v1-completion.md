@@ -8,7 +8,8 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 - Start branch: `adaptive-harness/runtime-signals-v0.1` at `357ab60` (clean tree).
 - Baseline validation (2026-08-19): `format:check`, `lint`, `typecheck`, `test` (49 passing),
   `build` (server + UI), `compose:check`, `smoke` — all PASS.
-- Current milestone: M15 — Integrated Benchmark and Hardening (M14 implementation verified).
+- Current milestone: MAF v1 engineering program complete — M15 implementation and final audit
+  verified; external/provider capabilities remain explicitly scoped below.
 
 ## Confirmed repository facts
 
@@ -47,7 +48,7 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 | M12 | Frontier baselines + strategy learning | DONE (VERIFIED) | b7a3156 |
 | M13 | PR / CI integration | DONE (VERIFIED) | 00a67bc |
 | M14 | Production feedback foundations | DONE (VERIFIED) | b67f17d |
-| M15 | Integrated benchmark + hardening | NOT STARTED | |
+| M15 | Integrated benchmark + hardening | DONE (VERIFIED implementation; PARTIALLY_VERIFIED external evidence) | fffec26 |
 
 ## Architectural decisions
 
@@ -1073,5 +1074,79 @@ M14 verification (2026-08-21):
 
 ## Deferred work
 
-- Real-agent smoke (`npm run real-agent:smoke`) requires an authenticated Claude Code CLI; will run
-  only if available and bounded.
+- Live CI polling and production-observability collection require configured trusted adapters and
+  credentials; both remain `NOT_VERIFIED` in the reference server.
+- Comparative native-frontier/challenger agent benchmarks remain `NOT_VERIFIED`. One bounded Claude
+  smoke passed, but a single task is execution-path evidence, not a comparative quality claim.
+- Automatic strategy adoption in `create()`, auto-merge/deployment, independently metered provider
+  cost, cross-process automatic resume, and ancestry-aware merged-state structural trends remain
+  deferred/experimental as described in the architecture and reliability documents.
+
+## M15 design (Integrated Benchmark and Hardening)
+
+1. The existing benchmark runner now accepts either one comparison task or a sequential suite. The
+   suite taxonomy covers small mechanical, cross-module, verifier repair, security, data
+   consistency, network/performance, resilience, provider recovery, insufficient budget, and
+   long-horizon evolution families. Declaring a family in a manifest does not satisfy coverage:
+   both fully attributed executors must emit bounded `EXERCISED` check evidence.
+2. Executor JSON fails closed at the process boundary. Missing cost stays `UNKNOWN`; numeric/count
+   relationships, unique paths, transition continuity, referenced signal snapshots, strategy role,
+   snapshot run binding/order, and known outcome enums are validated. Unknown top-level properties
+   are dropped. Included text and nested snapshot evidence are redacted/bounded, external processes
+   have a timeout and one-MiB output ceiling, and failure output is redacted before display.
+3. Long-horizon suites are truly sequential. Each strategy gets a persistent temporary Git
+   workspace. Checkpoints start at one, advance state, bind base/result/candidate/verification
+   digests, use unique run/candidate identities across the full sequence, and feed checkpoint N's
+   result into N+1's base. At least ten validated checkpoints are required for `sufficient: true`.
+4. N+1 changeability requires a prior task with the exact comparison class and workload definition
+   in the same state sequence. Missing/unrelated pairs throw rather than disappearing. Reported
+   deltas cover tokens, latency, retries, files, context expansion/tokens, and tool calls where
+   present, always with `causalClaim: NONE`; unknown cost remains unknown.
+5. The shipped integrated fixture executes real local checks in each family and advances ten Git
+   states for both native and adaptive variants. It is `PARTIALLY_VERIFIED`: the checks validate
+   local orchestration/domain semantics with fixture inputs and executor-reported evidence, not real
+   comparative agent quality, production performance, or strategy promotion eligibility.
+
+## M15 final adversarial audit
+
+| Area | Result | Evidence / remaining boundary |
+| --- | --- | --- |
+| A. Trust | VERIFIED | Quality-governance and mission tests keep non-verified output out of trusted/downstream state. |
+| B. Candidate binding | VERIFIED | Run, health, strategy, delivery, performance, resilience, and feedback persistence tests reject candidate/digest swaps. |
+| C. Revision/environment staleness | VERIFIED locally | Resume, baseline, candidate-input, CI-head, and release binding reject stale evidence; live upstream behavior is external. |
+| D. Security | PARTIALLY_VERIFIED | Composed redaction/secret regressions cover events, artifacts, capsules, API, handoff, feedback, and benchmark projection. This is bounded pattern-based protection, not universal DLP. |
+| E. Budget | VERIFIED at orchestration boundary | Initial execution, repair, and recovery gates are bounded. CLI provider spend still relies on sanitized self-reporting rather than independent metering. |
+| F. Recovery | VERIFIED locally | Retry counts, fresh sessions, cancellation, capsule resume, and revision conflicts are bounded/tested. Automatic restart-time resume and provider/model failover remain deferred. |
+| G. Execution policy | VERIFIED | Desired/effective mode separation and evidence-backed enforcement tests reject unenforced transitions. |
+| H. Quality | VERIFIED | Deterministic FAIL/NOT_CHECKED gates cannot be overridden by model PASS or completion text. |
+| I. Performance/resilience | VERIFIED locally / NOT_VERIFIED in production | Candidate/digest/input-bound local measurement and fault injection are tested; production behavior is not inferred. |
+| J. Strategy learning | VERIFIED policy | Minimum durable evidence, exact scope/identity, terminal failures, sticky demotion, and store-owned canary allocation resist premature promotion. Automatic production routing is experimental. |
+| K. Longitudinal governance | PARTIALLY_VERIFIED | Candidate/operational trends and chained benchmark changeability are observable; structural direction stays UNKNOWN without merged-state ancestry and no model-strength causality is claimed. |
+| L. CI/production feedback | VERIFIED trust boundary / NOT_VERIFIED live adapters | Local/domain/store/API tests reject impersonation, replay, repaint, and washout. No configured external CI/observability adapter is claimed. |
+
+## M15 verification (2026-08-21)
+
+- Independent adversarial review first reproduced label-only family coverage, constant/unbound state
+  chains, orphan N+1 evidence, impossible metrics, transition/snapshot replay, A→B→A identity reuse,
+  and secret-bearing raw executor fields. All were fixed; final fresh rereview reported no material
+  residual findings.
+- Focused A–L run: 24 test files, 257 passing, 1 opt-in test skipped. Benchmark-specific hardening:
+  9/9 passing, including the adversarial cases above.
+- Live local PostgreSQL migration/persistence run: 4 files and 7/7 tests passing across migrations
+  006–009 health, strategy, delivery, and production-feedback paths.
+- Final `npm run validate`: formatter, lint, typecheck, 39 passing test files (388 passing tests;
+  3 files/5 tests skipped only where opt-in infrastructure was absent from the default run), server
+  and UI builds, Compose validation, and production smoke all PASS.
+- Final deterministic benchmark: single fixture PASS; integrated suite 10 reports/20 samples, all
+  verified, 10 declared and 10 exercised families, 10 contiguous advancing checkpoints with bound
+  state/candidate/verification evidence, and 2 N+1 delta rows. Cost stayed UNKNOWN (0 known-cost
+  samples); evidence bases are `EXECUTOR_ASSERTED_CHECKS` and `EXECUTOR_REPORTED_STATE_CHAIN`, with
+  `causalClaim: NONE`.
+- Authenticated real-agent smoke ran once under an explicit `$0.25` ceiling and passed
+  `REAL_AGENT_VERIFIED`: one Claude Code run completed VERIFIED/MERGE_ELIGIBLE, changed one expected
+  file, used no retry, and reported `$0.178319`. This verifies the bounded native-adapter execution
+  path only; comparative model/strategy performance remains `NOT_VERIFIED`.
+- MAF v1 is complete as a local, controlled reference implementation of the roadmap and is ready
+  for scoped evaluation. It is not represented as a fully autonomous production delivery system:
+  live CI/observability adapters, independent cost metering, automatic strategy adoption,
+  deployment authority, and production comparative/longitudinal evidence remain explicit gaps.
