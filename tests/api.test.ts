@@ -58,7 +58,15 @@ describe("control API", () => {
     expect(metric.json()).toEqual({ value: null, currency: "USD" });
     const ledger = await runtime.app.inject({ method: "GET", url: "/api/v1/health-ledger" });
     expect(ledger.statusCode).toBe(200);
-    expect(ledger.json()).toEqual({ samples: [] });
+    expect(ledger.json()).toEqual({
+      samples: [],
+      productionImpact: {
+        state: "UNKNOWN",
+        strategyDemotionRequired: false,
+        maintenanceRecommended: false,
+        reasons: ["no trusted production feedback has been observed"],
+      },
+    });
   });
 
   it("explains runtime-derived mode transitions through versioned resources", async () => {

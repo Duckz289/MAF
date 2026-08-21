@@ -1,6 +1,7 @@
 import type { HealthSample } from "./health";
 import type { PerformanceMeasurement } from "./performance";
 import type { CiEvidence, DeliveryHandoff } from "./delivery";
+import type { ProductionFeedback } from "./production-feedback";
 import type {
   ResilienceExecutionInputSnapshot,
   ResilienceMeasurement,
@@ -56,6 +57,8 @@ export interface RunStore {
   getDeliveryHandoff(runId: string): Promise<DeliveryHandoff | undefined>;
   saveCiEvidence(evidence: CiEvidence): Promise<void>;
   listCiEvidence(handoffId: string): Promise<CiEvidence[]>;
+  saveProductionFeedback(feedback: ProductionFeedback): Promise<void>;
+  listProductionFeedback(projectId?: string, limit?: number): Promise<ProductionFeedback[]>;
 }
 
 /**
@@ -68,6 +71,13 @@ export interface CiEvidenceVerifierPort {
     provider: string;
     externalRunId: string;
   }): Promise<Omit<CiEvidence, "id" | "handoffId">>;
+}
+
+export interface ProductionFeedbackVerifierPort {
+  collect(input: {
+    provider: string;
+    externalEventId: string;
+  }): Promise<Omit<ProductionFeedback, "id">>;
 }
 
 export interface AgentStartInput {

@@ -187,6 +187,7 @@ describe("M12 strategy persistence binding", () => {
     let nextOrdinal = 0;
     const selectionStore = {
       listStrategyObservations: async () => observations,
+      listProductionFeedback: async () => [],
       allocateStrategyCanaryOrdinal: async () => nextOrdinal++,
     } as unknown as RunStore;
     const service = new RunService({ store: selectionStore } as never);

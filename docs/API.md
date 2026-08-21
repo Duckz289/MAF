@@ -32,6 +32,8 @@ All routes are versioned under `/api/v1`.
 | `POST` | `/platform-keys` | Issue a product API key through the configured provider |
 | `GET` | `/telemetry/cost-per-verified-success` | Read the primary optimization metric |
 | `GET` | `/health-ledger` | Read the latest project-scoped health window, candidate/operational trend evidence, and maintenance recommendation; accepts optional opaque `projectId`; structural observations remain directionally `UNKNOWN` until revision ancestry is proven |
+| `GET` | `/production-feedback` | Read trusted release feedback for one required opaque `projectId` and its UNKNOWN/DEGRADING impact |
+| `POST` | `/production-feedback/collect` | Ask a configured trusted observability adapter to collect one provider event reference; clients cannot submit incident claims |
 
 Errors use `{ "error": "CODE", "message": "description" }`. Run creation returns HTTP 202. Event
 streams use standard SSE `id`, `event`, and JSON `data` fields.

@@ -413,6 +413,8 @@ describe("emergency stop", () => {
       getDeliveryHandoff: baseStore.getDeliveryHandoff.bind(baseStore),
       saveCiEvidence: baseStore.saveCiEvidence.bind(baseStore),
       listCiEvidence: baseStore.listCiEvidence.bind(baseStore),
+      saveProductionFeedback: baseStore.saveProductionFeedback.bind(baseStore),
+      listProductionFeedback: baseStore.listProductionFeedback.bind(baseStore),
     };
     const brain = new InMemoryProjectBrain();
     const service = new RunService({

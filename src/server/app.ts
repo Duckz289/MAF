@@ -113,6 +113,11 @@ const ciEvidenceRequestSchema = z.object({
   provider: z.string().trim().min(1).max(200),
   externalRunId: z.string().trim().min(1).max(500),
 });
+const productionFeedbackRequestSchema = z.object({
+  provider: z.string().trim().min(1).max(200),
+  externalEventId: z.string().trim().min(1).max(500),
+});
+const productionFeedbackQuerySchema = z.object({ projectId: z.string().min(1).max(200) });
 
 const transitionSchema = z.object({
   to: z.enum(["STRICT", "GUIDED", "SOLO_NATIVE"]),
@@ -322,6 +327,14 @@ export const createApp = async (): Promise<AppRuntime> => {
   app.post<{ Params: { id: string } }>("/api/v1/runs/:id/delivery/ci-evidence", async (request) => {
     const body = ciEvidenceRequestSchema.parse(request.body);
     return redactSensitiveData(await runs.collectCiEvidence(request.params.id, body));
+  });
+  app.get("/api/v1/production-feedback", async (request) => {
+    const query = productionFeedbackQuerySchema.parse(request.query);
+    return redactSensitiveData(await runs.productionFeedback(query.projectId));
+  });
+  app.post("/api/v1/production-feedback/collect", async (request) => {
+    const body = productionFeedbackRequestSchema.parse(request.body);
+    return redactSensitiveData(await runs.collectProductionFeedback(body));
   });
   app.get<{ Params: { id: string } }>("/api/v1/runs/:id/runtime-signals", async (request) =>
     runs.signalSnapshots(request.params.id),

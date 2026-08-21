@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
+import { isDeepStrictEqual } from "node:util";
 import path from "node:path";
 import {
   type AssurancePlan,
@@ -65,6 +66,7 @@ import type {
   ContextBuilderPort,
   ContextBuildResult,
   PerformanceVerifierPort,
+  ProductionFeedbackVerifierPort,
   ProjectBrain,
   RepositoryIndex,
   RepositorySnapshot,
@@ -78,6 +80,12 @@ import type {
   VerifierPort,
 } from "../domain/ports";
 import { projectIdentity } from "../domain/project-identity";
+import {
+  assertProductionFeedback,
+  deriveProductionImpact,
+  type ProductionFeedback,
+  type ProductionImpact,
+} from "../domain/production-feedback";
 import { deriveQualityReport, deriveTrustState, type QualityReport } from "../domain/quality";
 import {
   AgentReportedFailure,
@@ -210,6 +218,7 @@ interface RunServiceDependencies {
   budgetReservationPolicy?: Partial<BudgetReservationPolicy>;
   circuitBreaker?: ProviderCircuitBreaker;
   ciEvidenceVerifier?: CiEvidenceVerifierPort;
+  productionFeedbackVerifier?: ProductionFeedbackVerifierPort;
 }
 
 export interface VerificationRepairPolicy {
@@ -754,28 +763,84 @@ export class RunService {
     samples: HealthSample[];
     trend?: HealthTrend;
     maintenance?: MaintenanceNeed;
+    productionImpact: ProductionImpact;
   }> {
     let samples = await this.dependencies.store.listHealthSamples(projectId, 20);
+    let selectedProjectId = projectId;
     if (projectId === undefined) {
       const latestProjectId = samples.at(-1)?.projectId;
       if (latestProjectId !== undefined) {
+        selectedProjectId = latestProjectId;
         samples = await this.dependencies.store.listHealthSamples(latestProjectId, 20);
       }
     }
-    if (samples.length < 2) return { samples };
+    const feedback = selectedProjectId
+      ? await this.dependencies.store.listProductionFeedback(selectedProjectId, 100)
+      : [];
+    const productionImpact = deriveProductionImpact(feedback);
+    if (samples.length < 2) return { samples, productionImpact };
     const [previous, current] = samples.slice(-2);
-    if (!previous || !current) return { samples };
+    if (!previous || !current) return { samples, productionImpact };
     const trend = deriveHealthTrend(previous, current);
-    return { samples, trend, maintenance: deriveMaintenanceNeed(trend) };
+    return { samples, trend, maintenance: deriveMaintenanceNeed(trend), productionImpact };
   }
 
   /** Read only store-bound production observations; benchmark shadow evidence is report-local. */
   async strategyAssessment(
     scope: StrategyScope,
     challenger: StrategyIdentity,
-  ): Promise<StrategyAssessment> {
+  ): Promise<StrategyAssessment & { productionImpact: ProductionImpact }> {
     const observations = await this.dependencies.store.listStrategyObservations(scope.projectId);
-    return assessStrategy(scope, challenger, observations);
+    const assessment = assessStrategy(scope, challenger, observations);
+    const relevant = (await this.dependencies.store.listProductionFeedback(scope.projectId)).filter(
+      (item) =>
+        isDeepStrictEqual(item.scope, scope) && isDeepStrictEqual(item.strategy, challenger),
+    );
+    const productionImpact = deriveProductionImpact(relevant);
+    return productionImpact.strategyDemotionRequired
+      ? {
+          ...assessment,
+          lifecycle: "DEMOTED",
+          reasons: [...assessment.reasons, ...productionImpact.reasons],
+          productionImpact,
+        }
+      : { ...assessment, productionImpact };
+  }
+
+  async productionFeedback(projectId: string): Promise<{
+    feedback: ProductionFeedback[];
+    impact: ProductionImpact;
+  }> {
+    const feedback = await this.dependencies.store.listProductionFeedback(projectId, 100);
+    return { feedback, impact: deriveProductionImpact(feedback) };
+  }
+
+  async collectProductionFeedback(input: {
+    provider: string;
+    externalEventId: string;
+  }): Promise<ProductionFeedback> {
+    const verifier = this.dependencies.productionFeedbackVerifier;
+    if (!verifier) {
+      const error = new Error("No trusted production feedback verifier is configured") as Error & {
+        statusCode: number;
+      };
+      error.statusCode = 501;
+      throw error;
+    }
+    const collected = await verifier.collect(input);
+    const feedback: ProductionFeedback = {
+      ...collected,
+      schemaVersion: 1,
+      id: crypto.randomUUID(),
+    };
+    assertProductionFeedback(feedback);
+    if (
+      feedback.source.provider !== input.provider ||
+      feedback.source.externalEventId !== input.externalEventId
+    )
+      throw new Error("Trusted production source returned a different external event identity");
+    await this.dependencies.store.saveProductionFeedback(feedback);
+    return feedback;
   }
 
   async selectExecutionStrategy(
@@ -785,6 +850,22 @@ export class RunService {
   ): Promise<StrategySelection> {
     const observations = await this.dependencies.store.listStrategyObservations(scope.projectId);
     const initial = selectStrategy(scope, nativeFrontier, challenger, observations, 1);
+    const productionImpact = deriveProductionImpact(
+      (await this.dependencies.store.listProductionFeedback(scope.projectId)).filter(
+        (item) =>
+          isDeepStrictEqual(item.scope, scope) && isDeepStrictEqual(item.strategy, challenger),
+      ),
+    );
+    if (productionImpact.strategyDemotionRequired)
+      return {
+        selected: nativeFrontier,
+        challenger: {
+          ...initial.challenger,
+          lifecycle: "DEMOTED",
+          reasons: [...initial.challenger.reasons, ...productionImpact.reasons],
+        },
+        reason: "trusted production feedback demoted the challenger; native frontier selected",
+      };
     if (initial.challenger.lifecycle !== "CANARY") return initial;
     const canaryOrdinal = await this.dependencies.store.allocateStrategyCanaryOrdinal(
       strategyAllocationKey(scope, challenger),

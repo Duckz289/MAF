@@ -487,6 +487,22 @@ missing CI remains `NOT_CHECKED`. Candidate quality, CI status, merge eligibilit
 authority are separate. MAF never auto-merges: even eligible low-risk work reports
 `EXTERNAL_APPROVAL_REQUIRED`, and high-risk work cannot silently acquire merge authority.
 
+## Production feedback provenance
+
+M14 records incidents, rollbacks, error/latency regressions, and security findings as new immutable
+release evidence; it never rewrites the candidate's historical verification. Evidence is accepted
+only through `ProductionFeedbackVerifierPort` and persisted after rebinding opaque project, run,
+candidate/digest, concrete CI release revision, and the full strategy identity. Raw incident text
+and exact strategy scope. Raw incident text and logs are excluded in favor of an opaque upstream reference. No configured adapter means live
+collection is `NOT_VERIFIED`, and no observations means production impact `UNKNOWN`.
+
+Material trusted feedback demotes that scoped challenger for future selection and appears in the
+health-ledger response as production impact/maintenance evidence. This is correlation and policy
+input, not a claim that the original assurance result was false at the time it was produced.
+Material evidence is sticky: strategy decisions read the complete exact-project history until a
+future explicit trusted remediation model exists, so unrelated later observations cannot wash an
+incident out of a bounded display window.
+
 ## Mission tree and project graph
 
 `MissionTree` represents work flow, while `RepositoryIndex` represents code dependency flow.

@@ -9,6 +9,7 @@ import {
 import { assertHealthSample, type HealthSample } from "../domain/health";
 import type { RunStore } from "../domain/ports";
 import { projectIdentity } from "../domain/project-identity";
+import { assertProductionFeedback, type ProductionFeedback } from "../domain/production-feedback";
 import { redactSensitiveData } from "../domain/security";
 import {
   assertStrategyObservation,
@@ -43,6 +44,7 @@ export class InMemoryRunStore implements RunStore {
     { handoffId: string; headRevision: string | null }
   >();
   private readonly ciHeadByHandoff = new Map<string, string>();
+  private readonly productionFeedback: ProductionFeedback[] = [];
 
   async createTask(task: Task): Promise<void> {
     this.tasks.set(task.id, structuredClone(task));
@@ -364,5 +366,52 @@ export class InMemoryRunStore implements RunStore {
         (a, b) => Date.parse(a.observedAt) - Date.parse(b.observedAt) || a.id.localeCompare(b.id),
       ),
     );
+  }
+
+  async saveProductionFeedback(feedback: ProductionFeedback): Promise<void> {
+    const sanitized: unknown = redactSensitiveData(feedback);
+    assertProductionFeedback(sanitized);
+    feedback = sanitized;
+    const run = this.runs.get(feedback.runId);
+    const task = run ? this.tasks.get(run.taskId) : undefined;
+    const handoff = run ? this.deliveryHandoffsByRun.get(run.id) : undefined;
+    const strategy = this.strategyObservations.find((item) => item.runId === feedback.runId);
+    if (
+      !run ||
+      !task ||
+      !handoff ||
+      projectIdentity(task.repositoryPath) !== feedback.projectId ||
+      handoff.candidateId !== feedback.candidateId ||
+      handoff.candidateDigest !== feedback.candidateDigest ||
+      this.ciHeadByHandoff.get(handoff.id) !== feedback.releaseRevision ||
+      run.agent !== feedback.strategy.adapter ||
+      run.model !== feedback.strategy.model ||
+      run.provider !== feedback.strategy.provider ||
+      run.effectiveMode !== feedback.strategy.executionMode ||
+      !strategy ||
+      !isDeepStrictEqual(strategy.strategy, feedback.strategy) ||
+      !isDeepStrictEqual(strategy.scope, feedback.scope)
+    )
+      throw new Error("Production feedback is not bound to its released candidate and strategy");
+    if (
+      this.productionFeedback.some(
+        (item) =>
+          item.source.provider === feedback.source.provider &&
+          item.source.externalEventId === feedback.source.externalEventId,
+      )
+    )
+      throw new Error("Production event is already recorded");
+    this.productionFeedback.push(structuredClone(feedback));
+  }
+
+  async listProductionFeedback(projectId?: string, limit?: number): Promise<ProductionFeedback[]> {
+    const bounded =
+      limit === undefined ? Number.POSITIVE_INFINITY : Math.min(500, Math.max(0, limit));
+    const ordered = this.productionFeedback
+      .filter((item) => projectId === undefined || item.projectId === projectId)
+      .toSorted(
+        (a, b) => Date.parse(a.observedAt) - Date.parse(b.observedAt) || a.id.localeCompare(b.id),
+      );
+    return structuredClone(bounded === 0 ? [] : ordered.slice(-bounded));
   }
 }

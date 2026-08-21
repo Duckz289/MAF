@@ -8,7 +8,7 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 - Start branch: `adaptive-harness/runtime-signals-v0.1` at `357ab60` (clean tree).
 - Baseline validation (2026-08-19): `format:check`, `lint`, `typecheck`, `test` (49 passing),
   `build` (server + UI), `compose:check`, `smoke` — all PASS.
-- Current milestone: M14 — Production Feedback Foundations (M13 implementation verified).
+- Current milestone: M15 — Integrated Benchmark and Hardening (M14 implementation verified).
 
 ## Confirmed repository facts
 
@@ -46,7 +46,7 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 | M11 | Longitudinal governance | DONE (VERIFIED) | 3449b54 |
 | M12 | Frontier baselines + strategy learning | DONE (VERIFIED) | b7a3156 |
 | M13 | PR / CI integration | DONE (VERIFIED) | 00a67bc |
-| M14 | Production feedback foundations | NOT STARTED | |
+| M14 | Production feedback foundations | DONE (VERIFIED) | pending local commit |
 | M15 | Integrated benchmark + hardening | NOT STARTED | |
 
 ## Architectural decisions
@@ -1046,6 +1046,30 @@ M13 verification (2026-08-21):
   including rejected stale/head-repaint observations followed by a valid write, proving rollback.
 - Final aggregate validation passed formatter, lint, typecheck, 376 tests (4 opt-in PostgreSQL
   tests skipped), server/UI builds, Compose validation, and production smoke.
+
+## M14 design (Production Feedback Foundations)
+
+1. Immutable feedback binds opaque project/run/candidate, diff digest, concrete release revision,
+   full strategy identity and exact scope, typed outcome, severity, trusted source identity, timestamp, and an
+   opaque evidence reference. Raw production logs and incident text are excluded.
+2. The HTTP boundary accepts only provider + external event ID. A configured trusted adapter must
+   collect the observation; no adapter returns 501 and remains `NOT_VERIFIED`.
+3. Production evidence never rewrites historical candidate verification. Material incidents,
+   rollbacks, security findings, or HIGH-severity regressions affect future scoped strategy choice
+   and health/maintenance evidence. No feedback remains explicitly `UNKNOWN`.
+   Material demotion reads the complete exact-project history and stays sticky until a future
+   explicit trusted remediation event exists; display endpoints remain bounded.
+
+M14 verification (2026-08-21):
+
+- Independent adversarial review reproduced and closed cross-scope demotion, property-order
+  identity matching, PostgreSQL payload drift, false-STABLE regression labels, cross-project
+  aggregation, bounded-window washout, and payload-only provenance repaint. Final rereview reported
+  no material residual findings.
+- Focused domain/in-memory coverage passed 7/7; live PostgreSQL migration-009 coverage passed 3/3,
+  including exact release/scope binding and full-payload drift rejection.
+- Final `npm run validate` passed formatter, lint, typecheck, 383 tests (5 opt-in PostgreSQL tests
+  skipped), server/UI builds, Compose validation, and production smoke.
 
 ## Deferred work
 

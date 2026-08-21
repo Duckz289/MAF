@@ -189,3 +189,11 @@ sanitized paths, opaque evidence references, and numeric budget/cost data. Live 
 remains `NOT_VERIFIED` because no CI credentials or adapter are configured.
 
 The production-bundle smoke test repeats both outcomes against in-memory and PostgreSQL adapters.
+
+M14 production feedback is append-only evidence bound to a released candidate and exact strategy.
+Absence remains `UNKNOWN`; trusted incident, rollback, security, or HIGH-severity evidence can
+demote future selection and recommend maintenance without mutating historical verification. The
+reference server has no live observability adapter, so external collection remains `NOT_VERIFIED`.
+Strategy demotion filters exact project/scope/identity with property-order-independent equality and
+does not use the bounded API display window. PostgreSQL repeats every payload identity and impact
+field in canonical columns and rejects row/payload drift.

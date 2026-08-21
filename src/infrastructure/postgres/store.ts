@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { Pool } from "pg";
 import { assertHealthSample, type HealthSample } from "../../domain/health";
 import {
@@ -9,6 +10,11 @@ import {
 } from "../../domain/delivery";
 import type { RunStore } from "../../domain/ports";
 import { projectIdentity } from "../../domain/project-identity";
+import {
+  assertProductionFeedback,
+  productionFeedbackDigest,
+  type ProductionFeedback,
+} from "../../domain/production-feedback";
 import { redactSensitiveData } from "../../domain/security";
 import {
   assertStrategyObservation,
@@ -717,6 +723,122 @@ export class PostgresRunStore implements RunStore {
       ) {
         throw new Error("CI evidence payload identity does not match its durable row binding");
       }
+      return row.payload;
+    });
+  }
+
+  async saveProductionFeedback(feedback: ProductionFeedback): Promise<void> {
+    const sanitized: unknown = redactSensitiveData(feedback);
+    assertProductionFeedback(sanitized);
+    feedback = sanitized;
+    const binding = await this.pool.query<{ repositoryPath: string }>(
+      `SELECT t.repository_path AS "repositoryPath"
+       FROM runs r JOIN tasks t ON t.id=r.task_id WHERE r.id=$1`,
+      [feedback.runId],
+    );
+    const repositoryPath = binding.rows[0]?.repositoryPath;
+    if (!repositoryPath || projectIdentity(repositoryPath) !== feedback.projectId)
+      throw new Error("Production feedback project does not match its run task");
+    const inserted = await this.pool.query(
+      `INSERT INTO production_feedback(
+         id, project_id, run_id, candidate_id, candidate_digest, release_revision,
+         provider, external_event_id, observed_at, payload, feedback_type, severity, strategy, scope,
+         payload_digest
+       )
+       SELECT $1, $2, r.id, h.candidate_id, $5, $6, $7, $8, $9, $10, $18, $19, $16, $17, $20
+       FROM runs r
+       JOIN tasks t ON t.id = r.task_id
+       JOIN delivery_handoffs h ON h.run_id = r.id
+       JOIN strategy_observations s ON s.run_id = r.id
+       WHERE r.id = $3 AND h.candidate_id = $4 AND h.candidate_digest = $5
+         AND h.ci_head_revision = $6 AND t.repository_path = $11
+         AND r.payload->>'agent' = $12 AND r.payload->>'model' = $13
+         AND r.payload->>'provider' = $14 AND r.payload->>'effectiveMode' = $15
+         AND s.payload->'strategy' = $16::jsonb
+         AND s.payload->'scope' = $17::jsonb
+       RETURNING id`,
+      [
+        feedback.id,
+        feedback.projectId,
+        feedback.runId,
+        feedback.candidateId,
+        feedback.candidateDigest,
+        feedback.releaseRevision,
+        feedback.source.provider,
+        feedback.source.externalEventId,
+        feedback.observedAt,
+        feedback,
+        repositoryPath,
+        feedback.strategy.adapter,
+        feedback.strategy.model,
+        feedback.strategy.provider,
+        feedback.strategy.executionMode,
+        feedback.strategy,
+        feedback.scope,
+        feedback.type,
+        feedback.severity,
+        productionFeedbackDigest(feedback),
+      ],
+    );
+    if (inserted.rowCount !== 1)
+      throw new Error("Production feedback is not bound to its released candidate and strategy");
+  }
+
+  async listProductionFeedback(projectId?: string, limit?: number): Promise<ProductionFeedback[]> {
+    const bounded = limit === undefined ? 2_147_483_647 : Math.min(500, Math.max(0, limit));
+    const result = await this.pool.query<{
+      id: string;
+      projectId: string;
+      runId: string;
+      candidateId: string;
+      candidateDigest: string;
+      releaseRevision: string;
+      provider: string;
+      externalEventId: string;
+      observedAt: string;
+      feedbackType: string;
+      severity: string;
+      strategy: unknown;
+      scope: unknown;
+      payloadDigest: string;
+      payload: unknown;
+    }>(
+      `SELECT id::text, project_id AS "projectId", run_id::text AS "runId",
+              candidate_id::text AS "candidateId", candidate_digest AS "candidateDigest",
+              release_revision AS "releaseRevision", provider,
+              external_event_id AS "externalEventId", observed_at::text AS "observedAt",
+              feedback_type AS "feedbackType", severity, strategy, scope, payload
+              , payload_digest AS "payloadDigest"
+       FROM (
+         SELECT id, project_id, run_id, candidate_id, candidate_digest, release_revision,
+                provider, external_event_id, observed_at, feedback_type, severity, strategy, scope,
+                payload, payload_digest FROM production_feedback
+         WHERE ($1::text IS NULL OR project_id=$1)
+         ORDER BY observed_at DESC, id DESC LIMIT $2
+       ) recent ORDER BY observed_at, id`,
+      [projectId ?? null, bounded],
+    );
+    return result.rows.map((row) => {
+      assertProductionFeedback(row.payload);
+      if (
+        row.payload.id !== row.id ||
+        row.payload.projectId !== row.projectId ||
+        row.payload.runId !== row.runId ||
+        row.payload.candidateId !== row.candidateId ||
+        row.payload.candidateDigest !== row.candidateDigest ||
+        row.payload.releaseRevision !== row.releaseRevision ||
+        row.payload.source.provider !== row.provider ||
+        row.payload.source.externalEventId !== row.externalEventId ||
+        row.payload.type !== row.feedbackType ||
+        row.payload.severity !== row.severity ||
+        !isDeepStrictEqual(row.payload.strategy, row.strategy) ||
+        !isDeepStrictEqual(row.payload.scope, row.scope) ||
+        productionFeedbackDigest(row.payload) !== row.payloadDigest ||
+        Date.parse(row.payload.observedAt) !== Date.parse(row.observedAt)
+      )
+        throw new Error(
+          "Production feedback payload identity does not match its durable row binding",
+        );
       return row.payload;
     });
   }
