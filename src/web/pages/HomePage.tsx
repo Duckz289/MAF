@@ -1,15 +1,16 @@
-import { Button, Text, Title2, makeStyles } from "@fluentui/react-components";
+import { Button, makeStyles, Text, Title2 } from "@fluentui/react-components";
 import {
   CheckmarkCircle20Regular,
   Circle20Regular,
   Folder20Regular,
+  TaskListSquareLtr20Regular,
   TasksApp20Regular,
 } from "@fluentui/react-icons";
-import type { Agent, HomeData, Navigate, Project, Run } from "../types";
-import { formatCost } from "../utils";
 import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
 import { TaskList } from "../components/TaskRow";
+import type { Agent, DecisionItem, HomeData, Navigate, Project, Run } from "../types";
+import { formatCost } from "../utils";
 
 const useStyles = makeStyles({
   page: { display: "grid", gap: "26px" },
@@ -103,12 +104,14 @@ function Section({
 
 export function HomePage({
   agents,
+  decisions,
   home,
   navigate,
   projects,
   runs,
 }: {
   agents: Agent[];
+  decisions?: DecisionItem[] | undefined;
   home?: HomeData | undefined;
   navigate: Navigate;
   projects: Project[];
@@ -132,6 +135,23 @@ export function HomePage({
         description="Đây là những việc MAF đang xử lý trong không gian kỹ thuật của bạn."
         title={greeting()}
       />
+
+      {decisions?.length ? (
+        <section className={styles.attention} aria-label="Cần quyết định">
+          <div className={styles.sectionHeader}>
+            <span className={styles.setupLabel}>
+              <TaskListSquareLtr20Regular />
+              <Title2 className={styles.sectionTitle}>Cần quyết định</Title2>
+            </span>
+            <Button appearance="primary" onClick={() => navigate("/decisions")}>
+              Xem {decisions.length} việc
+            </Button>
+          </div>
+          <Text className={styles.quietRow}>
+            MAF không thể tự quyết định những việc này — hãy mở trang Quyết định để xử lý.
+          </Text>
+        </section>
+      ) : null}
 
       {!setupComplete ? (
         <section className={styles.onboarding} aria-label="Bắt đầu với MAF">
