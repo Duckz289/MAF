@@ -12,6 +12,7 @@ import { InMemoryProjectRegistry } from "../application/project-registry";
 import { RunService } from "../application/run-service";
 import { EvidenceRuntimeSignalCollector } from "../application/runtime-signal-collector";
 import type { RunStore } from "../domain/ports";
+import { projectIdentity } from "../domain/project-identity";
 import { redactSensitiveData } from "../domain/security";
 import {
   InMemoryPlatformApiKeys,
@@ -108,6 +109,10 @@ const createRunSchema = z.object({
 });
 const healthLedgerQuerySchema = z.object({
   projectId: z.string().min(1).max(200).optional(),
+  // The health ledger keys samples by the deterministic repository identity RunService already
+  // computes (see projectIdentity), not the MAF project-registry id. Accepting repositoryPath here
+  // lets the UI scope the ledger to "this project" without duplicating that derivation client-side.
+  repositoryPath: z.string().min(1).max(4_000).optional(),
 });
 const ciEvidenceRequestSchema = z.object({
   provider: z.string().trim().min(1).max(200),
@@ -375,7 +380,68 @@ export const createApp = async (): Promise<AppRuntime> => {
   app.get("/api/v1/health-ledger", async (request, reply) => {
     const parsed = healthLedgerQuerySchema.safeParse(request.query);
     if (!parsed.success) return reply.code(400).send({ error: "INVALID_QUERY" });
-    return redactSensitiveData(await runs.healthLedger(parsed.data.projectId));
+    const projectId =
+      parsed.data.projectId ??
+      (parsed.data.repositoryPath ? projectIdentity(parsed.data.repositoryPath) : undefined);
+    return redactSensitiveData(await runs.healthLedger(projectId));
+  });
+  // Smallest truthful projection over already-computed run state: only runs that genuinely need
+  // explicit user authority (paused for recovery, blocked on assurance evidence, or a delivery
+  // handoff pending/blocked on external approval) become a decision item. Retries, routine
+  // verification, and in-progress runs are deliberately excluded — those are handled automatically.
+  app.get("/api/v1/decisions", async () => {
+    const summaries = await runs.listSummaries();
+    const items: Array<Record<string, unknown>> = [];
+    for (const run of summaries) {
+      if (run.state === "PAUSED") {
+        const capsule = await runs.recoveryCapsule(run.id);
+        items.push({
+          type: "RECOVERY",
+          runId: run.id,
+          task: run.task,
+          repositoryPath: run.repositoryPath,
+          updatedAt: run.updatedAt,
+          recoveryReason: capsule?.recoveryReason ?? "UNKNOWN_FAILURE",
+          recoveryDetail: capsule?.recoveryDetail,
+          remainingBudget: capsule?.remainingBudget ?? null,
+          costSpent: capsule?.costSpent.total ?? run.cost.total,
+        });
+        continue;
+      }
+      if (run.operationalStatus === "ASSURANCE_BLOCKED") {
+        items.push({
+          type: "ASSURANCE_BLOCKED",
+          runId: run.id,
+          task: run.task,
+          repositoryPath: run.repositoryPath,
+          updatedAt: run.updatedAt,
+        });
+        continue;
+      }
+      if (run.operationalStatus === "AWAITING_REVIEW") {
+        const delivery = await runs.delivery(run.id);
+        if (delivery && delivery.mergeEligibility !== "PENDING") {
+          items.push({
+            type: "DELIVERY",
+            runId: run.id,
+            task: run.task,
+            repositoryPath: run.repositoryPath,
+            updatedAt: run.updatedAt,
+            mergeEligibility: delivery.mergeEligibility,
+            knownWarnings: delivery.handoff.knownWarnings,
+          });
+        } else {
+          items.push({
+            type: "AWAITING_REVIEW",
+            runId: run.id,
+            task: run.task,
+            repositoryPath: run.repositoryPath,
+            updatedAt: run.updatedAt,
+          });
+        }
+      }
+    }
+    return redactSensitiveData(items);
   });
   app.post("/api/v1/system/resume-new-runs", async () => {
     runs.resumeNewRuns();
