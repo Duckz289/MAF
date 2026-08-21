@@ -72,6 +72,7 @@ const createRunSchema = z.object({
         )
         .max(7)
         .optional(),
+      evidenceInputs: z.array(z.string().min(1).max(1_000)).max(50).optional(),
       composeFile: z.string().min(1).max(1_000).optional(),
       timeoutMs: z.number().int().positive().max(600_000).optional(),
     })

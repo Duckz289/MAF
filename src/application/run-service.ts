@@ -394,6 +394,13 @@ export class RunService {
             resilience: {
               ...task.resilience,
               command: redactSensitiveText(task.resilience.command),
+              ...(task.resilience.evidenceInputs
+                ? {
+                    evidenceInputs: task.resilience.evidenceInputs.map((input) =>
+                      redactSensitiveText(input),
+                    ),
+                  }
+                : {}),
               ...(task.resilience.composeFile
                 ? { composeFile: redactSensitiveText(task.resilience.composeFile) }
                 : {}),
@@ -1960,17 +1967,17 @@ export class RunService {
       };
     } else {
       try {
-        measurement = await this.dependencies.resilienceVerifier.verify({
+        const activeState = this.active.get(run.id);
+        const verifyInput = {
           run,
           task,
           sandbox,
           candidateId: candidate.id,
           diffDigest: candidateDigest,
           relevance,
-          ...(this.active.get(run.id)
-            ? { signal: this.active.get(run.id)!.verificationAbort.signal }
-            : {}),
-        });
+          ...(activeState ? { signal: activeState.verificationAbort.signal } : {}),
+        };
+        measurement = await this.dependencies.resilienceVerifier.verify(verifyInput);
         if (this.active.get(run.id)?.cancelled)
           throw new Error("Run cancelled during resilience verification");
         const afterVerification = await this.dependencies.sandbox.collectDiff(sandbox);
@@ -1986,6 +1993,38 @@ export class RunService {
               "candidate workspace changed during resilience verification; evidence was invalidated",
             ],
           };
+        } else if (
+          task.resilience &&
+          (task.resilience.composeFile || (task.resilience.evidenceInputs?.length ?? 0) > 0)
+        ) {
+          if (
+            !measurement.executionInputDigest ||
+            !this.dependencies.resilienceVerifier.captureEvidenceInputs
+          ) {
+            measurement = {
+              state: "NOT_CHECKED",
+              candidateId: candidate.id,
+              diffDigest: candidateDigest,
+              scenarios: [],
+              evidence: [
+                "resilience execution used declared external inputs, but the verifier did not provide a re-checkable input fingerprint",
+              ],
+            };
+          } else {
+            const afterInputs =
+              await this.dependencies.resilienceVerifier.captureEvidenceInputs(verifyInput);
+            if (afterInputs.digest !== measurement.executionInputDigest) {
+              measurement = {
+                state: "NOT_CHECKED",
+                candidateId: candidate.id,
+                diffDigest: candidateDigest,
+                scenarios: [],
+                evidence: [
+                  "candidate resilience execution inputs changed during or after verification; evidence was invalidated",
+                ],
+              };
+            }
+          }
         }
       } catch (error) {
         if (this.active.get(run.id)?.cancelled) throw error;

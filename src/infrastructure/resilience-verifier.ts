@@ -1,5 +1,12 @@
-import type { ResilienceMeasurement, ResilienceScenarioResult } from "../domain/resilience";
-import type { ResilienceVerifyInput, ResilienceVerifierPort } from "../domain/ports";
+import { createHash } from "node:crypto";
+import { readFile, realpath, stat } from "node:fs/promises";
+import path from "node:path";
+import type { ResilienceVerifierPort, ResilienceVerifyInput } from "../domain/ports";
+import type {
+  ResilienceExecutionInputSnapshot,
+  ResilienceMeasurement,
+  ResilienceScenarioResult,
+} from "../domain/resilience";
 import { runProcess } from "./process-utils";
 
 const shellCommand = (): { command: string; prefix: string[] } =>
@@ -11,6 +18,8 @@ const scenarioEnvName = "MAF_RESILIENCE_SCENARIO";
 
 /** Bounded so a wedged compose stack can never hang the quality gate open-endedly. */
 const composeTimeoutMs = 120_000;
+const maxEvidenceInputs = 50;
+const maxEvidenceInputBytes = 10 * 1024 * 1024;
 
 const tail = (text: string, maxChars = 400): string => {
   const trimmed = text.trim();
@@ -29,6 +38,59 @@ const tail = (text: string, maxChars = 400): string => {
  * candidate, never a claim of production verification.
  */
 export class CommandResilienceVerifier implements ResilienceVerifierPort {
+  constructor(private readonly processRunner: typeof runProcess = runProcess) {}
+
+  async captureEvidenceInputs(
+    input: ResilienceVerifyInput,
+  ): Promise<ResilienceExecutionInputSnapshot> {
+    const configured = [
+      ...(input.task.resilience?.composeFile ? [input.task.resilience.composeFile] : []),
+      ...(input.task.resilience?.evidenceInputs ?? []),
+    ];
+    const inputs = [...new Set(configured.map((file) => file.replaceAll("\\", "/")))].sort();
+    if (inputs.length > maxEvidenceInputs) {
+      throw new Error(`at most ${maxEvidenceInputs} resilience evidence inputs are allowed`);
+    }
+    const root = path.resolve(input.sandbox.path);
+    const rootPrefix = `${root}${path.sep}`;
+    const hash = createHash("sha256");
+    for (const declared of inputs) {
+      if (path.isAbsolute(declared)) {
+        throw new Error(`resilience evidence input must be candidate-relative: ${declared}`);
+      }
+      const target = path.resolve(root, declared);
+      if (target !== root && !target.startsWith(rootPrefix)) {
+        throw new Error(`resilience evidence input escapes the candidate sandbox: ${declared}`);
+      }
+      hash.update(`path:${declared}\0`);
+      try {
+        const resolved = await realpath(target);
+        if (resolved !== root && !resolved.startsWith(rootPrefix)) {
+          throw new Error(
+            `resilience evidence input resolves outside the candidate sandbox: ${declared}`,
+          );
+        }
+        const metadata = await stat(resolved);
+        if (!metadata.isFile()) {
+          throw new Error(`resilience evidence input is not a regular file: ${declared}`);
+        }
+        if (metadata.size > maxEvidenceInputBytes) {
+          throw new Error(
+            `resilience evidence input exceeds ${maxEvidenceInputBytes} bytes: ${declared}`,
+          );
+        }
+        hash.update("present\0");
+        hash.update(await readFile(resolved));
+      } catch (error) {
+        const code = error instanceof Error && "code" in error ? String(error.code) : undefined;
+        if (code !== "ENOENT") throw error;
+        hash.update("missing\0");
+      }
+      hash.update("\0");
+    }
+    return { digest: hash.digest("hex"), inputs };
+  }
+
   async verify(input: ResilienceVerifyInput): Promise<ResilienceMeasurement> {
     const spec = input.task.resilience;
     const notChecked = (evidence: string[]): ResilienceMeasurement => ({
@@ -47,15 +109,25 @@ export class CommandResilienceVerifier implements ResilienceVerifierPort {
       ? input.relevance.scenarios.filter((scenario) => spec.scenarios?.includes(scenario))
       : input.relevance.scenarios;
 
+    let inputSnapshot: ResilienceExecutionInputSnapshot;
+    try {
+      inputSnapshot = await this.captureEvidenceInputs(input);
+    } catch (error) {
+      return notChecked([
+        `resilience execution inputs could not be bound to the candidate sandbox: ${error instanceof Error ? error.message : String(error)}`,
+      ]);
+    }
+
     let composeStarted = false;
     const baseEvidence: string[] = [];
     try {
       if (spec.composeFile) {
-        const up = await runProcess(
+        const composeFile = path.resolve(input.sandbox.path, spec.composeFile);
+        const up = await this.processRunner(
           "docker",
-          ["compose", "-f", spec.composeFile, "up", "-d", "--wait"],
+          ["compose", "-f", composeFile, "up", "-d", "--wait"],
           {
-            cwd: input.task.repositoryPath,
+            cwd: input.sandbox.path,
             timeoutMs: composeTimeoutMs,
             ...(input.signal ? { signal: input.signal } : {}),
           },
@@ -67,7 +139,7 @@ export class CommandResilienceVerifier implements ResilienceVerifierPort {
         }
         composeStarted = true;
         baseEvidence.push(
-          `ephemeral environment started from ${spec.composeFile} via docker compose up -d --wait`,
+          `ephemeral environment started from candidate-local ${spec.composeFile} via docker compose up -d --wait`,
         );
       }
 
@@ -81,7 +153,7 @@ export class CommandResilienceVerifier implements ResilienceVerifierPort {
         // the exit codes our evidence depends on; propagate the last native exit code explicitly.
         const command =
           process.platform === "win32" ? `${spec.command}; exit $LASTEXITCODE` : spec.command;
-        const result = await runProcess(shell.command, [...shell.prefix, command], {
+        const result = await this.processRunner(shell.command, [...shell.prefix, command], {
           cwd: input.sandbox.path,
           timeoutMs: spec.timeoutMs ?? 120_000,
           env: { [scenarioEnvName]: scenario },
@@ -97,10 +169,18 @@ export class CommandResilienceVerifier implements ResilienceVerifierPort {
               : [tail(result.stderr) || tail(result.stdout) || `command exited ${result.exitCode}`],
         });
       }
+      const afterInputs = await this.captureEvidenceInputs(input);
+      if (afterInputs.digest !== inputSnapshot.digest) {
+        return notChecked([
+          "candidate resilience execution inputs changed while scenarios were running; evidence was invalidated",
+        ]);
+      }
       return {
         state: "EXECUTED",
         candidateId: input.candidateId,
         diffDigest: input.diffDigest,
+        executionInputDigest: inputSnapshot.digest,
+        executionInputs: inputSnapshot.inputs,
         scenarios: results,
         evidence: [
           `${scenarios.length} relevant scenario(s) executed with the configured trusted command (${scenarioEnvName} env carries the scenario name)`,
@@ -110,11 +190,12 @@ export class CommandResilienceVerifier implements ResilienceVerifierPort {
       };
     } finally {
       if (composeStarted && spec.composeFile) {
-        await runProcess(
+        const composeFile = path.resolve(input.sandbox.path, spec.composeFile);
+        await this.processRunner(
           "docker",
-          ["compose", "-f", spec.composeFile, "down", "-v", "--remove-orphans"],
+          ["compose", "-f", composeFile, "down", "-v", "--remove-orphans"],
           {
-            cwd: input.task.repositoryPath,
+            cwd: input.sandbox.path,
             timeoutMs: composeTimeoutMs,
             ...(input.signal ? { signal: input.signal } : {}),
           },

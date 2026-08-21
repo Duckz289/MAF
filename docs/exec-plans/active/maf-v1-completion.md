@@ -42,7 +42,7 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 | M7 | Architecture governance + debt delta | DONE (VERIFIED) | 48fbfde |
 | M8 | Security assurance (8A–8B) | DONE (VERIFIED) | 07337bc + 539f000 |
 | M9 | Performance & runtime assurance | DONE (VERIFIED) | 461a33d |
-| M10 | Production-like resilience | NOT STARTED | |
+| M10 | Production-like resilience | DONE (VERIFIED) | ff59363 |
 | M11 | Longitudinal governance | NOT STARTED | |
 | M12 | Frontier baselines + strategy learning | NOT STARTED | |
 | M13 | PR / CI integration | NOT STARTED | |
@@ -894,6 +894,22 @@ made suppression depend on call order and retained one unsigned PEM body in the 
   from an independent frontier pass.
 - Final gate: `format:check`, `lint`, `typecheck`, `test` (30 files, 311 passing), `build`,
   `compose:check`, `smoke` — all PASS.
+
+## M10 targeted hardening (post-audit)
+
+- Confirmed that the post-scenario digest covered only Git-visible patch content. Resilience specs
+  now accept up to 50 candidate-relative `evidenceInputs`; the trusted verifier fingerprints their
+  bounded contents before and after scenario execution, includes `composeFile` automatically, and
+  RunService re-captures the fingerprint after `verify()` returns. Missing, escaping, oversized,
+  non-file, or mutated inputs yield `NOT_CHECKED`. A regression mutates a declared ignored generated
+  config during execution, and an integration test changes the fingerprint after verifier return;
+  neither can retain PASS.
+- Confirmed Compose used `task.repositoryPath`. It now resolves the Compose file inside the
+  candidate sandbox, rejects path/symlink escape through the same input boundary, and runs both
+  `up` and `down` with the candidate sandbox as cwd. An injected-process test proves the exact file
+  and cwd used without requiring a live Docker service.
+- Post-hardening full validation: `format:check`, `lint` (only known dirty-tree M11 warnings),
+  `typecheck`, `test` (32 files, 331 passing), `build`, `compose:check`, `smoke` — all PASS.
 
 - None.
 

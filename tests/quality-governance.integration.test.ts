@@ -714,6 +714,71 @@ describe("quality governance (M6)", () => {
     ).toMatchObject({ operationalStatus: "ASSURANCE_BLOCKED" });
   });
 
+  it("invalidates resilience evidence when a declared input changes after the verifier returns (M10 hardening)", async () => {
+    const fixture = await createResilienceFixtureRepository();
+    fixtures.push(fixture);
+    const resilienceVerifier: ResilienceVerifierPort = {
+      verify: async ({ candidateId, diffDigest, relevance }) => ({
+        state: "EXECUTED",
+        candidateId,
+        diffDigest,
+        executionInputDigest: "before",
+        executionInputs: ["generated/fault-config.json"],
+        scenarios: relevance.scenarios.map((scenario) => ({
+          scenario,
+          outcome: "PASSED",
+          exitCode: 0,
+          evidence: ["fixture scenario result"],
+        })),
+        evidence: ["scenario(s) executed with bound inputs"],
+      }),
+      captureEvidenceInputs: async () => ({
+        digest: "after",
+        inputs: ["generated/fault-config.json"],
+      }),
+    };
+    const performanceVerifier: PerformanceVerifierPort = {
+      measure: async ({ candidateId, diffDigest }) => ({
+        state: "MEASURED",
+        candidateId,
+        diffDigest,
+        metrics: [
+          {
+            name: "p95 latency",
+            unit: "ms",
+            baseline: 100,
+            candidate: 101,
+            lowerIsBetter: true,
+          },
+        ],
+        evidence: ["fixture trusted measurement"],
+      }),
+    };
+    const { service, store } = harness(
+      fixture.sandboxRoot,
+      performanceVerifier,
+      resilienceVerifier,
+    );
+    const created = await service.create({
+      prompt: "Introduce a network dependency. review verdict: approve",
+      repositoryPath: fixture.path,
+      verification: { expectedFile: "agent-output.md" },
+      qualityPreference: "CRITICAL",
+      performance: { command: "fixture-measure", metric: "p95 latency", maxRegressionPercent: 10 },
+      resilience: {
+        command: "npm run test:resilience",
+        evidenceInputs: ["generated/fault-config.json"],
+      },
+    });
+    await service.waitForIdle(created.id);
+
+    const run = await store.getRun(created.id);
+    const data = await qualityEvent(service, created.id);
+    expect(data.report.Resilience.state).toBe("NOT_CHECKED");
+    expect(data.report.Resilience.evidence.join(" ")).toContain("inputs changed");
+    expect(run?.trustState).toBe("CORRECTNESS_VERIFIED");
+  });
+
   it("keeps required resilience NOT_CHECKED when relevant scenarios exist but no spec is configured (M10)", async () => {
     const fixture = await createResilienceFixtureRepository();
     fixtures.push(fixture);

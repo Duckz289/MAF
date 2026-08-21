@@ -112,6 +112,12 @@ export interface ResilienceSpec {
   command: string;
   /** Restrict execution to these scenarios; absent means every plan-relevant scenario runs. */
   scenarios?: ResilienceScenario[] | undefined;
+  /**
+   * Candidate-relative files outside Git's tracked diff that materially affect scenario
+   * execution. Their contents are fingerprinted before and after verification; the Compose file
+   * is included automatically.
+   */
+  evidenceInputs?: string[] | undefined;
   composeFile?: string | undefined;
   timeoutMs?: number | undefined;
 }

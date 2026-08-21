@@ -113,8 +113,16 @@ export interface ResilienceMeasurement {
   state: "EXECUTED" | "NOT_CHECKED";
   candidateId: string;
   diffDigest: string;
+  /** Digest of declared candidate-local execution inputs, including the Compose configuration. */
+  executionInputDigest?: string | undefined;
+  executionInputs?: string[] | undefined;
   scenarios: ResilienceScenarioResult[];
   evidence: string[];
+}
+
+export interface ResilienceExecutionInputSnapshot {
+  digest: string;
+  inputs: string[];
 }
 
 export interface ResiliencePostureResult {

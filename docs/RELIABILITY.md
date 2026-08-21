@@ -83,7 +83,10 @@ scenario, or a failed scenario yields `NOT_CHECKED`/`FAIL`, never PASS, and gate
 diff with no relevant scenario passes deterministically without consulting the verifier (an
 uninspectable binary patch on an evidence path fails closed to `NOT_CHECKED` instead). Evidence
 states this in plain language: local scenario execution is resilience evidence, not production
-verification. Cancellation during verification is honored — a cancelled run stays `CANCELLED` and
+verification. Candidate-relative Compose configuration and up to 50 explicitly declared ignored
+or generated `evidenceInputs` are bounded, path-confined, and content-fingerprinted before and after
+execution; mutation or an unverifiable input yields `NOT_CHECKED`. Compose is launched from the
+candidate sandbox, never the mutable source repository. Cancellation during verification is honored — a cancelled run stays `CANCELLED` and
 never emits `RunCompleted`; in-flight scenario subprocesses are terminated promptly (SIGTERM, then
 a forced tree kill after 5s) rather than awaited, and on Windows the scenario command's real exit
 code is propagated explicitly (`exit $LASTEXITCODE`) because `powershell -Command` otherwise

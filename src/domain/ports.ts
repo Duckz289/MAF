@@ -1,3 +1,9 @@
+import type { PerformanceMeasurement } from "./performance";
+import type {
+  ResilienceExecutionInputSnapshot,
+  ResilienceMeasurement,
+  ResilienceRelevanceEvidence,
+} from "./resilience";
 import type {
   AgentCapabilities,
   AgentEvent,
@@ -9,14 +15,12 @@ import type {
   ModelHealth,
   RecoveryCapsule,
   Run,
+  RuntimeSignalSnapshot,
+  RuntimeSignals,
   Task,
   TokenUsage,
   Verification,
-  RuntimeSignalSnapshot,
-  RuntimeSignals,
 } from "./types";
-import type { PerformanceMeasurement } from "./performance";
-import type { ResilienceMeasurement, ResilienceRelevanceEvidence } from "./resilience";
 
 export interface RunStore {
   createTask(task: Task): Promise<void>;
@@ -127,6 +131,8 @@ export interface ResilienceVerifyInput {
  */
 export interface ResilienceVerifierPort {
   verify(input: ResilienceVerifyInput): Promise<ResilienceMeasurement>;
+  /** Re-capture declared candidate-local execution inputs after verify() returns. */
+  captureEvidenceInputs?(input: ResilienceVerifyInput): Promise<ResilienceExecutionInputSnapshot>;
 }
 
 export interface RepositorySnapshot {

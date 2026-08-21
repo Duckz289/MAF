@@ -4,7 +4,7 @@ All routes are versioned under `/api/v1`.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
-| `POST` | `/runs` | Create an asynchronous run; accepts optional budget/quality preferences and a bounded `performance: { command, metric, unit?, maxRegressionPercent, lowerIsBetter?, samples?, timeoutMs? }` measurement spec |
+| `POST` | `/runs` | Create an asynchronous run; accepts optional budget/quality preferences, bounded performance measurement, and candidate-local resilience specs |
 | `GET` | `/runs` | List operational summaries for all runs |
 | `GET` | `/runs/:id` | Inspect one run |
 | `GET` | `/runs/:id/events` | Stream SSE lifecycle events; `follow=false` returns a snapshot |
@@ -55,9 +55,18 @@ value presented as fact). `AssurancePlanned.plan` lists `required`/`notRequired`
 candidate/digest-bound clean-baseline measurement boundary; and
 `INDEPENDENT_REVIEW` has one bounded candidate/digest-bound reviewer session when required.
 Missing/invalid performance evidence is `NOT_CHECKED` and blocks when required; a measured delta
-over the project threshold is `FAIL`. `CONCURRENCY` and `RESILIENCE` still have no checker and remain
-`UNKNOWN`, never a synthetic pass. `RuntimeGraphDerived` exposes the evidence-backed deployment
-topology inferred from the candidate without conflating it with the source Project Graph.
+over the project threshold is `FAIL`. `CONCURRENCY` has no standalone checker and remains
+`UNKNOWN`; plan-required concurrency scenarios are enforced through Resilience. Missing or stale
+Resilience evidence is `NOT_CHECKED`, never a synthetic pass. `RuntimeGraphDerived` exposes the
+evidence-backed deployment topology inferred from the candidate without conflating it with the
+source Project Graph.
+
+Resilience specs accept `command`, optional scenario allowlisting, `timeoutMs`, a candidate-relative
+`composeFile`, and up to 50 candidate-relative `evidenceInputs`. The explicit inputs are for ignored
+or generated files that materially affect the fault harness; their bounded contents are fingerprinted
+before and after execution. The Compose file is included automatically and is always resolved and
+executed from the candidate sandbox. Missing, escaping, oversized, non-file, or mutated inputs make
+the result `NOT_CHECKED` rather than leaving stale evidence trusted.
 
 Security redaction is applied before run/task errors, changed filenames/runtime signals,
 verification output, recovery capsules, mode-transition evidence, events, and artifact previews
