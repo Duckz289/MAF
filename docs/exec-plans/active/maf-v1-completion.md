@@ -46,7 +46,7 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 | M11 | Longitudinal governance | DONE (VERIFIED) | 3449b54 |
 | M12 | Frontier baselines + strategy learning | DONE (VERIFIED) | b7a3156 |
 | M13 | PR / CI integration | DONE (VERIFIED) | 00a67bc |
-| M14 | Production feedback foundations | DONE (VERIFIED) | pending local commit |
+| M14 | Production feedback foundations | DONE (VERIFIED) | b67f17d |
 | M15 | Integrated benchmark + hardening | NOT STARTED | |
 
 ## Architectural decisions
