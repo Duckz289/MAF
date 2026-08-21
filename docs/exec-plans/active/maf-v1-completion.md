@@ -45,7 +45,7 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 | M10 | Production-like resilience | DONE (VERIFIED) | ff59363 + 7dfb1af |
 | M11 | Longitudinal governance | DONE (VERIFIED) | 3449b54 |
 | M12 | Frontier baselines + strategy learning | DONE (VERIFIED) | b7a3156 |
-| M13 | PR / CI integration | DONE (VERIFIED) | pending local commit |
+| M13 | PR / CI integration | DONE (VERIFIED) | 00a67bc |
 | M14 | Production feedback foundations | NOT STARTED | |
 | M15 | Integrated benchmark + hardening | NOT STARTED | |
 
