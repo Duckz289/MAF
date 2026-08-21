@@ -27,6 +27,7 @@
     "smoke": "node scripts/smoke.mjs",
     "benchmark": "tsx scripts/benchmark.ts",
     "benchmark:fixture": "tsx scripts/benchmark.ts benchmarks/manifest.fixture.json",
+    "benchmark:integrated-fixture": "tsx scripts/benchmark.ts benchmarks/manifest.integrated.fixture.json",
     "real-agent:smoke": "tsx scripts/real-agent-smoke.ts",
     "compose:check": "docker compose config --quiet",
     "validate": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build && npm run compose:check && npm run smoke"

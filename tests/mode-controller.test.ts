@@ -14,6 +14,8 @@ const run = (): Run => ({
   taskId: "task-1",
   state: "RUNNING",
   executionMode: "GUIDED",
+  desiredMode: "GUIDED",
+  effectiveMode: "GUIDED",
   verificationState: "PROPOSED",
   agent: "fixture",
   model: "native",
@@ -61,10 +63,18 @@ describe("AdaptiveModeController", () => {
     });
     expect(decision?.to).toBe("SOLO_NATIVE");
     if (!decision) throw new Error("Expected a mode decision");
-    const event = controller.apply(run(), decision);
+    const target = run();
+    const event = controller.apply(target, decision, {
+      method: "SESSION_BOUNDARY",
+      evidence: { sessionActive: false },
+    });
     expect(event.type).toBe("ModeChanged");
     expect(event.data.reason).toContain("coherent native reasoning");
     expect(event.data.evidence).toMatchObject({ uncertainty: 0.9, crossEdges: 6 });
+    expect(event.data.enforcement).toMatchObject({ method: "SESSION_BOUNDARY" });
+    expect(target.desiredMode).toBe("SOLO_NATIVE");
+    expect(target.effectiveMode).toBe("SOLO_NATIVE");
+    expect(target.executionMode).toBe("SOLO_NATIVE");
   });
 
   it("narrows stabilized work to STRICT", () => {

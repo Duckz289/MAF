@@ -3,6 +3,7 @@ import {
   type Event,
   type ExecutionMode,
   type ModeChangedData,
+  type ModeEnforcementMethod,
   type Run,
   type RuntimeSignals,
   type RuntimeSignalSnapshot,
@@ -167,8 +168,20 @@ export class AdaptiveModeController {
     return undefined;
   }
 
-  apply(run: Run, decision: ModeDecision, now = new Date().toISOString()): Event<ModeChangedData> {
-    const from = run.executionMode;
+  /**
+   * Enforces a decided transition on the run. This is the only place effective mode changes, and
+   * it always records how the change was enforced. Desired mode follows because an enforced mode
+   * is by definition also the desired one at enforcement time.
+   */
+  apply(
+    run: Run,
+    decision: ModeDecision,
+    enforcement: { method: ModeEnforcementMethod; evidence: Record<string, unknown> },
+    now = new Date().toISOString(),
+  ): Event<ModeChangedData> {
+    const from = run.effectiveMode;
+    run.effectiveMode = decision.to;
+    run.desiredMode = decision.to;
     run.executionMode = decision.to;
     run.updatedAt = now;
     return {
@@ -181,6 +194,7 @@ export class AdaptiveModeController {
         to: decision.to,
         reason: decision.reason,
         evidence: decision.evidence,
+        enforcement,
         ...(decision.signalSnapshotId ? { signalSnapshotId: decision.signalSnapshotId } : {}),
         ...(decision.evidenceIds ? { evidenceIds: decision.evidenceIds } : {}),
       },

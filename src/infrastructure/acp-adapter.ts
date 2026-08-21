@@ -40,6 +40,8 @@ export class ACPAdapter implements AgentAdapter {
       contextManagement: true,
       streaming: true,
       resumeSession: false,
+      livePolicyUpdate: false,
+      safeSessionRestart: false,
       oauthAuth: true,
       apiKeyAuth: true,
       extensions: { acpV1: true },
@@ -69,7 +71,7 @@ export class ACPAdapter implements AgentAdapter {
         TEMP: process.env.TEMP,
         TMP: process.env.TMP,
         HARNESS_RUN_ID: input.run.id,
-        HARNESS_MODE: input.run.executionMode,
+        HARNESS_MODE: input.run.effectiveMode,
         ...this.config.environment,
       },
     });

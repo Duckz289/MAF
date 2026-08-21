@@ -1,0 +1,118 @@
+{
+  "tasks": [
+    {
+      "id": "checkpoint-01-mechanical",
+      "prompt": "Apply a small mechanical change",
+      "expectedVerification": "deterministic fixture verification",
+      "family": "SMALL_MECHANICAL",
+      "sequence": { "id": "maf-v1-fixture-evolution", "checkpoint": 1 },
+      "changeability": {
+        "comparisonClass": "fixture-change",
+        "workload": "append one bounded checkpoint artifact and verify it",
+        "role": "EVOLUTION"
+      }
+    },
+    {
+      "id": "checkpoint-02-cross-module",
+      "prompt": "Apply a cross-module feature",
+      "expectedVerification": "deterministic fixture verification",
+      "family": "CROSS_MODULE_FEATURE",
+      "sequence": { "id": "maf-v1-fixture-evolution", "checkpoint": 2 }
+    },
+    {
+      "id": "checkpoint-03-repair",
+      "prompt": "Exercise verifier repair",
+      "expectedVerification": "deterministic fixture verification",
+      "family": "VERIFIER_REPAIR",
+      "sequence": { "id": "maf-v1-fixture-evolution", "checkpoint": 3 }
+    },
+    {
+      "id": "checkpoint-04-security",
+      "prompt": "Exercise a security-sensitive change",
+      "expectedVerification": "deterministic fixture verification",
+      "family": "SECURITY_SENSITIVE",
+      "sequence": { "id": "maf-v1-fixture-evolution", "checkpoint": 4 }
+    },
+    {
+      "id": "checkpoint-05-data",
+      "prompt": "Exercise data consistency change",
+      "expectedVerification": "deterministic fixture verification",
+      "family": "DATA_CONSISTENCY",
+      "sequence": { "id": "maf-v1-fixture-evolution", "checkpoint": 5 }
+    },
+    {
+      "id": "checkpoint-06-network",
+      "prompt": "Exercise network performance change",
+      "expectedVerification": "deterministic fixture verification",
+      "family": "NETWORK_PERFORMANCE",
+      "sequence": { "id": "maf-v1-fixture-evolution", "checkpoint": 6 }
+    },
+    {
+      "id": "checkpoint-07-resilience",
+      "prompt": "Exercise resilience injection",
+      "expectedVerification": "deterministic fixture verification",
+      "family": "RESILIENCE_INJECTION",
+      "sequence": { "id": "maf-v1-fixture-evolution", "checkpoint": 7 }
+    },
+    {
+      "id": "checkpoint-08-provider",
+      "prompt": "Exercise provider recovery",
+      "expectedVerification": "deterministic fixture verification",
+      "family": "PROVIDER_RECOVERY",
+      "sequence": { "id": "maf-v1-fixture-evolution", "checkpoint": 8 }
+    },
+    {
+      "id": "checkpoint-09-budget",
+      "prompt": "Exercise insufficient budget",
+      "expectedVerification": "deterministic fixture verification",
+      "family": "INSUFFICIENT_BUDGET",
+      "sequence": { "id": "maf-v1-fixture-evolution", "checkpoint": 9 }
+    },
+    {
+      "id": "checkpoint-10-n-plus-one",
+      "prompt": "Measure the next comparable change",
+      "expectedVerification": "deterministic fixture verification",
+      "family": "LONG_HORIZON_EVOLUTION",
+      "sequence": { "id": "maf-v1-fixture-evolution", "checkpoint": 10 },
+      "changeability": {
+        "comparisonClass": "fixture-change",
+        "workload": "append one bounded checkpoint artifact and verify it",
+        "role": "N_PLUS_ONE"
+      }
+    }
+  ],
+  "variants": [
+    {
+      "strategy": "NATIVE",
+      "command": "node",
+      "args": ["--import", "tsx", "benchmarks/fixture-executor.ts", "NATIVE"],
+      "cwd": ".",
+      "identity": {
+        "adapter": "filesystem-fixture",
+        "model": "none",
+        "provider": "local",
+        "executionMode": "NATIVE",
+        "qualityPreference": "BALANCED",
+        "verificationProfile": "deterministic-fixture",
+        "reviewPolicy": "NONE",
+        "baseline": "NATIVE_FRONTIER"
+      }
+    },
+    {
+      "strategy": "MAF_ADAPTIVE",
+      "command": "node",
+      "args": ["--import", "tsx", "benchmarks/fixture-executor.ts", "MAF_ADAPTIVE"],
+      "cwd": ".",
+      "identity": {
+        "adapter": "filesystem-fixture",
+        "model": "none",
+        "provider": "local",
+        "executionMode": "GUIDED",
+        "qualityPreference": "BALANCED",
+        "verificationProfile": "deterministic-fixture",
+        "reviewPolicy": "NONE",
+        "baseline": "CHALLENGER"
+      }
+    }
+  ]
+}

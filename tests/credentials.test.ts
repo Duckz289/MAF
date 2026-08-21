@@ -21,6 +21,18 @@ describe("credential boundary", () => {
         metadata: {},
       }),
     ).toThrow("references");
+    expect(() =>
+      store.add({
+        id: "smuggled-binding",
+        ownerId: "owner",
+        provider: "openai",
+        strategy: "USER_API_KEY",
+        credentialReference: "credential://owner/ghp_AAAA1111BBBB2222CCCC3333DDDD4444EEEE",
+        scope: ["models.execute"],
+        status: "ACTIVE",
+        metadata: {},
+      }),
+    ).toThrow("references");
   });
 
   it("redacts secret-shaped fields but preserves references", () => {

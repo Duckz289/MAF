@@ -49,6 +49,7 @@ export const createAdaptiveFixtureRepository = async (): Promise<FixtureReposito
     "src/infrastructure/resolver.ts":
       'import { canReadMedia } from "../domain/permissions";\nexport const resolveMedia = (): boolean => canReadMedia();\n',
     "src/domain/permissions.ts": "export const canReadMedia = (): boolean => true;\n",
+    "src/api/routes.ts": "export const routes: string[] = [];\n",
   };
   for (const [file, source] of Object.entries(modules)) {
     const target = path.join(fixture.path, file);
@@ -59,6 +60,20 @@ export const createAdaptiveFixtureRepository = async (): Promise<FixtureReposito
   await runProcess("git", ["commit", "-m", "adaptive dependency fixture"], {
     cwd: fixture.path,
   });
+  return fixture;
+};
+
+export const createSecuritySensitiveFixtureRepository = async (): Promise<FixtureRepository> => {
+  const fixture = await createFixtureRepository();
+  const target = path.join(fixture.path, "src/domain/auth-service.ts");
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(
+    target,
+    "export const authenticateSession = (token: string): boolean => token.length > 0;\n",
+    "utf8",
+  );
+  await runProcess("git", ["add", "."], { cwd: fixture.path });
+  await runProcess("git", ["commit", "-m", "auth fixture"], { cwd: fixture.path });
   return fixture;
 };
 

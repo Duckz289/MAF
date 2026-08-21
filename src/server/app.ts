@@ -12,6 +12,7 @@ import { InMemoryProjectRegistry } from "../application/project-registry";
 import { RunService } from "../application/run-service";
 import { EvidenceRuntimeSignalCollector } from "../application/runtime-signal-collector";
 import type { RunStore } from "../domain/ports";
+import { redactSensitiveData } from "../domain/security";
 import {
   InMemoryPlatformApiKeys,
   LocalDevelopmentAuth,
@@ -28,6 +29,8 @@ import {
   OptionalCodebaseMemoryIndex,
 } from "../infrastructure/project-brain";
 import { DomainTelemetryRecorder, PostgresTelemetrySink } from "../infrastructure/telemetry";
+import { CommandPerformanceVerifier } from "../infrastructure/performance-verifier";
+import { CommandResilienceVerifier } from "../infrastructure/resilience-verifier";
 import { CommandVerifier } from "../infrastructure/verifier";
 
 const createRunSchema = z.object({
@@ -39,6 +42,39 @@ const createRunSchema = z.object({
     .object({
       command: z.string().max(4_000).optional(),
       expectedFile: z.string().max(1_000).optional(),
+      timeoutMs: z.number().int().positive().max(600_000).optional(),
+    })
+    .optional(),
+  performance: z
+    .object({
+      command: z.string().min(1).max(4_000),
+      metric: z.string().min(1).max(120),
+      unit: z.string().min(1).max(40).optional(),
+      maxRegressionPercent: z.number().nonnegative().max(10_000),
+      lowerIsBetter: z.boolean().optional(),
+      samples: z.number().int().min(1).max(10).optional(),
+      timeoutMs: z.number().int().positive().max(600_000).optional(),
+    })
+    .optional(),
+  resilience: z
+    .object({
+      command: z.string().min(1).max(4_000),
+      scenarios: z
+        .array(
+          z.enum([
+            "HIGH_LATENCY",
+            "TIMEOUT",
+            "CONNECTION_RESET",
+            "DUPLICATE_REQUEST",
+            "OUT_OF_ORDER_RESPONSE",
+            "MALFORMED_UPSTREAM_RESPONSE",
+            "RATE_LIMITING",
+          ]),
+        )
+        .max(7)
+        .optional(),
+      evidenceInputs: z.array(z.string().min(1).max(1_000)).max(50).optional(),
+      composeFile: z.string().min(1).max(1_000).optional(),
       timeoutMs: z.number().int().positive().max(600_000).optional(),
     })
     .optional(),
@@ -62,12 +98,35 @@ const createRunSchema = z.object({
   model: z.string().optional(),
   provider: z.string().optional(),
   credentialReferences: z.array(z.string().startsWith("credential://")).max(20).optional(),
+  budget: z
+    .object({
+      mode: z.enum(["ADVISORY", "HARD"]),
+      limitUsd: z.number().nonnegative(),
+    })
+    .optional(),
+  qualityPreference: z.enum(["FAST", "BALANCED", "HIGH", "CRITICAL"]).optional(),
 });
+const healthLedgerQuerySchema = z.object({
+  projectId: z.string().min(1).max(200).optional(),
+});
+const ciEvidenceRequestSchema = z.object({
+  provider: z.string().trim().min(1).max(200),
+  externalRunId: z.string().trim().min(1).max(500),
+});
+const productionFeedbackRequestSchema = z.object({
+  provider: z.string().trim().min(1).max(200),
+  externalEventId: z.string().trim().min(1).max(500),
+});
+const productionFeedbackQuerySchema = z.object({ projectId: z.string().min(1).max(200) });
 
 const transitionSchema = z.object({
   to: z.enum(["STRICT", "GUIDED", "SOLO_NATIVE"]),
   reason: z.string().min(1).max(2_000),
   evidence: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])),
+});
+
+const resumeSchema = z.object({
+  credentialReferences: z.array(z.string().startsWith("credential://")).max(20).optional(),
 });
 
 const projectSchema = z.object({
@@ -178,7 +237,11 @@ export const createApp = async (): Promise<AppRuntime> => {
             ? { maxBudgetUsd: Number(process.env.CLAUDE_MAX_BUDGET_USD) }
             : {}),
         })
-      : new NativeCliAdapter(agentCommand);
+      : new NativeCliAdapter({
+          ...agentCommand,
+          // The bundled fixture agent implements the live policy-update protocol.
+          capabilities: { livePolicyUpdate: true },
+        });
   const sandboxRoot = path.resolve(
     process.env.SANDBOX_ROOT ?? path.join(process.cwd(), ".adaptive-harness", "worktrees"),
   );
@@ -188,6 +251,8 @@ export const createApp = async (): Promise<AppRuntime> => {
     agent,
     sandbox: new LocalWorktreeSandbox(sandboxRoot, retention),
     verifier: new CommandVerifier(),
+    performanceVerifier: new CommandPerformanceVerifier(),
+    resilienceVerifier: new CommandResilienceVerifier(),
     repositoryIndex,
     projectBrain: brain,
     contextBuilder: new GuidedContextBuilder(brain),
@@ -253,6 +318,24 @@ export const createApp = async (): Promise<AppRuntime> => {
   app.get<{ Params: { id: string } }>("/api/v1/runs/:id/verifications", async (request) =>
     runs.verifications(request.params.id),
   );
+  app.get<{ Params: { id: string } }>("/api/v1/runs/:id/delivery", async (request, reply) => {
+    const decision = await runs.delivery(request.params.id);
+    return decision
+      ? redactSensitiveData(decision)
+      : reply.code(404).send({ error: "DELIVERY_HANDOFF_NOT_FOUND" });
+  });
+  app.post<{ Params: { id: string } }>("/api/v1/runs/:id/delivery/ci-evidence", async (request) => {
+    const body = ciEvidenceRequestSchema.parse(request.body);
+    return redactSensitiveData(await runs.collectCiEvidence(request.params.id, body));
+  });
+  app.get("/api/v1/production-feedback", async (request) => {
+    const query = productionFeedbackQuerySchema.parse(request.query);
+    return redactSensitiveData(await runs.productionFeedback(query.projectId));
+  });
+  app.post("/api/v1/production-feedback/collect", async (request) => {
+    const body = productionFeedbackRequestSchema.parse(request.body);
+    return redactSensitiveData(await runs.collectProductionFeedback(body));
+  });
   app.get<{ Params: { id: string } }>("/api/v1/runs/:id/runtime-signals", async (request) =>
     runs.signalSnapshots(request.params.id),
   );
@@ -266,6 +349,41 @@ export const createApp = async (): Promise<AppRuntime> => {
     const body = transitionSchema.parse(request.body);
     return runs.transition(request.params.id, body.to, body.reason, body.evidence);
   });
+  app.get<{ Params: { id: string } }>(
+    "/api/v1/runs/:id/recovery-capsule",
+    async (request, reply) => {
+      const capsule = await runs.recoveryCapsule(request.params.id);
+      return capsule ? capsule : reply.code(404).send({ error: "RECOVERY_CAPSULE_NOT_FOUND" });
+    },
+  );
+  app.post<{ Params: { id: string }; Body: { credentialReferences?: string[] } }>(
+    "/api/v1/runs/:id/resume",
+    async (request, reply) => {
+      const body = resumeSchema.parse(request.body ?? {});
+      try {
+        return await runs.resume(request.params.id, body.credentialReferences ?? []);
+      } catch (error) {
+        return reply.code(409).send({
+          error: "RESUME_REFUSED",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+  );
+  app.post("/api/v1/system/emergency-stop", async () => runs.emergencyStop());
+  // M11: codebase health ledger — samples plus trend/maintenance proposal. Never a score.
+  app.get("/api/v1/health-ledger", async (request, reply) => {
+    const parsed = healthLedgerQuerySchema.safeParse(request.query);
+    if (!parsed.success) return reply.code(400).send({ error: "INVALID_QUERY" });
+    return redactSensitiveData(await runs.healthLedger(parsed.data.projectId));
+  });
+  app.post("/api/v1/system/resume-new-runs", async () => {
+    runs.resumeNewRuns();
+    return { emergencyStopped: runs.isEmergencyStopped() };
+  });
+  app.get("/api/v1/system/status", async () => ({
+    emergencyStopped: runs.isEmergencyStopped(),
+  }));
   app.get<{ Params: { id: string }; Querystring: { after?: string; follow?: string } }>(
     "/api/v1/runs/:id/events",
     async (request, reply) => {

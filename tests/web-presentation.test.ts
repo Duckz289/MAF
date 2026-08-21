@@ -23,7 +23,15 @@ const run = (overrides: Partial<Run> = {}): Run => ({
   cost: { total: 0 },
   task: "Fix authorization",
   currentPhase: "Agent execution",
-  modeExplanation: { reason: "Initial mode", latestSignals: {}, timeline: [] },
+  desiredMode: "GUIDED",
+  effectiveMode: "GUIDED",
+  modeExplanation: {
+    reason: "Initial mode",
+    desiredMode: "GUIDED",
+    effectiveMode: "GUIDED",
+    latestSignals: {},
+    timeline: [],
+  },
   operationalStatus: "RUNNING",
   ...overrides,
 });
@@ -40,7 +48,25 @@ describe("frontend presentation rules", () => {
     expect(
       matchesRunFilter(run({ state: "FAILED", operationalStatus: "FAILED" }), "ATTENTION"),
     ).toBe(true);
-    expect(matchesRunFilter(run({ verificationState: "VERIFIED" }), "VERIFIED")).toBe(true);
+    expect(
+      matchesRunFilter(
+        run({ verificationState: "VERIFIED", operationalStatus: "VERIFIED" }),
+        "VERIFIED",
+      ),
+    ).toBe(true);
+    expect(
+      matchesRunFilter(
+        run({
+          state: "COMPLETED",
+          verificationState: "VERIFIED",
+          operationalStatus: "ASSURANCE_BLOCKED",
+        }),
+        "VERIFIED",
+      ),
+    ).toBe(false);
+    expect(matchesRunFilter(run({ operationalStatus: "ASSURANCE_BLOCKED" }), "ATTENTION")).toBe(
+      true,
+    );
   });
 
   it("never renders unavailable provider cost as zero dollars", () => {

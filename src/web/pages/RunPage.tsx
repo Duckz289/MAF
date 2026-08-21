@@ -24,7 +24,30 @@ interface RunEvent {
   id: string;
   type: string;
   timestamp: string;
+  data?: unknown;
 }
+
+interface BudgetAllocatedData {
+  mode: "ADVISORY" | "HARD";
+  configured: boolean;
+  allocation: { execution: number; verification: number; recovery: number; total: number } | null;
+}
+
+interface CostEstimatedData {
+  estimate: { low: number; high: number; confidence: string; basis: string } | null;
+}
+
+interface QualityAssessedData {
+  report?: Record<string, { state: string; evidence: string[] }>;
+}
+
+const qualityStateLabel = (state: string | undefined): string => {
+  if (state === "PASS") return "Đã xác minh";
+  if (state === "FAIL") return "Phát hiện hồi quy";
+  if (state === "NOT_REQUIRED") return "Không yêu cầu";
+  if (state === "WARN") return "Có cảnh báo";
+  return "Chưa kiểm tra";
+};
 
 const useStyles = makeStyles({
   back: { marginBottom: "12px" },
@@ -150,6 +173,15 @@ export function RunPage({
       })
       .catch(() => setEvents([]));
   }, [run]);
+  const budgetAllocated = events.find((event) => event.type === "BudgetAllocated")?.data as
+    | BudgetAllocatedData
+    | undefined;
+  const costEstimated = events.find((event) => event.type === "CostEstimated")?.data as
+    | CostEstimatedData
+    | undefined;
+  const quality = events.filter((event) => event.type === "QualityAssessed").at(-1)?.data as
+    | QualityAssessedData
+    | undefined;
   if (!run)
     return (
       <EmptyState
@@ -170,7 +202,8 @@ export function RunPage({
   };
   const currentIndex = phaseIndex(run);
   const phases = ["Hiểu kho mã", "Điều tra", "Triển khai", "Xác minh"];
-  const needsAttention = run.state === "FAILED" || run.operationalStatus === "STUCK";
+  const needsAttention =
+    run.state === "FAILED" || run.state === "PAUSED" || run.operationalStatus === "STUCK";
   return (
     <>
       <Button
@@ -231,9 +264,11 @@ export function RunPage({
         <MessageBarBody>
           {needsAttention
             ? "Tác vụ cần bạn xem lại. Mở chi tiết lỗi bên dưới để xác định bước tiếp theo."
-            : run.verificationState === "VERIFIED"
-              ? "Tác vụ đã vượt qua xác minh và sẵn sàng bàn giao."
-              : "Không cần thao tác lúc này. MAF sẽ chỉ bàn giao sau khi có kết quả xác minh."}
+            : run.verificationState === "VERIFIED" && run.trustState === "MERGE_ELIGIBLE"
+              ? "Tác vụ đã vượt qua các kiểm tra bắt buộc và sẵn sàng bàn giao."
+              : run.verificationState === "VERIFIED"
+                ? "Đã xác minh tính đúng đắn, nhưng bằng chứng đảm bảo bắt buộc chưa đủ để bàn giao."
+                : "Không cần thao tác lúc này. MAF sẽ chỉ bàn giao sau khi có kết quả xác minh."}
         </MessageBarBody>
       </MessageBar>
       <div className={styles.layout}>
@@ -296,9 +331,11 @@ export function RunPage({
               </Text>
             </div>
             {run.error ? (
-              <MessageBar intent="error">
+              <MessageBar intent={run.state === "PAUSED" ? "warning" : "error"}>
                 <MessageBarBody>
-                  Tác vụ không hoàn tất xác minh.
+                  {run.state === "PAUSED"
+                    ? "Tác vụ đã tạm dừng an toàn — trạng thái khôi phục đã được lưu và có thể tiếp tục."
+                    : "Tác vụ không hoàn tất xác minh."}
                   <details>
                     <summary>Chi tiết kỹ thuật</summary>
                     {run.error}
@@ -343,16 +380,59 @@ export function RunPage({
               </Text>
               <div className={styles.fact}>
                 <Text className={styles.quiet} size={200}>
-                  Execution mode
+                  Execution mode (effective)
                 </Text>
-                <Text>{run.executionMode}</Text>
+                <Text>{run.effectiveMode ?? run.executionMode}</Text>
               </div>
+              {run.desiredMode && run.desiredMode !== run.effectiveMode ? (
+                <div className={styles.fact}>
+                  <Text className={styles.quiet} size={200}>
+                    Desired mode (not yet enforced)
+                  </Text>
+                  <Text>
+                    {run.desiredMode}
+                    {run.modeExplanation.pendingEnforcement
+                      ? ` — pending ${run.modeExplanation.pendingEnforcement.method}`
+                      : ""}
+                  </Text>
+                </div>
+              ) : null}
               <div className={styles.fact}>
                 <Text className={styles.quiet} size={200}>
                   Snapshot ID
                 </Text>
                 <Text>{run.modeExplanation.latestSnapshotId ?? "Chưa có snapshot"}</Text>
               </div>
+              <div className={styles.fact}>
+                <Text className={styles.quiet} size={200}>
+                  Ngân sách
+                </Text>
+                <Text>
+                  {!budgetAllocated || !budgetAllocated.configured
+                    ? "Chưa cấu hình (không giới hạn)"
+                    : budgetAllocated.mode === "HARD"
+                      ? `Giới hạn cứng — $${budgetAllocated.allocation?.total.toFixed(2)}`
+                      : `Khuyến nghị — $${budgetAllocated.allocation?.total.toFixed(2)}`}
+                </Text>
+              </div>
+              {costEstimated?.estimate ? (
+                <div className={styles.fact}>
+                  <Text className={styles.quiet} size={200}>
+                    Ước tính chi phí ({costEstimated.estimate.confidence})
+                  </Text>
+                  <Text>
+                    ${costEstimated.estimate.low.toFixed(2)} – $
+                    {costEstimated.estimate.high.toFixed(2)}
+                  </Text>
+                </div>
+              ) : (
+                <div className={styles.fact}>
+                  <Text className={styles.quiet} size={200}>
+                    Ước tính chi phí
+                  </Text>
+                  <Text>Chưa đủ dữ liệu lịch sử</Text>
+                </div>
+              )}
               <div>
                 <Text weight="semibold">Tín hiệu runtime</Text>
                 {Object.entries(run.modeExplanation.latestSignals).length ? (
@@ -371,12 +451,27 @@ export function RunPage({
                 )}
               </div>
               <div>
+                <Text weight="semibold">Bằng chứng chất lượng</Text>
+                {(["Security", "Performance"] as const).map((dimension) => {
+                  const result = quality?.report?.[dimension];
+                  return (
+                    <div className={styles.signal} key={dimension}>
+                      <Text size={200}>{dimension}</Text>
+                      <Text className={styles.quiet} size={200}>
+                        {qualityStateLabel(result?.state)}
+                      </Text>
+                    </div>
+                  );
+                })}
+              </div>
+              <div>
                 <Text weight="semibold">Chuyển đổi chế độ</Text>
                 {run.modeExplanation.timeline.length ? (
                   run.modeExplanation.timeline.map((transition) => (
                     <div className={styles.signal} key={`${transition.timestamp}-${transition.to}`}>
                       <Text size={200}>
                         {transition.from} sang {transition.to}
+                        {transition.enforcement ? ` (${transition.enforcement})` : ""}
                       </Text>
                       <Text className={styles.quiet} size={200}>
                         {transition.reason}

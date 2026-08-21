@@ -5,8 +5,14 @@ export const isNavigationSelected = (path: string, href: string) =>
 
 export const matchesRunFilter = (run: Run, filter: string) => {
   if (filter === "ACTIVE") return run.state === "RUNNING" || run.state === "QUEUED";
-  if (filter === "ATTENTION") return run.state === "FAILED" || run.operationalStatus === "STUCK";
-  if (filter === "VERIFIED") return run.verificationState === "VERIFIED";
+  if (filter === "ATTENTION")
+    return (
+      run.state === "FAILED" ||
+      run.state === "PAUSED" ||
+      run.operationalStatus === "STUCK" ||
+      run.operationalStatus === "ASSURANCE_BLOCKED"
+    );
+  if (filter === "VERIFIED") return run.operationalStatus === "VERIFIED";
   return true;
 };
 

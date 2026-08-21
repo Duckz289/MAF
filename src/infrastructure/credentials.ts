@@ -8,13 +8,13 @@ import type {
   UserAuthProvider,
   UserSession,
 } from "../domain/ports";
-import { redactSensitiveData } from "../domain/security";
+import { isSafeCredentialReference, redactSensitiveData } from "../domain/security";
 
 export class CredentialBindingStore {
   private readonly bindings = new Map<string, CredentialBinding>();
 
   add(binding: CredentialBinding): void {
-    if (!binding.credentialReference.startsWith("credential://")) {
+    if (!isSafeCredentialReference(binding.credentialReference)) {
       throw new Error("Credential bindings must store references, never raw credentials");
     }
     this.bindings.set(binding.id, structuredClone(binding));
@@ -31,7 +31,7 @@ export class EnvironmentCredentialResolver implements CredentialResolver {
   constructor(private readonly references: Record<string, string>) {}
 
   async resolve(reference: string, provider: string): Promise<string> {
-    if (!reference.startsWith("credential://")) throw new Error("Raw credential input rejected");
+    if (!isSafeCredentialReference(reference)) throw new Error("Raw credential input rejected");
     const environmentName = this.references[reference];
     if (!environmentName) throw new Error(`No credential mapping for ${reference}`);
     const secret = process.env[environmentName];

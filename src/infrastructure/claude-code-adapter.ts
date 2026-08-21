@@ -37,6 +37,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       contextManagement: true,
       streaming: true,
       resumeSession: false,
+      livePolicyUpdate: false,
+      safeSessionRestart: false,
       oauthAuth: true,
       apiKeyAuth: true,
       extensions: { claudeStreamJson: true },
@@ -97,7 +99,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         APPDATA: process.env.APPDATA,
         LOCALAPPDATA: process.env.LOCALAPPDATA,
         HARNESS_RUN_ID: active.input.run.id,
-        HARNESS_MODE: active.input.run.executionMode,
+        HARNESS_MODE: active.input.run.effectiveMode,
       },
     });
     active.child = child;

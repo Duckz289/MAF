@@ -23,7 +23,12 @@ export class DomainTelemetryRecorder implements TelemetrySink {
         "harness.run_id": sanitized.runId,
         "harness.initial_mode": sanitized.initialMode,
         "harness.final_mode": sanitized.finalMode,
+        "harness.final_desired_mode": sanitized.finalDesiredMode,
         "harness.execution_mode": sanitized.executionMode,
+        "harness.policy.live_updates": sanitized.policyLiveUpdates,
+        "harness.policy.boundary_enforcements": sanitized.policyBoundaryEnforcements,
+        "harness.policy.safe_restarts": sanitized.policySafeRestarts,
+        "harness.policy.pending_at_completion": sanitized.pendingPolicyAtCompletion,
         "harness.verified_success": sanitized.verifiedSuccess,
         "harness.signal_snapshots": sanitized.signalSnapshots,
         "harness.dependency_expansion": sanitized.dependencyExpansion,
@@ -74,6 +79,13 @@ export class DomainTelemetryRecorder implements TelemetrySink {
 
   snapshot(): TelemetryRecord[] {
     return this.records.map((record) => structuredClone(record));
+  }
+
+  async listRecords(limit?: number, projectId?: string): Promise<TelemetryRecord[]> {
+    const records = this.snapshot().filter(
+      (record) => projectId === undefined || record.projectId === projectId,
+    );
+    return limit === undefined ? records : records.slice(-limit);
   }
 }
 
@@ -143,5 +155,16 @@ export class PostgresTelemetrySink implements TelemetrySink {
     );
     const value = result.rows[0]?.value;
     return value === null || value === undefined ? null : Number(value);
+  }
+
+  async listRecords(limit?: number, projectId?: string): Promise<TelemetryRecord[]> {
+    const boundedLimit = Math.min(500, Math.max(0, limit ?? 500));
+    const result = await this.pool.query<{ payload: TelemetryRecord }>(
+      `SELECT payload FROM telemetry
+       WHERE ($1::text IS NULL OR payload->>'projectId' = $1)
+       ORDER BY timestamp DESC LIMIT $2`,
+      [projectId ?? null, boundedLimit],
+    );
+    return result.rows.map((row) => row.payload).reverse();
   }
 }
