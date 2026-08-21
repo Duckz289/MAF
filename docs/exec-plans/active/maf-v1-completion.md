@@ -8,7 +8,7 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 - Start branch: `adaptive-harness/runtime-signals-v0.1` at `357ab60` (clean tree).
 - Baseline validation (2026-08-19): `format:check`, `lint`, `typecheck`, `test` (49 passing),
   `build` (server + UI), `compose:check`, `smoke` — all PASS.
-- Current milestone: M11 — Codebase Health Ledger (M10 committed locally).
+- Current milestone: M12 — Frontier Baselines and Strategy Learning (M11 implementation verified).
 
 ## Confirmed repository facts
 
@@ -42,8 +42,8 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 | M7 | Architecture governance + debt delta | DONE (VERIFIED) | 48fbfde |
 | M8 | Security assurance (8A–8B) | DONE (VERIFIED) | 07337bc + 539f000 |
 | M9 | Performance & runtime assurance | DONE (VERIFIED) | 461a33d |
-| M10 | Production-like resilience | DONE (VERIFIED) | ff59363 |
-| M11 | Longitudinal governance | NOT STARTED | |
+| M10 | Production-like resilience | DONE (VERIFIED) | ff59363 + 7dfb1af |
+| M11 | Longitudinal governance | DONE (VERIFIED) | pending local commit |
 | M12 | Frontier baselines + strategy learning | NOT STARTED | |
 | M13 | PR / CI integration | NOT STARTED | |
 | M14 | Production feedback foundations | NOT STARTED | |
@@ -911,7 +911,72 @@ made suppression depend on call order and retained one unsigned PEM body in the 
 - Post-hardening full validation: `format:check`, `lint` (only known dirty-tree M11 warnings),
   `typecheck`, `test` (32 files, 331 passing), `build`, `compose:check`, `smoke` — all PASS.
 
-- None.
+## M11 design (Codebase Health Ledger)
+
+1. `src/domain/health.ts` records a vector rather than a scalar: structural repository observations,
+   per-change additions, and project-scoped operational/changeability proxies. Missing groups and
+   partial graph coverage/truncation remain explicit unknowns. Coverage uses successful digest/parse
+   evidence rather than attempted files and carries a scope fingerprint. Completeness is scoped to
+   file scanning; import relations are explicitly `BOUNDED_PATTERN_SCAN` evidence (including static,
+   side-effect, dynamic, and CommonJS local imports), not a compiler-complete graph. Import cycles use deterministic SCCs (including
+   a one-file self-cycle); neutral repository/package growth is `UNKNOWN`, not declared good/bad.
+2. Change metrics reuse M7 architecture governance and deterministically scan unsafe type escapes,
+   skipped tests, complexity hotspots, cross-file duplicate blocks, relative imports, and package
+   dependency additions. Type/complexity scans are limited to supported source files with strings
+   and comments lexically removed; overlapping duplicate windows collapse to a conservative
+   cross-file relationship. `addedPackageDependencies` counts only genuinely new manifest keys within
+   `dependencies`/`devDependencies`/`peerDependencies`/`optionalDependencies` sections of
+   `package.json`; upgrades, reformats, section moves, isolated JSON properties, scripts, and
+   non-JSON manifests cannot inflate it.
+   Binary, gitlink, and rename/copy-only entries are carried as bounded uninspectable evidence;
+   their change directions remain `UNKNOWN` and cannot trigger a clean-looking zero conclusion.
+3. Every sample carries an opaque canonical-path-derived project identity plus
+   run/candidate/diff-digest/resolved-base-revision/time provenance and the explicit evidence basis
+   `VERIFIED_CANDIDATE`, plus `BASE_REVISION` structural and `VERIFIED_CANDIDATE_DIFF` change bases.
+   Structure is frozen before candidate execution. Failed/quarantined candidates stay out of the ledger, while a passing sample
+   remains honestly pre-merge (not CI/deployment/production evidence). Trend computation refuses
+   cross-project comparison and keeps all structural directions `UNKNOWN` because chronological
+   samples do not prove revision ancestry or merges. Per-change addition metrics are
+   never mistaken for cumulative repository totals: a smaller positive debt addition remains
+   degradation, while zero says only that the current change introduced none.
+4. Operational windows are filtered to the same project. Tokens, retries, verifier failures,
+   frontier escalation, and model mix remain empirical correlations; maintenance evidence explicitly
+   avoids attributing structural friction to stronger-model use. Tool-call/context metrics remain
+   null until all records in a window actually contain them.
+5. In-memory and PostgreSQL stores validate sample shape, order bounded project windows, preserve
+   identity, and reject duplicate, malformed, cross-project, missing-run, non-VERIFIED, or
+   candidate/artifact/digest/verification-unbound samples. Migration 006 uses a non-null revision,
+   candidate-artifact FK, artifact-metadata binding to the resolved base revision, deterministic
+   timestamp/run ordering, and one sample per run. PostgreSQL
+   reads compare canonical columns to JSON payload identity;
+   malformed or revision-drifted payloads throw instead of silently becoming trend evidence.
+6. `GET /api/v1/health-ledger` returns at most 20 samples for one opaque project, selecting the
+   latest sample's project when no query is supplied. Derivation, service, store, and API boundaries
+   remove raw source snippets, bound nested detail arrays, and redact credential-shaped evidence.
+   The API exposes evidence vectors/trends and a
+   recommendation only; it does not disclose the repository path or authorize an automatic refactor.
+
+## M11 validation log
+
+- The first independent review reproduced five material evidence-boundary defects: unrelated
+  candidate bases could create structural trends; partial/attempted parse scope looked definite;
+  raw source snippets could leak secrets; dependency upgrades counted as additions; and stores did
+  not bind samples to verified candidate artifacts. All were fixed with explicit evidence bases,
+  structural `UNKNOWN` directions absent ancestry, successful-scan/truncation provenance, bounded
+  categorical/redacted details, add/remove manifest correlation, and verified run/artifact/digest/
+  candidate/base-revision persistence checks.
+- Fresh-context rereview found and drove the remaining hardening: source lexical scans now preserve
+  real relative imports and line-start TypeScript directives without string-literal false positives;
+  binary/gitlink/rename-copy changes remain uninspectable/`UNKNOWN`; relation scanning covers
+  side-effect and CommonJS imports while declaring `BOUNDED_PATTERN_SCAN`; special model keys remain
+  inert through aggregation, recursive redaction, durable storage, and API serialization. The final
+  rereview reported no material findings.
+- Live PostgreSQL validation against an isolated temporary schema at the local Compose database:
+  2/2 tests PASS, including schema/FK/index shape, cross-project/cross-candidate/base-revision refusal,
+  ordered bounded windows, and payload-row drift rejection.
+- Final `npm run validate`: `format:check`, `lint`, `typecheck`, test (34 files: 352 passing,
+  2 skipped because live PostgreSQL is opt-in), server/UI build, `compose:check`, and production smoke
+  — all PASS. Separate live PostgreSQL run above passed 2/2.
 
 ## Deferred work
 

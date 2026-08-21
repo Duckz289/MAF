@@ -29,6 +29,7 @@ All routes are versioned under `/api/v1`.
 | `POST` | `/connections/authorize` | Start external OAuth connection flow |
 | `POST` | `/platform-keys` | Issue a product API key through the configured provider |
 | `GET` | `/telemetry/cost-per-verified-success` | Read the primary optimization metric |
+| `GET` | `/health-ledger` | Read the latest project-scoped health window, candidate/operational trend evidence, and maintenance recommendation; accepts optional opaque `projectId`; structural observations remain directionally `UNKNOWN` until revision ancestry is proven |
 
 Errors use `{ "error": "CODE", "message": "description" }`. Run creation returns HTTP 202. Event
 streams use standard SSE `id`, `event`, and JSON `data` fields.
@@ -67,6 +68,19 @@ or generated files that materially affect the fault harness; their bounded conte
 before and after execution. The Compose file is included automatically and is always resolved and
 executed from the candidate sandbox. Missing, escaping, oversized, non-file, or mutated inputs make
 the result `NOT_CHECKED` rather than leaving stale evidence trusted.
+
+The health ledger returns at most 20 ordered samples for one opaque project identity. Without a
+`projectId` query it selects the project belonging to the latest sample; it never compares two
+repositories. Each sample remains a vector of optional structural/change/operational groups rather
+than a score. Unmeasured groups are absent, per-change additions are not mistaken for cumulative
+repository totals, and neutral growth (such as file/package count) is `UNKNOWN` rather than labeled
+healthy or unhealthy. Project identities are hashes of canonical local repository paths, so this
+endpoint does not disclose the path merely to correlate evidence. Malformed persisted samples or
+payloads whose project/run/revision/timestamp disagree with their PostgreSQL row are rejected from
+trend computation rather than silently repaired.
+Samples also carry candidate ID, full diff digest, resolved base revision, and the explicit evidence
+basis `VERIFIED_CANDIDATE`. Failed/quarantined candidates do not enter the ledger, and even a
+verified sample remains pre-merge candidate evidence—not CI, merge, deployment, or production proof.
 
 Security redaction is applied before run/task errors, changed filenames/runtime signals,
 verification output, recovery capsules, mode-transition evidence, events, and artifact previews

@@ -390,11 +390,52 @@ executed against this candidate and passed; a heuristic relevance-empty PASS (th
 nothing to inject) caps the rung at `QUALITY_VERIFIED`. `CONCURRENCY` as a standalone check
 remains pending and honestly UNKNOWN when required without one of the above signals.
 
+## Codebase health ledger
+
+M11's ledger (`src/domain/health.ts`) is a longitudinal record of structural and operational
+observations — explicitly not a health "score". Three metric groups, each absent when unmeasured rather
+than defaulted to a good value: structural (module/file counts, largest module, cross-module
+`IMPORTS` edges via the M5 coupling counter, Tarjan-SCC import cycles, and successful-parse scope,
+fingerprint, inventory/scope truncation, file-scan completeness, and an explicit
+`BOUNDED_PATTERN_SCAN` relation basis), change (M7B architecture violations,
+unsafe type escapes, skipped tests, added relative imports and keys visibly added inside
+`package.json` dependency sections (excluding upgrades/reformats/section moves), source-only
+lexically filtered complexity hotspots, conservative cross-file duplication relationships, and
+explicit binary/gitlink/rename-copy uninspectable coverage),
+and operational (tokens/retries/verifier failures per task from the telemetry window, tool calls
+and context size only when every record in the window carries them, frontier escalation rate — the
+share of tasks that needed strict re-expansion — and the model mix, recorded as correlation
+evidence without inferring model strength from a name).
+
+`RunService` appends one project-scoped sample per trusted-verifier-passing run (structural from the
+frozen pre-execution base-revision scope, change from the verified candidate's diff, operational from the last 50 same-project telemetry records when the sink can
+list them — `DomainTelemetryRecorder` and the PostgreSQL sink can; a sink that cannot leaves the
+group absent and the trend honestly incomplete). `healthLedger()` returns the last 20 samples for
+one opaque project identity plus
+the trend between the last two consecutive samples and a maintenance proposal: one evidence-backed
+reason per materially degraded candidate-change or operational dimension, with numbers, and an
+escalation-correlation note when they coincide. A single sample is a baseline, not a trend — trend
+and maintenance are absent until a second sample exists. Samples from different projects are never
+compared. Because project ordering does not prove Git ancestry or merging, every structural
+direction stays `UNKNOWN`; raw structural observations remain visible for a future lineage-aware
+repository-state basis. Per-change additions remain deltas rather than cumulative totals, and
+neutral repository or package growth is `UNKNOWN` rather than an invented health direction. Samples persist via
+`RunStore` (`saveHealthSample`/`listHealthSamples`, migration 006) with project/run/revision/time row
+bindings validated against the JSON payload and an existing completed VERIFIED run, matching DIFF
+artifact/digest/resolved-base metadata, and candidate-linked VERIFIED verification. Finding evidence is bounded and
+redacted at derivation, RunService, store, and API boundaries. Every sample is exposed at
+`GET /api/v1/health-ledger`, candidate/digest/resolved-base-revision bound, and labeled
+`VERIFIED_CANDIDATE`, `BASE_REVISION`, and `VERIFIED_CANDIDATE_DIFF`;
+it is a pre-merge candidate observation, never a claim that the change was merged or deployed.
+
+
+
 ## Durable state
 
 PostgreSQL stores tasks, runs, events, artifacts, verifications, mode transitions, project knowledge,
-credential references, telemetry, runtime-signal snapshots, user/session records, and mission graph
-state. Tests use in-memory ports. Numbered migrations live under `migrations/` and run in order.
+credential references, telemetry, runtime-signal snapshots, user/session records, mission graph
+state, and codebase-health samples. Tests use in-memory ports. Numbered migrations live under
+`migrations/` and run in order.
 
 ## Mission tree and project graph
 

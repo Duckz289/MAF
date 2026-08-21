@@ -1,5 +1,8 @@
 import type { Pool } from "pg";
+import { assertHealthSample, type HealthSample } from "../../domain/health";
 import type { RunStore } from "../../domain/ports";
+import { projectIdentity } from "../../domain/project-identity";
+import { redactSensitiveData } from "../../domain/security";
 import type {
   Artifact,
   Event,
@@ -259,5 +262,103 @@ export class PostgresRunStore implements RunStore {
       [runId],
     );
     return result.rows[0]?.payload;
+  }
+
+  async saveHealthSample(sample: HealthSample): Promise<void> {
+    const sanitizedSample: unknown = redactSensitiveData(sample);
+    assertHealthSample(sanitizedSample);
+    sample = sanitizedSample;
+    const binding = await this.pool.query<{ repositoryPath: string }>(
+      `SELECT t.repository_path AS "repositoryPath"
+       FROM runs r JOIN tasks t ON t.id = r.task_id
+       WHERE r.id = $1`,
+      [sample.runId],
+    );
+    const repositoryPath = binding.rows[0]?.repositoryPath;
+    if (!repositoryPath || projectIdentity(repositoryPath) !== sample.projectId) {
+      throw new Error("Health sample project does not match its run task");
+    }
+    const inserted = await this.pool.query(
+      `INSERT INTO health_samples(
+         id, project_id, revision, timestamp, run_id, candidate_id, candidate_digest,
+         evidence_basis, payload
+       )
+       SELECT $1, $2, $3, $4, r.id, a.id, $7, $8, $9
+       FROM runs r
+       JOIN tasks t ON t.id = r.task_id
+       JOIN artifacts a ON a.id = $6 AND a.run_id = r.id
+       WHERE r.id = $5
+         AND r.state = 'COMPLETED'
+         AND r.verification_state = 'VERIFIED'
+         AND t.repository_path = $10
+         AND a.kind = 'DIFF'
+         AND a.digest = $7
+         AND a.metadata->>'baseRevision' = $3
+         AND EXISTS (
+           SELECT 1 FROM verifications v
+           WHERE v.run_id = r.id AND v.candidate_id = a.id AND v.state = 'VERIFIED'
+         )
+       RETURNING run_id`,
+      [
+        crypto.randomUUID(),
+        sample.projectId,
+        sample.revision,
+        sample.timestamp,
+        sample.runId,
+        sample.candidateId,
+        sample.candidateDigest,
+        sample.evidenceBasis,
+        sample,
+        repositoryPath,
+      ],
+    );
+    if (inserted.rowCount !== 1) {
+      throw new Error(
+        "Health sample is not bound to a verified run and matching candidate artifact",
+      );
+    }
+  }
+
+  async listHealthSamples(projectId?: string, limit?: number): Promise<HealthSample[]> {
+    const boundedLimit = Math.min(500, Math.max(0, limit ?? 500));
+    const result = await this.pool.query<{
+      projectId: string;
+      revision: string | null;
+      runId: string;
+      candidateId: string;
+      candidateDigest: string;
+      evidenceBasis: string;
+      timestamp: string;
+      payload: unknown;
+    }>(
+      `SELECT project_id AS "projectId", revision, run_id::text AS "runId",
+              candidate_id::text AS "candidateId", candidate_digest AS "candidateDigest",
+              evidence_basis AS "evidenceBasis", timestamp::text, payload
+       FROM (
+         SELECT id, project_id, revision, run_id, candidate_id, candidate_digest,
+                evidence_basis, timestamp, payload
+         FROM health_samples
+         WHERE ($1::text IS NULL OR project_id = $1)
+         ORDER BY timestamp DESC, run_id DESC
+         LIMIT $2
+       ) recent
+       ORDER BY timestamp ASC, run_id ASC`,
+      [projectId ?? null, boundedLimit],
+    );
+    return result.rows.map((row) => {
+      assertHealthSample(row.payload);
+      if (
+        row.payload.projectId !== row.projectId ||
+        row.payload.runId !== row.runId ||
+        row.payload.candidateId !== row.candidateId ||
+        row.payload.candidateDigest !== row.candidateDigest ||
+        row.payload.evidenceBasis !== row.evidenceBasis ||
+        row.payload.revision !== row.revision ||
+        Date.parse(row.payload.timestamp) !== Date.parse(row.timestamp)
+      ) {
+        throw new Error("Health sample payload identity does not match its durable row binding");
+      }
+      return row.payload;
+    });
   }
 }

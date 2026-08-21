@@ -183,7 +183,14 @@ export const redactSensitiveData = (value: unknown, key = ""): unknown => {
   if (value !== null && typeof value === "object") {
     const result: Record<string, unknown> = {};
     for (const [childKey, entry] of Object.entries(value)) {
-      result[childKey] = redactSensitiveData(entry, childKey);
+      // Define rather than assign so attacker-controlled keys such as `__proto__` remain inert
+      // own data properties instead of invoking Object.prototype's legacy setter.
+      Object.defineProperty(result, childKey, {
+        value: redactSensitiveData(entry, childKey),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
     }
     return result;
   }

@@ -12,6 +12,7 @@ import { InMemoryProjectRegistry } from "../application/project-registry";
 import { RunService } from "../application/run-service";
 import { EvidenceRuntimeSignalCollector } from "../application/runtime-signal-collector";
 import type { RunStore } from "../domain/ports";
+import { redactSensitiveData } from "../domain/security";
 import {
   InMemoryPlatformApiKeys,
   LocalDevelopmentAuth,
@@ -104,6 +105,9 @@ const createRunSchema = z.object({
     })
     .optional(),
   qualityPreference: z.enum(["FAST", "BALANCED", "HIGH", "CRITICAL"]).optional(),
+});
+const healthLedgerQuerySchema = z.object({
+  projectId: z.string().min(1).max(200).optional(),
 });
 
 const transitionSchema = z.object({
@@ -340,6 +344,12 @@ export const createApp = async (): Promise<AppRuntime> => {
     },
   );
   app.post("/api/v1/system/emergency-stop", async () => runs.emergencyStop());
+  // M11: codebase health ledger — samples plus trend/maintenance proposal. Never a score.
+  app.get("/api/v1/health-ledger", async (request, reply) => {
+    const parsed = healthLedgerQuerySchema.safeParse(request.query);
+    if (!parsed.success) return reply.code(400).send({ error: "INVALID_QUERY" });
+    return redactSensitiveData(await runs.healthLedger(parsed.data.projectId));
+  });
   app.post("/api/v1/system/resume-new-runs", async () => {
     runs.resumeNewRuns();
     return { emergencyStopped: runs.isEmergencyStopped() };

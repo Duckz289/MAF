@@ -114,6 +114,36 @@ describe("Project Brain", () => {
     }
   });
 
+  it("indexes side-effect and CommonJS local import relations", async () => {
+    const fixture = await createAdaptiveFixtureRepository();
+    try {
+      await writeFile(
+        path.join(fixture.path, "src/web/image.ts"),
+        'import "../domain/permissions";\nconst media = require("../application/media");\n',
+        "utf8",
+      );
+      const local = new LocalRepositoryIndex();
+      const cheap = await local.index(fixture.path, "HEAD");
+      const scoped = await local.indexScope(fixture.path, "HEAD", cheap, ["src/web/image.ts"]);
+      expect(scoped.relations).toEqual(
+        expect.arrayContaining([
+          {
+            from: "src/web/image.ts",
+            to: "src/domain/permissions.ts",
+            kind: "IMPORTS",
+          },
+          {
+            from: "src/web/image.ts",
+            to: "src/application/media.ts",
+            kind: "IMPORTS",
+          },
+        ]),
+      );
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
   it("grows the graph incrementally without re-parsing already-scoped files", async () => {
     const fixture = await createAdaptiveFixtureRepository();
     try {

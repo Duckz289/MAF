@@ -404,6 +404,8 @@ describe("emergency stop", () => {
       listSignalSnapshots: baseStore.listSignalSnapshots.bind(baseStore),
       saveRecoveryCapsule: baseStore.saveRecoveryCapsule.bind(baseStore),
       getRecoveryCapsule: baseStore.getRecoveryCapsule.bind(baseStore),
+      saveHealthSample: baseStore.saveHealthSample.bind(baseStore),
+      listHealthSamples: baseStore.listHealthSamples.bind(baseStore),
     };
     const brain = new InMemoryProjectBrain();
     const service = new RunService({

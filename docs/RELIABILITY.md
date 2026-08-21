@@ -145,5 +145,21 @@ delivery, exit-code fidelity through the Windows shell, timeout bounding, spec a
 prompt mid-sweep cancellation kills),
 fact staleness, verified-only mission gating, API control, signal-explanation endpoints, SSE,
 bounded auto-recovery with a fresh session, capsule capture and pause on a non-retryable failure,
-resume from a preserved worktree, revision-conflict refusal, and emergency stop.
+resume from a preserved worktree, revision-conflict refusal, and emergency stop. The health ledger
+is covered by domain tests for every metric group, source-only lexical scans, uninspectable-change
+UNKNOWN behavior, dependency-upgrade
+exclusion, overlap-safe duplication evidence, trend incompleteness/lineage honesty, and the
+maintenance-need thresholds, plus an end-to-end test that a completed run appends a real sample and
+that trend/maintenance appear only from the second sample on.
+Focused persistence coverage exercises ordered/bounded project windows (including limit zero),
+duplicate/malformed/cross-project/unbound-candidate rejection in memory, migration-006 schema,
+PostgreSQL round-trip identity, verified candidate/artifact/digest/base-revision binding, and rejection of payload
+revision drift. The PostgreSQL test uses an isolated temporary schema and runs only when
+`DATABASE_URL` is configured; the M11 validation log records the live local-container result.
+Only trusted-verifier-passing candidates enter the ledger. Each row binds project, run, candidate,
+diff digest, resolved base revision, timestamp, and `VERIFIED_CANDIDATE` basis; this describes a
+pre-merge observation and cannot impersonate CI, deployment, or production health. Structure is
+frozen before candidate execution and labeled `BASE_REVISION`; change is labeled
+`VERIFIED_CANDIDATE_DIFF`. Without proven revision ancestry, structural directions are always
+`UNKNOWN`, and incomplete successful-parse/truncation evidence is explicit.
 The production-bundle smoke test repeats both outcomes against in-memory and PostgreSQL adapters.

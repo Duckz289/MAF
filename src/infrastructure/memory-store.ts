@@ -1,4 +1,7 @@
+import { assertHealthSample, type HealthSample } from "../domain/health";
 import type { RunStore } from "../domain/ports";
+import { projectIdentity } from "../domain/project-identity";
+import { redactSensitiveData } from "../domain/security";
 import type {
   Artifact,
   Event,
@@ -17,6 +20,7 @@ export class InMemoryRunStore implements RunStore {
   private readonly verificationsByRun = new Map<string, Verification[]>();
   private readonly signalSnapshotsByRun = new Map<string, RuntimeSignalSnapshot[]>();
   private readonly recoveryCapsulesByRun = new Map<string, RecoveryCapsule>();
+  private readonly healthSamples: HealthSample[] = [];
 
   async createTask(task: Task): Promise<void> {
     this.tasks.set(task.id, structuredClone(task));
@@ -100,5 +104,51 @@ export class InMemoryRunStore implements RunStore {
   async getRecoveryCapsule(runId: string): Promise<RecoveryCapsule | undefined> {
     const capsule = this.recoveryCapsulesByRun.get(runId);
     return capsule ? structuredClone(capsule) : undefined;
+  }
+
+  async saveHealthSample(sample: HealthSample): Promise<void> {
+    const sanitizedSample: unknown = redactSensitiveData(sample);
+    assertHealthSample(sanitizedSample);
+    sample = sanitizedSample;
+    const run = this.runs.get(sample.runId);
+    const task = run ? this.tasks.get(run.taskId) : undefined;
+    const artifact = (this.artifactsByRun.get(sample.runId) ?? []).find(
+      (entry) => entry.id === sample.candidateId,
+    );
+    const verifiedCandidate = (this.verificationsByRun.get(sample.runId) ?? []).some(
+      (entry) => entry.state === "VERIFIED" && entry.candidateId === sample.candidateId,
+    );
+    if (
+      !run ||
+      !task ||
+      run.state !== "COMPLETED" ||
+      run.verificationState !== "VERIFIED" ||
+      projectIdentity(task.repositoryPath) !== sample.projectId ||
+      artifact?.kind !== "DIFF" ||
+      artifact.runId !== sample.runId ||
+      artifact.digest !== sample.candidateDigest ||
+      artifact.metadata.baseRevision !== sample.revision ||
+      !verifiedCandidate
+    ) {
+      throw new Error(
+        "Health sample is not bound to a verified run and matching candidate artifact",
+      );
+    }
+    if (this.healthSamples.some((existing) => existing.runId === sample.runId)) {
+      throw new Error(`Health sample already exists for run: ${sample.runId}`);
+    }
+    this.healthSamples.push(structuredClone(sample));
+  }
+
+  async listHealthSamples(projectId?: string, limit?: number): Promise<HealthSample[]> {
+    const ordered = this.healthSamples
+      .filter((sample) => projectId === undefined || sample.projectId === projectId)
+      .toSorted(
+        (left, right) =>
+          left.timestamp.localeCompare(right.timestamp) || left.runId.localeCompare(right.runId),
+      );
+    const boundedLimit = Math.min(500, limit === undefined ? ordered.length : Math.max(0, limit));
+    const window = boundedLimit === 0 ? [] : ordered.slice(-boundedLimit);
+    return structuredClone(window);
   }
 }

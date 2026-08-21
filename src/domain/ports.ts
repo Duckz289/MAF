@@ -1,3 +1,4 @@
+import type { HealthSample } from "./health";
 import type { PerformanceMeasurement } from "./performance";
 import type {
   ResilienceExecutionInputSnapshot,
@@ -40,6 +41,9 @@ export interface RunStore {
   /** Durable, model-independent recovery state. Overwrites any prior capsule for the same run. */
   saveRecoveryCapsule(capsule: RecoveryCapsule): Promise<void>;
   getRecoveryCapsule(runId: string): Promise<RecoveryCapsule | undefined>;
+  /** M11 health ledger: append a sample; list returns samples oldest-first, bounded by the store. */
+  saveHealthSample(sample: HealthSample): Promise<void>;
+  listHealthSamples(projectId?: string, limit?: number): Promise<HealthSample[]>;
 }
 
 export interface AgentStartInput {
@@ -151,7 +155,7 @@ export interface RepositorySnapshot {
   packageOwnership: Record<string, string>;
   /** Package/workspace roots (not architectural modules); "module" in moduleOwnership is deeper. */
   moduleRoots: string[];
-  /** Files that have actually been parsed for symbols/relations via indexScope. */
+  /** Files indexScope has attempted (legacy cache semantics); successful parses are in evidence. */
   parsedFiles: string[];
   /** True only if the most recent indexScope call had to truncate its own requested file set. */
   scopeTruncated: boolean;
@@ -350,6 +354,8 @@ export interface ModelGateway {
 export interface TelemetryRecord {
   taskId: string;
   runId: string;
+  /** Opaque project scope for longitudinal evidence; legacy records may omit it. */
+  projectId?: string;
   agent: string;
   model: string;
   provider: string;
@@ -371,6 +377,9 @@ export interface TelemetryRecord {
   recoveryCost: number;
   latencyMs: number;
   retryCount: number;
+  /** Optional M11 operational-health metrics — absent means not recorded, not zero. */
+  toolCalls?: number;
+  contextChars?: number;
   filesChanged: number;
   verificationType: string;
   verificationState: string;
@@ -398,4 +407,10 @@ export interface TelemetryRecord {
 export interface TelemetrySink {
   record(record: TelemetryRecord): Promise<void>;
   costPerVerifiedSuccess(): Promise<number | null>;
+  /**
+   * M11 health-ledger source for the operational trend window. Optional: a sink that cannot list
+   * its records leaves the operational group absent — unknown, not zero — and the ledger stays
+   * structural/change-only rather than inventing numbers.
+   */
+  listRecords?(limit?: number, projectId?: string): Promise<TelemetryRecord[]>;
 }

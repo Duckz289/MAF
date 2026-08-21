@@ -19,6 +19,18 @@ import {
 } from "../domain/budget";
 import { ProviderCircuitBreaker, ProviderCircuitOpenError } from "../domain/circuit-breaker";
 import { deriveDebtDelta } from "../domain/debt";
+import {
+  assertHealthSample,
+  deriveChangeHealth,
+  deriveHealthTrend,
+  deriveMaintenanceNeed,
+  deriveOperationalHealth,
+  deriveStructuralHealth,
+  type HealthSample,
+  type HealthTrend,
+  type MaintenanceNeed,
+  type StructuralHealthMetrics,
+} from "../domain/health";
 import { AdaptiveModeController, type ModeDecision } from "../domain/mode-controller";
 import {
   derivePerformancePosture,
@@ -55,6 +67,7 @@ import type {
   TelemetrySink,
   VerifierPort,
 } from "../domain/ports";
+import { projectIdentity } from "../domain/project-identity";
 import { deriveQualityReport, deriveTrustState, type QualityReport } from "../domain/quality";
 import {
   AgentReportedFailure,
@@ -253,6 +266,8 @@ interface ContextState {
   mode: ExecutionMode;
   snapshot: RepositorySnapshot;
   projectId: string;
+  /** Frozen pre-execution observation; candidate-driven scope growth cannot impersonate a base change. */
+  baselineStructuralHealth: StructuralHealthMetrics;
 }
 
 const newTransitionState = (): TransitionState => ({
@@ -658,6 +673,31 @@ export class RunService {
   }
 
   /**
+   * M11 codebase health ledger: the most recent samples plus the trend between the last two
+   * consecutive samples and the maintenance-mission proposal derived from it. Trend and
+   * maintenance are absent when fewer than two samples exist — a single sample is a baseline,
+   * not a trend, and unknown stays unknown.
+   */
+  async healthLedger(projectId?: string): Promise<{
+    samples: HealthSample[];
+    trend?: HealthTrend;
+    maintenance?: MaintenanceNeed;
+  }> {
+    let samples = await this.dependencies.store.listHealthSamples(projectId, 20);
+    if (projectId === undefined) {
+      const latestProjectId = samples.at(-1)?.projectId;
+      if (latestProjectId !== undefined) {
+        samples = await this.dependencies.store.listHealthSamples(latestProjectId, 20);
+      }
+    }
+    if (samples.length < 2) return { samples };
+    const [previous, current] = samples.slice(-2);
+    if (!previous || !current) return { samples };
+    const trend = deriveHealthTrend(previous, current);
+    return { samples, trend, maintenance: deriveMaintenanceNeed(trend) };
+  }
+
+  /**
    * Cancels every active run and blocks new run creation until resumeNewRuns() is called, while
    * preserving worktrees, checkpoints, evidence, and candidate lineage. Never deletes anything —
    * emergency stop is a pause, not a wipe. Cancellation is bounded by the same guarantee cancel()
@@ -777,6 +817,7 @@ export class RunService {
         mode: run.effectiveMode,
         snapshot: enrichedSnapshot,
         projectId: task.repositoryPath,
+        baselineStructuralHealth: deriveStructuralHealth(enrichedSnapshot),
       };
       await this.event(run.id, "ContextBuilt", {
         tokenEstimate: context.tokenEstimate,
@@ -1010,12 +1051,14 @@ export class RunService {
         verificationAttempts,
         repairAttempts,
       });
+      const healthProjectId = projectIdentity(task.repositoryPath);
       try {
         const latestSignals = await this.dependencies.runtimeSignals.latest(run.id);
         const signalValues = latestSignals?.signals;
         await this.dependencies.telemetry.record({
           taskId: task.id,
           runId: run.id,
+          projectId: healthProjectId,
           agent: run.agent,
           model: run.model,
           provider: run.provider,
@@ -1063,6 +1106,50 @@ export class RunService {
         await this.event(run.id, "TelemetryFailed", {
           error: telemetryError instanceof Error ? telemetryError.message : String(telemetryError),
         });
+      }
+      // M11 health ledger: only a trusted-verifier candidate becomes longitudinal evidence. This
+      // is explicitly a VERIFIED_CANDIDATE observation, not a claim that the candidate was merged
+      // or deployed. Failed/quarantined candidates remain in their existing run evidence only.
+      if (verification.state !== "VERIFIED" || !candidate) {
+        await this.event(run.id, "HealthSampleSkipped", {
+          reason: "only a candidate that passed the trusted verifier can enter the health ledger",
+          verificationState: verification.state,
+        });
+      } else {
+        try {
+          const operationalRecords = this.dependencies.telemetry.listRecords
+            ? await this.dependencies.telemetry.listRecords(50, healthProjectId)
+            : [];
+          const operational = deriveOperationalHealth(operationalRecords);
+          const resolvedRevision = candidate.artifact.metadata.baseRevision;
+          const candidateDigest = candidate.artifact.digest;
+          if (typeof resolvedRevision !== "string" || !candidateDigest) {
+            throw new Error(
+              "Verified candidate health evidence lacks a resolved revision or digest",
+            );
+          }
+          const sample: HealthSample = {
+            projectId: healthProjectId,
+            revision: resolvedRevision,
+            timestamp: run.completedAt ?? new Date().toISOString(),
+            runId: run.id,
+            candidateId: candidate.id,
+            candidateDigest,
+            evidenceBasis: "VERIFIED_CANDIDATE",
+            structuralBasis: "BASE_REVISION",
+            changeBasis: "VERIFIED_CANDIDATE_DIFF",
+            structural: contextState.baselineStructuralHealth,
+            change: deriveChangeHealth(candidate.diff.patch),
+            ...(operational ? { operational } : {}),
+          };
+          const sanitizedSample: unknown = redactSensitiveData(sample);
+          assertHealthSample(sanitizedSample);
+          await this.dependencies.store.saveHealthSample(sanitizedSample);
+        } catch (healthError) {
+          await this.event(run.id, "HealthSampleFailed", {
+            error: healthError instanceof Error ? healthError.message : String(healthError),
+          });
+        }
       }
     } catch (error) {
       const latest = await this.dependencies.store.getRun(run.id);
@@ -1638,6 +1725,7 @@ export class RunService {
     run.updatedAt = new Date().toISOString();
     await this.dependencies.store.updateRun(run);
     const id = crypto.randomUUID();
+    const baseRevision = await this.resolveRevision(sandbox.path);
     const artifact: Artifact = {
       id,
       runId: run.id,
@@ -1646,6 +1734,7 @@ export class RunService {
       digest: LocalWorktreeSandbox.digest(diff),
       metadata: redactSensitiveData({
         candidateId: id,
+        ...(baseRevision ? { baseRevision } : {}),
         attempt,
         parentCandidateId: parentCandidateId ?? null,
         changedFiles: diff.changedFiles,

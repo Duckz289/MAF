@@ -56,6 +56,9 @@ describe("control API", () => {
       url: "/api/v1/telemetry/cost-per-verified-success",
     });
     expect(metric.json()).toEqual({ value: null, currency: "USD" });
+    const ledger = await runtime.app.inject({ method: "GET", url: "/api/v1/health-ledger" });
+    expect(ledger.statusCode).toBe(200);
+    expect(ledger.json()).toEqual({ samples: [] });
   });
 
   it("explains runtime-derived mode transitions through versioned resources", async () => {
@@ -99,6 +102,12 @@ describe("control API", () => {
     expect(summaries.json()).toMatchObject([
       { id: runId, repositoryPath: fixture.path, revision: "HEAD" },
     ]);
+    const ledger = await runtime.app.inject({ method: "GET", url: "/api/v1/health-ledger" });
+    expect(ledger.statusCode).toBe(200);
+    expect(ledger.json()).toMatchObject({
+      samples: [{ runId, projectId: expect.stringMatching(/^project-[a-f0-9]{64}$/u) }],
+    });
+    expect(ledger.body).not.toContain(fixture.path);
   });
 
   it("never exposes consecutive private-key bodies through run, artifact, or event API payloads", async () => {
@@ -121,17 +130,20 @@ describe("control API", () => {
     const runId = created.json().id as string;
     await runtime.runs.waitForIdle(runId);
 
-    const [run, artifacts, events, verifications] = await Promise.all([
+    const [run, artifacts, events, verifications, ledger] = await Promise.all([
       runtime.app.inject({ method: "GET", url: `/api/v1/runs/${runId}` }),
       runtime.app.inject({ method: "GET", url: `/api/v1/runs/${runId}/artifacts` }),
       runtime.app.inject({ method: "GET", url: `/api/v1/runs/${runId}/events?follow=false` }),
       runtime.app.inject({ method: "GET", url: `/api/v1/runs/${runId}/verifications` }),
+      runtime.app.inject({ method: "GET", url: "/api/v1/health-ledger" }),
     ]);
     expect(run.statusCode).toBe(200);
     expect(artifacts.statusCode).toBe(200);
     expect(events.statusCode).toBe(200);
     expect(verifications.statusCode).toBe(200);
-    const exposed = [run.body, artifacts.body, events.body, verifications.body].join("\n");
+    const exposed = [run.body, artifacts.body, events.body, verifications.body, ledger.body].join(
+      "\n",
+    );
     expect(exposed).not.toContain("FIRST-PERSISTED-PRIVATE-KEY-BODY");
     expect(exposed).not.toContain("SECOND-PERSISTED-PRIVATE-KEY-BODY");
     expect(exposed).not.toContain("BEGIN RSA PRIVATE KEY");

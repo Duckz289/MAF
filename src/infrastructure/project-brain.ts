@@ -180,7 +180,9 @@ const parseFileDeclarations = (
         line: index + 1,
       });
     }
-    for (const match of line.matchAll(/(?:from\s+|import\s*\()["']([^"']+)["']/gu)) {
+    for (const match of line.matchAll(
+      /(?:from\s+|import\s*(?:\(\s*)?|require\s*\(\s*)["']([^"']+)["']/gu,
+    )) {
       if (!match[1]) continue;
       const target = resolveLocalImport(file, match[1], repositoryFiles);
       if (target) relations.push({ from: file, to: target, kind: "IMPORTS" });
