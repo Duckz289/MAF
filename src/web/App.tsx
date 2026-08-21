@@ -106,7 +106,15 @@ export function App() {
       <ProjectsPage navigate={navigate} projects={projects} refresh={refresh} runs={runs} />
     );
   } else if (selectedProjectId) {
-    content = <ProjectPage navigate={navigate} project={selectedProject} runs={runs} />;
+    content = (
+      <ProjectPage
+        agents={agents}
+        navigate={navigate}
+        project={selectedProject}
+        refresh={refresh}
+        runs={runs}
+      />
+    );
   } else if (path === "/runs/new") {
     content = (
       <NewTaskPage

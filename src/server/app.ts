@@ -15,6 +15,12 @@ import type { RunStore } from "../domain/ports";
 import { projectIdentity } from "../domain/project-identity";
 import { redactSensitiveData } from "../domain/security";
 import {
+  browseDirectory,
+  defaultBrowseStart,
+  detectProject,
+  listFilesystemRoots,
+} from "../infrastructure/project-detection";
+import {
   InMemoryPlatformApiKeys,
   LocalDevelopmentAuth,
   MockExternalConnections,
@@ -134,18 +140,22 @@ const resumeSchema = z.object({
   credentialReferences: z.array(z.string().startsWith("credential://")).max(20).optional(),
 });
 
+const projectPreferencesSchema = z.object({
+  providerPreference: z.string().max(120).optional(),
+  qualityPreference: z.enum(["FAST", "BALANCED", "HIGH", "CRITICAL"]).optional(),
+  budgetPreference: z.enum(["AUTO", "CUSTOM"]).optional(),
+  executionModePreference: z.enum(["AUTO", "STRICT", "GUIDED", "SOLO_NATIVE"]).optional(),
+  budgetLimitUsd: z.number().nonnegative().max(100_000).optional(),
+  budgetMode: z.enum(["ADVISORY", "HARD"]).optional(),
+});
 const projectSchema = z.object({
   name: z.string().trim().min(1).max(120),
   repositoryPath: z.string().trim().min(1).max(4_000),
   revision: z.string().trim().min(1).max(500).optional(),
-  preferences: z
-    .object({
-      providerPreference: z.string().max(120).optional(),
-      qualityPreference: z.enum(["FAST", "BALANCED", "HIGH", "CRITICAL"]).optional(),
-      budgetPreference: z.enum(["AUTO", "CUSTOM"]).optional(),
-    })
-    .optional(),
+  preferences: projectPreferencesSchema.optional(),
 });
+const filesystemBrowseQuerySchema = z.object({ path: z.string().min(1).max(4_000).optional() });
+const filesystemDetectSchema = z.object({ repositoryPath: z.string().trim().min(1).max(4_000) });
 
 const platformKeySchema = z.object({
   ownerId: z.string().min(1).max(200),
@@ -506,6 +516,27 @@ export const createApp = async (): Promise<AppRuntime> => {
         ...(body.preferences ? { preferences: body.preferences } : {}),
       }),
     );
+  });
+  app.patch<{ Params: { id: string } }>("/api/v1/projects/:id", async (request, reply) => {
+    const body = projectPreferencesSchema.parse(request.body);
+    const updated = projects.update(request.params.id, body);
+    return updated ? updated : reply.code(404).send({ error: "PROJECT_NOT_FOUND" });
+  });
+  // Local-first bridge for the folder picker: the server already runs on the user's own machine,
+  // so this lists real local directories instead of faking a browser file-system picker that
+  // cannot hand back a usable absolute path. Never uploads repository contents.
+  app.get("/api/v1/filesystem/roots", async () => ({
+    roots: await listFilesystemRoots(),
+    defaultPath: defaultBrowseStart(),
+  }));
+  app.get("/api/v1/filesystem/browse", async (request, reply) => {
+    const parsed = filesystemBrowseQuerySchema.safeParse(request.query);
+    if (!parsed.success) return reply.code(400).send({ error: "INVALID_QUERY" });
+    return browseDirectory(parsed.data.path ?? defaultBrowseStart());
+  });
+  app.post("/api/v1/filesystem/detect", async (request) => {
+    const body = filesystemDetectSchema.parse(request.body);
+    return detectProject(body.repositoryPath);
   });
   app.get("/api/v1/agents", async () => {
     const capabilities = await agent.capabilities();

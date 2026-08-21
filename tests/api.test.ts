@@ -225,11 +225,22 @@ describe("control API", () => {
     const connections = await runtime.app.inject({ method: "GET", url: "/api/v1/connections" });
     expect(connections.json()).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ id: "claude-code", method: "NATIVE_SESSION", status: "UNKNOWN" }),
         expect.objectContaining({
           id: "codex-cli",
           method: "NATIVE_SESSION",
-          capability: "Executor CLI native với Sign in with ChatGPT",
+          category: "ACCOUNT_AGENT",
+          authCapabilities: expect.objectContaining({ supportsNativeLogin: true }),
+        }),
+        expect.objectContaining({
+          id: "claude-code",
+          category: "ACCOUNT_AGENT",
+          method: "NATIVE_SESSION",
+          authCapabilities: expect.objectContaining({ requiresCli: true }),
+        }),
+        expect.objectContaining({
+          id: "gemini-account",
+          category: "ACCOUNT_AGENT",
+          method: "OAUTH_PKCE",
         }),
         expect.objectContaining({ id: "openai-api", method: "API_KEY", status: "NOT_CONFIGURED" }),
         expect.objectContaining({ id: "anthropic-api", method: "API_KEY" }),
@@ -331,5 +342,56 @@ describe("control API", () => {
       if (priorAgent === undefined) delete process.env.MAF_NATIVE_AGENT;
       else process.env.MAF_NATIVE_AGENT = priorAgent;
     }
+  });
+
+  it("browses real local directories, detects a real project, and updates project preferences", async () => {
+    const fixture = await createFixtureRepository();
+    fixtures.push(fixture);
+    runtime = await createApp();
+
+    const roots = await runtime.app.inject({ method: "GET", url: "/api/v1/filesystem/roots" });
+    expect(roots.statusCode).toBe(200);
+    expect(roots.json().roots.length).toBeGreaterThan(0);
+
+    const browse = await runtime.app.inject({
+      method: "GET",
+      url: `/api/v1/filesystem/browse?path=${encodeURIComponent(fixture.path)}`,
+    });
+    expect(browse.statusCode).toBe(200);
+    expect(browse.json()).toMatchObject({ path: fixture.path, unreadable: false });
+
+    const detect = await runtime.app.inject({
+      method: "POST",
+      url: "/api/v1/filesystem/detect",
+      payload: { repositoryPath: fixture.path },
+    });
+    expect(detect.statusCode).toBe(200);
+    expect(detect.json()).toMatchObject({ exists: true, git: { present: true } });
+
+    const created = await runtime.app.inject({
+      method: "POST",
+      url: "/api/v1/projects",
+      payload: { name: "Detected project", repositoryPath: fixture.path },
+    });
+    expect(created.statusCode).toBe(201);
+    const projectId = created.json().id as string;
+
+    const missingUpdate = await runtime.app.inject({
+      method: "PATCH",
+      url: "/api/v1/projects/does-not-exist",
+      payload: { qualityPreference: "HIGH" },
+    });
+    expect(missingUpdate.statusCode).toBe(404);
+
+    const updated = await runtime.app.inject({
+      method: "PATCH",
+      url: `/api/v1/projects/${projectId}`,
+      payload: { qualityPreference: "HIGH", budgetLimitUsd: 5, budgetMode: "HARD" },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json()).toMatchObject({
+      id: projectId,
+      preferences: { qualityPreference: "HIGH", budgetLimitUsd: 5, budgetMode: "HARD" },
+    });
   });
 });

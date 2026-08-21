@@ -68,7 +68,38 @@ export interface Project {
     qualityPreference?: string;
     budgetPreference?: string;
     providerPreference?: string;
+    executionModePreference?: "AUTO" | "STRICT" | "GUIDED" | "SOLO_NATIVE";
+    budgetLimitUsd?: number;
+    budgetMode?: "ADVISORY" | "HARD";
   };
+}
+
+export interface DirectoryEntry {
+  name: string;
+  path: string;
+  looksLikeGitRepo: boolean;
+}
+
+export interface DirectoryListing {
+  path: string;
+  parent: string | null;
+  entries: DirectoryEntry[];
+  unreadable: boolean;
+}
+
+export interface ProjectDetection {
+  repositoryPath: string;
+  exists: boolean;
+  git: { present: boolean; branch?: string; revision?: string; dirty?: boolean };
+  languages: string[];
+  frameworks: string[];
+  packageManager?: string;
+  verificationCommands: Array<{ label: string; command: string }>;
+  moduleRoots: string[];
+  trackedFileCount?: number;
+  trackedFileCountTruncated?: boolean;
+  monorepo: boolean;
+  unknowns: string[];
 }
 
 export interface Connection {
@@ -88,6 +119,25 @@ export interface Connection {
   }>;
 }
 
+export interface AgentCapabilities {
+  repoSearch: boolean;
+  fileRead: boolean;
+  fileWrite: boolean;
+  shell: boolean;
+  browser: boolean;
+  mcp: boolean;
+  nativePlanning: boolean;
+  nativeSubagents: boolean;
+  contextManagement: boolean;
+  streaming: boolean;
+  resumeSession: boolean;
+  livePolicyUpdate: boolean;
+  safeSessionRestart: boolean;
+  oauthAuth: boolean;
+  apiKeyAuth: boolean;
+  extensions: Record<string, boolean>;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -95,6 +145,7 @@ export interface Agent {
   active: boolean;
   authMethod: string;
   detail: string;
+  capabilities?: AgentCapabilities | null;
 }
 
 export interface HomeData {
