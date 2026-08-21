@@ -409,6 +409,10 @@ describe("emergency stop", () => {
       saveStrategyObservation: baseStore.saveStrategyObservation.bind(baseStore),
       listStrategyObservations: baseStore.listStrategyObservations.bind(baseStore),
       allocateStrategyCanaryOrdinal: baseStore.allocateStrategyCanaryOrdinal.bind(baseStore),
+      saveDeliveryHandoff: baseStore.saveDeliveryHandoff.bind(baseStore),
+      getDeliveryHandoff: baseStore.getDeliveryHandoff.bind(baseStore),
+      saveCiEvidence: baseStore.saveCiEvidence.bind(baseStore),
+      listCiEvidence: baseStore.listCiEvidence.bind(baseStore),
     };
     const brain = new InMemoryProjectBrain();
     const service = new RunService({

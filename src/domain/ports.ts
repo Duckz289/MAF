@@ -1,5 +1,6 @@
 import type { HealthSample } from "./health";
 import type { PerformanceMeasurement } from "./performance";
+import type { CiEvidence, DeliveryHandoff } from "./delivery";
 import type {
   ResilienceExecutionInputSnapshot,
   ResilienceMeasurement,
@@ -50,6 +51,23 @@ export interface RunStore {
   listStrategyObservations(projectId?: string, limit?: number): Promise<StrategyObservation[]>;
   /** Atomic exact-scope/challenger sequence; the caller cannot choose/reuse canary slots. */
   allocateStrategyCanaryOrdinal(allocationKey: string): Promise<number>;
+  /** M13 immutable, terminal-run-bound PR/CI evidence handoff. */
+  saveDeliveryHandoff(handoff: DeliveryHandoff): Promise<void>;
+  getDeliveryHandoff(runId: string): Promise<DeliveryHandoff | undefined>;
+  saveCiEvidence(evidence: CiEvidence): Promise<void>;
+  listCiEvidence(handoffId: string): Promise<CiEvidence[]>;
+}
+
+/**
+ * Trusted external CI boundary. Callers provide only an external run reference; this adapter must
+ * obtain the conclusion from the CI system itself and bind it to the requested handoff.
+ */
+export interface CiEvidenceVerifierPort {
+  collect(input: {
+    handoff: DeliveryHandoff;
+    provider: string;
+    externalRunId: string;
+  }): Promise<Omit<CiEvidence, "id" | "handoffId">>;
 }
 
 export interface AgentStartInput {

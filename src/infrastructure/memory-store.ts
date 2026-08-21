@@ -1,4 +1,11 @@
 import { isDeepStrictEqual } from "node:util";
+import {
+  assertCiEvidence,
+  assertDeliveryHandoff,
+  deliveryHandoffDigest,
+  type CiEvidence,
+  type DeliveryHandoff,
+} from "../domain/delivery";
 import { assertHealthSample, type HealthSample } from "../domain/health";
 import type { RunStore } from "../domain/ports";
 import { projectIdentity } from "../domain/project-identity";
@@ -29,6 +36,13 @@ export class InMemoryRunStore implements RunStore {
   private readonly healthSamples: HealthSample[] = [];
   private readonly strategyObservations: StrategyObservation[] = [];
   private readonly strategyCanaryOrdinals = new Map<string, number>();
+  private readonly deliveryHandoffsByRun = new Map<string, DeliveryHandoff>();
+  private readonly ciEvidenceByHandoff = new Map<string, CiEvidence[]>();
+  private readonly ciExternalRunBindings = new Map<
+    string,
+    { handoffId: string; headRevision: string | null }
+  >();
+  private readonly ciHeadByHandoff = new Map<string, string>();
 
   async createTask(task: Task): Promise<void> {
     this.tasks.set(task.id, structuredClone(task));
@@ -242,5 +256,113 @@ export class InMemoryRunStore implements RunStore {
     const ordinal = this.strategyCanaryOrdinals.get(allocationKey) ?? 0;
     this.strategyCanaryOrdinals.set(allocationKey, ordinal + 1);
     return ordinal;
+  }
+
+  async saveDeliveryHandoff(handoff: DeliveryHandoff): Promise<void> {
+    const sanitized: unknown = redactSensitiveData(handoff);
+    assertDeliveryHandoff(sanitized);
+    handoff = sanitized;
+    const run = this.runs.get(handoff.runId);
+    const task = run ? this.tasks.get(run.taskId) : undefined;
+    const artifact = (this.artifactsByRun.get(handoff.runId) ?? []).find(
+      (entry) => entry.id === handoff.candidateId,
+    );
+    const verified = (this.verificationsByRun.get(handoff.runId) ?? []).some(
+      (entry) =>
+        entry.id === handoff.verification.id &&
+        entry.state === "VERIFIED" &&
+        entry.candidateId === handoff.candidateId,
+    );
+    const binding = run?.deliveryHandoffBinding;
+    if (
+      !run ||
+      !task ||
+      run.state !== "COMPLETED" ||
+      run.verificationState !== "VERIFIED" ||
+      projectIdentity(task.repositoryPath) !== handoff.projectId ||
+      artifact?.kind !== "DIFF" ||
+      artifact.digest !== handoff.candidateDigest ||
+      artifact.metadata.baseRevision !== handoff.baseRevision ||
+      !verified ||
+      run.trustState !== handoff.trustState ||
+      run.completedAt !== handoff.createdAt ||
+      binding?.handoffId !== handoff.id ||
+      binding.candidateId !== handoff.candidateId ||
+      binding.candidateDigest !== handoff.candidateDigest ||
+      binding.payloadDigest !== deliveryHandoffDigest(handoff)
+    ) {
+      throw new Error("Delivery handoff is not bound to its terminal verified candidate");
+    }
+    if (this.deliveryHandoffsByRun.has(run.id))
+      throw new Error(`Delivery handoff already exists for run: ${run.id}`);
+    this.deliveryHandoffsByRun.set(run.id, structuredClone(handoff));
+  }
+
+  async getDeliveryHandoff(runId: string): Promise<DeliveryHandoff | undefined> {
+    const handoff = this.deliveryHandoffsByRun.get(runId);
+    return handoff ? structuredClone(handoff) : undefined;
+  }
+
+  async saveCiEvidence(evidence: CiEvidence): Promise<void> {
+    const sanitized: unknown = redactSensitiveData(evidence);
+    assertCiEvidence(sanitized);
+    evidence = sanitized;
+    const handoff = [...this.deliveryHandoffsByRun.values()].find(
+      (entry) => entry.id === evidence.handoffId,
+    );
+    if (
+      !handoff ||
+      evidence.candidateId !== handoff.candidateId ||
+      evidence.candidateDigest !== handoff.candidateDigest ||
+      evidence.baseRevision !== handoff.baseRevision ||
+      (handoff.headRevision !== null && evidence.headRevision !== handoff.headRevision)
+    ) {
+      throw new Error("CI evidence is stale or not bound to its delivery handoff");
+    }
+    const entries = this.ciEvidenceByHandoff.get(handoff.id) ?? [];
+    const handoffHead = this.ciHeadByHandoff.get(handoff.id);
+    if (
+      handoffHead !== undefined &&
+      evidence.headRevision !== null &&
+      evidence.headRevision !== handoffHead
+    )
+      throw new Error("CI head revision cannot change across a delivery handoff");
+    const externalKey = `${evidence.provider}\u0000${evidence.externalRunId}`;
+    const externalBinding = this.ciExternalRunBindings.get(externalKey);
+    if (externalBinding !== undefined && externalBinding.handoffId !== handoff.id)
+      throw new Error("CI provider run is already bound to another delivery handoff");
+    if (
+      externalBinding?.headRevision !== null &&
+      externalBinding?.headRevision !== undefined &&
+      evidence.headRevision !== null &&
+      externalBinding.headRevision !== evidence.headRevision
+    )
+      throw new Error("CI provider run head revision cannot change across observations");
+    if (
+      entries.some(
+        (entry) =>
+          entry.id === evidence.id ||
+          (entry.provider === evidence.provider &&
+            entry.externalRunId === evidence.externalRunId &&
+            Date.parse(entry.observedAt) === Date.parse(evidence.observedAt)),
+      )
+    ) {
+      throw new Error("Duplicate CI observation");
+    }
+    this.ciExternalRunBindings.set(externalKey, {
+      handoffId: handoff.id,
+      headRevision: externalBinding?.headRevision ?? evidence.headRevision,
+    });
+    if (evidence.headRevision !== null) this.ciHeadByHandoff.set(handoff.id, evidence.headRevision);
+    entries.push(structuredClone(evidence));
+    this.ciEvidenceByHandoff.set(handoff.id, entries);
+  }
+
+  async listCiEvidence(handoffId: string): Promise<CiEvidence[]> {
+    return structuredClone(
+      (this.ciEvidenceByHandoff.get(handoffId) ?? []).toSorted(
+        (a, b) => Date.parse(a.observedAt) - Date.parse(b.observedAt) || a.id.localeCompare(b.id),
+      ),
+    );
   }
 }

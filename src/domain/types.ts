@@ -164,6 +164,13 @@ export interface Run {
   };
   /** Exact lifecycle-driving M12 values constructed by RunService and rebound by the store. */
   strategyObservationBinding?: StrategyObservationBinding;
+  /** M13 immutable candidate-handoff identity; the store re-hashes the full payload. */
+  deliveryHandoffBinding?: {
+    handoffId: string;
+    candidateId: string;
+    candidateDigest: string;
+    payloadDigest: string;
+  };
 }
 
 export interface StrategyObservationBinding {

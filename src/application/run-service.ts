@@ -20,6 +20,15 @@ import {
 import { ProviderCircuitBreaker, ProviderCircuitOpenError } from "../domain/circuit-breaker";
 import { deriveDebtDelta } from "../domain/debt";
 import {
+  assertCiEvidence,
+  buildDeliveryHandoff,
+  deliveryHandoffDigest,
+  deriveDeliveryDecision,
+  type CiEvidence,
+  type DeliveryDecision,
+  type DeliveryHandoff,
+} from "../domain/delivery";
+import {
   assertHealthSample,
   deriveChangeHealth,
   deriveHealthTrend,
@@ -52,6 +61,7 @@ import {
 import type {
   AgentAdapter,
   AgentSession,
+  CiEvidenceVerifierPort,
   ContextBuilderPort,
   ContextBuildResult,
   PerformanceVerifierPort,
@@ -199,6 +209,7 @@ interface RunServiceDependencies {
   recoveryPolicy?: Partial<RecoveryPolicy>;
   budgetReservationPolicy?: Partial<BudgetReservationPolicy>;
   circuitBreaker?: ProviderCircuitBreaker;
+  ciEvidenceVerifier?: CiEvidenceVerifierPort;
 }
 
 export interface VerificationRepairPolicy {
@@ -543,6 +554,54 @@ export class RunService {
 
   async artifacts(id: string): Promise<Artifact[]> {
     return this.dependencies.store.listArtifacts(id);
+  }
+
+  async delivery(id: string): Promise<DeliveryDecision | undefined> {
+    await this.requireRun(id);
+    const handoff = await this.dependencies.store.getDeliveryHandoff(id);
+    if (!handoff) return undefined;
+    const ciEvidence = await this.dependencies.store.listCiEvidence(handoff.id);
+    return deriveDeliveryDecision(handoff, ciEvidence);
+  }
+
+  async collectCiEvidence(
+    id: string,
+    input: { provider: string; externalRunId: string },
+  ): Promise<DeliveryDecision> {
+    await this.requireRun(id);
+    const handoff = await this.dependencies.store.getDeliveryHandoff(id);
+    if (!handoff) throw new Error(`Run ${id} has no verified delivery handoff`);
+    const verifier = this.dependencies.ciEvidenceVerifier;
+    if (!verifier) {
+      const error = new Error("No trusted external CI evidence verifier is configured") as Error & {
+        statusCode: number;
+      };
+      error.statusCode = 501;
+      throw error;
+    }
+    const collected = await verifier.collect({ handoff, ...input });
+    const evidence: CiEvidence = {
+      ...collected,
+      schemaVersion: 1,
+      id: crypto.randomUUID(),
+      handoffId: handoff.id,
+    };
+    assertCiEvidence(evidence);
+    if (
+      evidence.provider !== input.provider ||
+      evidence.externalRunId !== input.externalRunId ||
+      evidence.candidateId !== handoff.candidateId ||
+      evidence.candidateDigest !== handoff.candidateDigest ||
+      evidence.baseRevision !== handoff.baseRevision ||
+      (handoff.headRevision !== null && evidence.headRevision !== handoff.headRevision)
+    ) {
+      throw new Error("Trusted CI response is stale or references a different candidate");
+    }
+    await this.dependencies.store.saveCiEvidence(evidence);
+    return deriveDeliveryDecision(
+      handoff,
+      await this.dependencies.store.listCiEvidence(handoff.id),
+    );
   }
 
   async verifications(id: string): Promise<Verification[]> {
@@ -924,6 +983,7 @@ export class RunService {
       let repairAttempts = 0;
       let qualityReport: QualityReport | undefined;
       let strategyObservation: StrategyObservation | undefined;
+      let deliveryHandoff: DeliveryHandoff | undefined;
 
       for (;;) {
         candidate = await this.captureCandidate(
@@ -1117,6 +1177,24 @@ export class RunService {
         });
         run.strategyObservationBinding = strategyObservationBinding(strategyObservation);
       }
+      if (candidate && qualityReport && verification.state === "VERIFIED") {
+        deliveryHandoff = buildDeliveryHandoff({
+          id: crypto.randomUUID(),
+          projectId: projectIdentity(task.repositoryPath),
+          run,
+          task,
+          candidate: candidate.artifact,
+          verification,
+          qualityReport,
+          riskVector: candidate.assessment.riskVector,
+        });
+        run.deliveryHandoffBinding = {
+          handoffId: deliveryHandoff.id,
+          candidateId: deliveryHandoff.candidateId,
+          candidateDigest: deliveryHandoff.candidateDigest,
+          payloadDigest: deliveryHandoffDigest(deliveryHandoff),
+        };
+      }
       await this.dependencies.store.updateRun(run);
       await this.event(run.id, "RunCompleted", {
         state: run.state,
@@ -1233,6 +1311,24 @@ export class RunService {
         } catch (strategyError) {
           await this.event(run.id, "StrategyObservationFailed", {
             error: strategyError instanceof Error ? strategyError.message : String(strategyError),
+          });
+        }
+      }
+      // M13: immutable delivery evidence is created only for the final VERIFIED candidate. CI is
+      // intentionally absent here; an external verifier port must collect that evidence later.
+      if (deliveryHandoff) {
+        try {
+          await this.dependencies.store.saveDeliveryHandoff(deliveryHandoff);
+          await this.event(run.id, "DeliveryHandoffCreated", {
+            handoffId: deliveryHandoff.id,
+            candidateId: deliveryHandoff.candidateId,
+            candidateDigest: deliveryHandoff.candidateDigest,
+            ciStatus: "NOT_CHECKED",
+            mergeAuthority: "EXTERNAL_APPROVAL_REQUIRED",
+          });
+        } catch (deliveryError) {
+          await this.event(run.id, "DeliveryHandoffFailed", {
+            error: deliveryError instanceof Error ? deliveryError.message : String(deliveryError),
           });
         }
       }

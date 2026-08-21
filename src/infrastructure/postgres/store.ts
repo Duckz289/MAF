@@ -1,5 +1,12 @@
 import type { Pool } from "pg";
 import { assertHealthSample, type HealthSample } from "../../domain/health";
+import {
+  assertCiEvidence,
+  assertDeliveryHandoff,
+  deliveryHandoffDigest,
+  type CiEvidence,
+  type DeliveryHandoff,
+} from "../../domain/delivery";
 import type { RunStore } from "../../domain/ports";
 import { projectIdentity } from "../../domain/project-identity";
 import { redactSensitiveData } from "../../domain/security";
@@ -517,5 +524,200 @@ export class PostgresRunStore implements RunStore {
     if (!Number.isSafeInteger(ordinal) || ordinal < 0)
       throw new Error("Strategy canary allocator returned an invalid ordinal");
     return ordinal;
+  }
+
+  async saveDeliveryHandoff(handoff: DeliveryHandoff): Promise<void> {
+    const sanitized: unknown = redactSensitiveData(handoff);
+    assertDeliveryHandoff(sanitized);
+    handoff = sanitized;
+    const binding = await this.pool.query<{ repositoryPath: string }>(
+      `SELECT t.repository_path AS "repositoryPath"
+       FROM runs r JOIN tasks t ON t.id = r.task_id WHERE r.id = $1`,
+      [handoff.runId],
+    );
+    const repositoryPath = binding.rows[0]?.repositoryPath;
+    if (!repositoryPath || projectIdentity(repositoryPath) !== handoff.projectId)
+      throw new Error("Delivery handoff project does not match its run task");
+    const inserted = await this.pool.query(
+      `INSERT INTO delivery_handoffs(
+         id, project_id, run_id, candidate_id, candidate_digest, base_revision, payload, created_at
+       )
+       SELECT $1, $2, r.id, a.id, $5, $6, $7, $8
+       FROM runs r
+       JOIN tasks t ON t.id = r.task_id
+       JOIN artifacts a ON a.id = $4 AND a.run_id = r.id
+       WHERE r.id = $3
+         AND r.state = 'COMPLETED'
+         AND r.verification_state = 'VERIFIED'
+         AND t.repository_path = $9
+         AND a.kind = 'DIFF'
+         AND a.digest = $5
+         AND a.metadata->>'baseRevision' = $6
+         AND r.payload->>'trustState' = $10
+         AND (r.payload->>'completedAt')::timestamptz = $8
+         AND r.payload->'deliveryHandoffBinding'->>'handoffId' = ($1::uuid)::text
+         AND r.payload->'deliveryHandoffBinding'->>'candidateId' = ($4::uuid)::text
+         AND r.payload->'deliveryHandoffBinding'->>'candidateDigest' = $5
+         AND r.payload->'deliveryHandoffBinding'->>'payloadDigest' = $11
+         AND EXISTS (
+           SELECT 1 FROM verifications v
+           WHERE v.id = $12 AND v.run_id = r.id AND v.candidate_id = a.id AND v.state = 'VERIFIED'
+         )
+       RETURNING run_id`,
+      [
+        handoff.id,
+        handoff.projectId,
+        handoff.runId,
+        handoff.candidateId,
+        handoff.candidateDigest,
+        handoff.baseRevision,
+        handoff,
+        handoff.createdAt,
+        repositoryPath,
+        handoff.trustState,
+        deliveryHandoffDigest(handoff),
+        handoff.verification.id,
+      ],
+    );
+    if (inserted.rowCount !== 1)
+      throw new Error("Delivery handoff is not bound to its terminal verified candidate");
+  }
+
+  async getDeliveryHandoff(runId: string): Promise<DeliveryHandoff | undefined> {
+    const result = await this.pool.query<{
+      id: string;
+      projectId: string;
+      runId: string;
+      candidateId: string;
+      candidateDigest: string;
+      baseRevision: string;
+      createdAt: string;
+      payload: unknown;
+    }>(
+      `SELECT id::text, project_id AS "projectId", run_id::text AS "runId",
+              candidate_id::text AS "candidateId", candidate_digest AS "candidateDigest",
+              base_revision AS "baseRevision", created_at::text AS "createdAt", payload
+       FROM delivery_handoffs WHERE run_id=$1`,
+      [runId],
+    );
+    const row = result.rows[0];
+    if (!row) return undefined;
+    const payload = row?.payload;
+    if (payload === undefined || payload === null) return undefined;
+    assertDeliveryHandoff(payload);
+    if (
+      payload.id !== row.id ||
+      payload.projectId !== row.projectId ||
+      payload.runId !== row.runId ||
+      payload.candidateId !== row.candidateId ||
+      payload.candidateDigest !== row.candidateDigest ||
+      payload.baseRevision !== row.baseRevision ||
+      Date.parse(payload.createdAt) !== Date.parse(row.createdAt)
+    ) {
+      throw new Error("Delivery handoff payload identity does not match its durable row binding");
+    }
+    return payload;
+  }
+
+  async saveCiEvidence(evidence: CiEvidence): Promise<void> {
+    const sanitized: unknown = redactSensitiveData(evidence);
+    assertCiEvidence(sanitized);
+    evidence = sanitized;
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const inserted = await client.query(
+        `WITH handoff_head AS (
+         UPDATE delivery_handoffs h
+         SET ci_head_revision = COALESCE(ci_head_revision, $12)
+         WHERE h.id = $2
+           AND h.candidate_id = $8
+           AND h.candidate_digest = $9
+           AND h.base_revision = $10
+           AND (h.payload->'headRevision' = 'null'::jsonb
+             OR h.payload->'headRevision' = $11::jsonb)
+           AND (ci_head_revision IS NULL OR $12::text IS NULL OR ci_head_revision = $12)
+         RETURNING h.id
+       ), external_binding AS (
+         INSERT INTO ci_run_bindings(provider, external_run_id, handoff_id, head_revision)
+         SELECT $3, $4, id, $12 FROM handoff_head
+         ON CONFLICT (provider, external_run_id) DO UPDATE
+           SET head_revision = COALESCE(ci_run_bindings.head_revision, EXCLUDED.head_revision)
+           WHERE ci_run_bindings.handoff_id = EXCLUDED.handoff_id
+             AND (ci_run_bindings.head_revision IS NULL
+               OR EXCLUDED.head_revision IS NULL
+               OR ci_run_bindings.head_revision = EXCLUDED.head_revision)
+         RETURNING handoff_id
+       )
+       INSERT INTO ci_evidence(
+         id, handoff_id, provider, external_run_id, conclusion, observed_at, payload
+       )
+       SELECT $1, h.id, $3, $4, $5, $6, $7
+       FROM delivery_handoffs h
+       JOIN handoff_head hh ON hh.id = h.id
+       JOIN external_binding b ON b.handoff_id = h.id
+       WHERE h.id = $2
+         AND h.candidate_id = $8
+         AND h.candidate_digest = $9
+         AND h.base_revision = $10
+         AND (h.payload->'headRevision' = 'null'::jsonb
+           OR h.payload->'headRevision' = $11::jsonb)
+       RETURNING id`,
+        [
+          evidence.id,
+          evidence.handoffId,
+          evidence.provider,
+          evidence.externalRunId,
+          evidence.conclusion,
+          evidence.observedAt,
+          evidence,
+          evidence.candidateId,
+          evidence.candidateDigest,
+          evidence.baseRevision,
+          JSON.stringify(evidence.headRevision),
+          evidence.headRevision,
+        ],
+      );
+      if (inserted.rowCount !== 1)
+        throw new Error("CI evidence is stale or not bound to its delivery handoff");
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async listCiEvidence(handoffId: string): Promise<CiEvidence[]> {
+    const result = await this.pool.query<{
+      id: string;
+      handoffId: string;
+      provider: string;
+      externalRunId: string;
+      conclusion: string;
+      observedAt: string;
+      payload: unknown;
+    }>(
+      `SELECT id::text, handoff_id::text AS "handoffId", provider,
+              external_run_id AS "externalRunId", conclusion,
+              observed_at::text AS "observedAt", payload
+       FROM ci_evidence WHERE handoff_id=$1 ORDER BY observed_at, id`,
+      [handoffId],
+    );
+    return result.rows.map((row) => {
+      assertCiEvidence(row.payload);
+      if (
+        row.payload.id !== row.id ||
+        row.payload.handoffId !== row.handoffId ||
+        row.payload.provider !== row.provider ||
+        row.payload.externalRunId !== row.externalRunId ||
+        row.payload.conclusion !== row.conclusion ||
+        Date.parse(row.payload.observedAt) !== Date.parse(row.observedAt)
+      ) {
+        throw new Error("CI evidence payload identity does not match its durable row binding");
+      }
+      return row.payload;
+    });
   }
 }

@@ -10,6 +10,8 @@ All routes are versioned under `/api/v1`.
 | `GET` | `/runs/:id/events` | Stream SSE lifecycle events; `follow=false` returns a snapshot |
 | `GET` | `/runs/:id/artifacts` | Inspect captured artifacts |
 | `GET` | `/runs/:id/verifications` | Inspect trusted verification attempts and candidate lineage |
+| `GET` | `/runs/:id/delivery` | Read the immutable candidate handoff plus separately derived CI/merge decision |
+| `POST` | `/runs/:id/delivery/ci-evidence` | Ask the configured trusted CI adapter to collect an external run by provider + run ID; clients cannot submit a conclusion |
 | `GET` | `/runs/:id/runtime-signals` | Inspect bounded signal-snapshot history and provenance |
 | `GET` | `/runs/:id/mode-explanation` | Explain desired vs effective mode, pending enforcement, and the enforced transition timeline |
 | `POST` | `/runs/:id/cancel` | Cancel a live run |
@@ -81,6 +83,22 @@ trend computation rather than silently repaired.
 Samples also carry candidate ID, full diff digest, resolved base revision, and the explicit evidence
 basis `VERIFIED_CANDIDATE`. Failed/quarantined candidates do not enter the ledger, and even a
 verified sample remains pre-merge candidate evidence—not CI, merge, deployment, or production proof.
+
+Delivery handoffs are created only for the final trusted-verifier-passing candidate. They expose
+candidate/digest, resolved base revision, a nullable external head revision, sanitized changed
+files, quality/security/performance/resilience states, warning categories, opaque evidence
+references, and recorded budget/cost. Raw verifier output and quality evidence text are excluded.
+`GET /runs/:id/delivery` keeps `candidateQuality`, `ciStatus`, `mergeEligibility`, and
+`mergeAuthority` separate. Missing CI is `NOT_CHECKED` and required CI failure blocks eligibility.
+Even `ELIGIBLE` retains `EXTERNAL_APPROVAL_REQUIRED` and `autoMergeAllowed: false`.
+
+The CI collection endpoint accepts no PASS/FAIL field. Without a configured external verifier it
+returns 501, explicitly leaving live CI integration `NOT_VERIFIED`. A future adapter must obtain
+the result from the provider and echo the exact handoff candidate/digest/base binding. PASS also
+requires a concrete 40/64-character provider head revision and all named checks PASS; when a head
+was already known it must match exactly. Stale or mismatched evidence is rejected before
+persistence. Re-polling one external run appends immutable observations, while that provider/run
+identity can never be rebound to a different handoff.
 
 Security redaction is applied before run/task errors, changed filenames/runtime signals,
 verification output, recovery capsules, mode-transition evidence, events, and artifact previews

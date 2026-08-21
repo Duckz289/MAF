@@ -8,7 +8,7 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 - Start branch: `adaptive-harness/runtime-signals-v0.1` at `357ab60` (clean tree).
 - Baseline validation (2026-08-19): `format:check`, `lint`, `typecheck`, `test` (49 passing),
   `build` (server + UI), `compose:check`, `smoke` — all PASS.
-- Current milestone: M13 — PR / CI Integration (M12 implementation verified).
+- Current milestone: M14 — Production Feedback Foundations (M13 implementation verified).
 
 ## Confirmed repository facts
 
@@ -45,7 +45,7 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 | M10 | Production-like resilience | DONE (VERIFIED) | ff59363 + 7dfb1af |
 | M11 | Longitudinal governance | DONE (VERIFIED) | 3449b54 |
 | M12 | Frontier baselines + strategy learning | DONE (VERIFIED) | b7a3156 |
-| M13 | PR / CI integration | NOT STARTED | |
+| M13 | PR / CI integration | DONE (VERIFIED) | pending local commit |
 | M14 | Production feedback foundations | NOT STARTED | |
 | M15 | Integrated benchmark + hardening | NOT STARTED | |
 
@@ -1017,6 +1017,35 @@ M12 verification (2026-08-21):
 - Live PostgreSQL validation passed 3/3 tests across the strategy and health stores, including the
   adversarial binding cases. Final `npm run validate` passed `format:check`, lint, typecheck, 368
   tests (3 opt-in PostgreSQL tests skipped), server/UI builds, `compose:check`, and production smoke.
+
+## M13 design (PR / CI Integration)
+
+1. A terminal VERIFIED candidate produces one immutable sanitized handoff containing opaque
+   project/run/candidate identity, full diff digest, resolved base revision, nullable external head
+   revision, changed files, verification and quality states, warning categories, opaque evidence
+   references, and budget/cost. Raw output and quality evidence text are excluded.
+2. The complete handoff payload is hash-bound on the canonical Run. In-memory and PostgreSQL stores
+   rebind it to the exact DIFF artifact, digest, base revision, verification ID, trust state, and
+   completion time; a stale candidate cannot reuse another candidate's evidence.
+3. CI stays external. `CiEvidenceVerifierPort` accepts only a provider and external run reference,
+   then must collect and echo exact candidate/digest/base identity. PASS requires a concrete
+   provider head SHA and consistent named checks. Immutable polling observations share one global
+   provider-run→handoff binding, preventing replay. The HTTP client cannot post a PASS/FAIL
+   assertion. With no configured live adapter, collection returns 501 and remains
+   honestly `NOT_VERIFIED` rather than fabricating CI.
+4. Candidate quality, CI state, merge eligibility, and merge authority are separate outputs.
+   Missing required CI is `NOT_CHECKED`/pending; FAIL/CANCELLED blocks. Even eligible work retains
+   `EXTERNAL_APPROVAL_REQUIRED` and `autoMergeAllowed: false`, including HIGH-risk work.
+
+M13 verification (2026-08-21):
+
+- Independent adversarial review reproduced and closed unbound/contradictory CI PASS, cross-handoff
+  provider-run replay, null/mutable head identity, timestamp-ordering, one-shot polling, and
+  PostgreSQL rejected-write poisoning. Final rereview reported no material residual findings.
+- Focused domain/in-memory coverage passed 8/8. Live PostgreSQL migration-008 coverage passed 1/1,
+  including rejected stale/head-repaint observations followed by a valid write, proving rollback.
+- Final aggregate validation passed formatter, lint, typecheck, 376 tests (4 opt-in PostgreSQL
+  tests skipped), server/UI builds, Compose validation, and production smoke.
 
 ## Deferred work
 

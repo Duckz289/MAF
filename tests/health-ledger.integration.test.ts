@@ -94,6 +94,22 @@ describe("M11 health ledger wiring", () => {
     expect(
       await service.strategyAssessment(strategyEvidence.scope, strategyEvidence.strategy),
     ).toMatchObject({ lifecycle: "SHADOW", observationCount: 1 });
+    const delivery = await service.delivery(first.id);
+    expect(delivery).toMatchObject({
+      ciStatus: "NOT_CHECKED",
+      mergeEligibility: "PENDING",
+      mergeAuthority: "EXTERNAL_APPROVAL_REQUIRED",
+      autoMergeAllowed: false,
+      handoff: {
+        runId: first.id,
+        candidateId: sample.candidateId,
+        candidateDigest: sample.candidateDigest,
+        headRevision: null,
+      },
+    });
+    await expect(
+      service.collectCiEvidence(first.id, { provider: "github", externalRunId: "claimed-pass" }),
+    ).rejects.toMatchObject({ statusCode: 501 });
 
     // A second run produces a second sample and therefore a trend and a maintenance decision.
     const second = await service.create({

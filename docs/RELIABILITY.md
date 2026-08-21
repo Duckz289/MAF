@@ -177,4 +177,15 @@ allocator is monotonic, store-owned, and isolated by exact scope + challenger id
 service consumer selects exactly 2 of 20 eligible slots in the deterministic regression. Store
 tests also reject backdated/repriced/repainted lifecycle fields even when the run and candidate IDs
 are genuine.
+M13 delivery tests prove that a completed VERIFIED run creates one immutable candidate handoff,
+missing CI remains `NOT_CHECKED`/pending, CI failure blocks eligibility, and PASS affects only
+eligibility—not merge authority. In-memory and live PostgreSQL persistence reject candidate/digest
+or base/head swaps and provider-run replay. PENDING→PASS polling retains immutable observations;
+PASS requires a concrete provider head SHA and consistent named checks. CI collection accepts only
+a provider-owned run reference and refuses to run without a trusted adapter; callers and models
+cannot post a PASS assertion. Handoffs omit raw
+quality/verifier evidence, pass through recursive redaction, and expose only bounded statuses,
+sanitized paths, opaque evidence references, and numeric budget/cost data. Live provider polling
+remains `NOT_VERIFIED` because no CI credentials or adapter are configured.
+
 The production-bundle smoke test repeats both outcomes against in-memory and PostgreSQL adapters.

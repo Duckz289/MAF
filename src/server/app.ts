@@ -109,6 +109,10 @@ const createRunSchema = z.object({
 const healthLedgerQuerySchema = z.object({
   projectId: z.string().min(1).max(200).optional(),
 });
+const ciEvidenceRequestSchema = z.object({
+  provider: z.string().trim().min(1).max(200),
+  externalRunId: z.string().trim().min(1).max(500),
+});
 
 const transitionSchema = z.object({
   to: z.enum(["STRICT", "GUIDED", "SOLO_NATIVE"]),
@@ -309,6 +313,16 @@ export const createApp = async (): Promise<AppRuntime> => {
   app.get<{ Params: { id: string } }>("/api/v1/runs/:id/verifications", async (request) =>
     runs.verifications(request.params.id),
   );
+  app.get<{ Params: { id: string } }>("/api/v1/runs/:id/delivery", async (request, reply) => {
+    const decision = await runs.delivery(request.params.id);
+    return decision
+      ? redactSensitiveData(decision)
+      : reply.code(404).send({ error: "DELIVERY_HANDOFF_NOT_FOUND" });
+  });
+  app.post<{ Params: { id: string } }>("/api/v1/runs/:id/delivery/ci-evidence", async (request) => {
+    const body = ciEvidenceRequestSchema.parse(request.body);
+    return redactSensitiveData(await runs.collectCiEvidence(request.params.id, body));
+  });
   app.get<{ Params: { id: string } }>("/api/v1/runs/:id/runtime-signals", async (request) =>
     runs.signalSnapshots(request.params.id),
   );

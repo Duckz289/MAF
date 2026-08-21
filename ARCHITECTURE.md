@@ -467,6 +467,26 @@ opaque hash of exact scope plus challenger identity, rather than caller input or
 counter. Automatic routing of `create()` is not enabled, so callers must explicitly adopt a
 returned decision.
 
+## Candidate delivery and external CI
+
+M13 adds an immutable delivery handoff between MAF verification and external PR/CI systems. The
+handoff is generated only from the terminal VERIFIED candidate and binds project, run, candidate,
+full diff digest, resolved base revision, nullable external head revision, sanitized changed-file
+set, quality vector, warning categories, evidence references, and budget/cost. A SHA-256 binding of
+the complete sanitized payload is persisted on the Run; both stores revalidate it against the
+candidate artifact and verification before accepting migration-008 delivery state.
+
+CI remains an upstream evidence source behind `CiEvidenceVerifierPort`. A request contains only a
+provider and external run identifier; it cannot assert a result. The adapter must collect and echo
+the candidate/digest/base identity before its PASS/FAIL/PENDING/CANCELLED evidence is stored. PASS
+requires a concrete provider head revision and consistent all-PASS named checks. Polling appends
+immutable observations, while a separate global provider-run binding prevents replay against
+another handoff.
+No live adapter is configured in the reference server, so that capability is `NOT_VERIFIED` and
+missing CI remains `NOT_CHECKED`. Candidate quality, CI status, merge eligibility, and merge
+authority are separate. MAF never auto-merges: even eligible low-risk work reports
+`EXTERNAL_APPROVAL_REQUIRED`, and high-risk work cannot silently acquire merge authority.
+
 ## Mission tree and project graph
 
 `MissionTree` represents work flow, while `RepositoryIndex` represents code dependency flow.
