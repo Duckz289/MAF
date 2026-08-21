@@ -17,7 +17,7 @@ import {
 } from "@fluentui/react-icons";
 import { type FormEvent, useEffect, useState } from "react";
 import { qualityPreferenceDescription } from "../presentation";
-import type { Agent, Navigate, Project, Run } from "../types";
+import type { Agent, Navigate, Project, ProjectDetection, Run } from "../types";
 
 const useStyles = makeStyles({
   composer: {
@@ -83,6 +83,7 @@ const useStyles = makeStyles({
     "@media (max-width: 650px)": { gridTemplateColumns: "1fr" },
   },
   error: { width: "min(940px, 100%)", margin: "12px auto 0" },
+  chipRow: { display: "flex", gap: "6px", flexWrap: "wrap", marginTop: "8px" },
 });
 
 export function TaskComposer({
@@ -114,6 +115,7 @@ export function TaskComposer({
   const [credentialReference, setCredentialReference] = useState("");
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string>();
+  const [detection, setDetection] = useState<ProjectDetection>();
   const activeAgent = agents.find((agent) => agent.active);
   const selectedProject = projects.find((project) => project.id === projectId) ?? projects[0];
 
@@ -127,6 +129,29 @@ export function TaskComposer({
       setMode(selectedProject.preferences.executionModePreference);
     }
   }, [revision, selectedProject, qualityTouched, modeTouched]);
+
+  useEffect(() => {
+    if (!selectedProject) {
+      setDetection(undefined);
+      return;
+    }
+    let cancelled = false;
+    fetch("/api/v1/filesystem/detect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repositoryPath: selectedProject.repositoryPath }),
+    })
+      .then((response) => (response.ok ? response.json() : undefined))
+      .then((result) => {
+        if (!cancelled) setDetection(result);
+      })
+      .catch(() => {
+        if (!cancelled) setDetection(undefined);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedProject]);
 
   const startTask = async () => {
     if (!selectedProject) return;
@@ -330,14 +355,32 @@ export function TaskComposer({
             <Field label="Revision">
               <Input value={revision} onChange={(_event, data) => setRevision(data.value)} />
             </Field>
-            <Field label="Lệnh xác minh">
+            <Field
+              hint="Để trống thì MAF chỉ kiểm tra có tệp nào thay đổi hay không, không chạy lệnh nào."
+              label="Lệnh xác minh"
+            >
               <Input
                 placeholder="npm test"
                 value={verification}
                 onChange={(_event, data) => setVerification(data.value)}
               />
+              {detection?.verificationCommands.length ? (
+                <div className={styles.chipRow}>
+                  {detection.verificationCommands.map((entry) => (
+                    <Button
+                      appearance="outline"
+                      key={entry.command}
+                      onClick={() => setVerification(entry.command)}
+                      size="small"
+                      type="button"
+                    >
+                      {entry.label}: {entry.command}
+                    </Button>
+                  ))}
+                </div>
+              ) : null}
             </Field>
-            <Field label="Tệp mong đợi">
+            <Field hint="Tùy chọn — dùng thay hoặc cùng với lệnh xác minh." label="Tệp mong đợi">
               <Input
                 placeholder="src/feature.ts"
                 value={expectedFile}
