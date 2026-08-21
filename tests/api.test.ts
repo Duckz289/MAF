@@ -67,6 +67,12 @@ describe("control API", () => {
         reasons: ["no trusted production feedback has been observed"],
       },
     });
+
+    // The decisions inbox is a projection over run state that genuinely needs user authority —
+    // with no runs at all, it must report an honest empty list, not a fabricated item.
+    const decisions = await runtime.app.inject({ method: "GET", url: "/api/v1/decisions" });
+    expect(decisions.statusCode).toBe(200);
+    expect(decisions.json()).toEqual([]);
   });
 
   it("explains runtime-derived mode transitions through versioned resources", async () => {
@@ -217,16 +223,48 @@ describe("control API", () => {
     expect(projectsAfter.json().projects).toMatchObject([{ name: "Harness" }]);
 
     const connections = await runtime.app.inject({ method: "GET", url: "/api/v1/connections" });
-    expect(connections.json()).toMatchObject([
-      { id: "claude-code", method: "NATIVE_SESSION", status: "UNKNOWN" },
-      {
-        id: "openai-api",
-        method: "CREDENTIAL_REFERENCE",
-        credentialReference: "credential://user/openai/default",
-      },
-      { id: "development-auth", capability: "Chỉ dùng cho môi trường phát triển local" },
-    ]);
-    expect(JSON.stringify(connections.json())).not.toMatch(/api[_-]?key|clientSecret|token/i);
+    expect(connections.json()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "claude-code", method: "NATIVE_SESSION", status: "UNKNOWN" }),
+        expect.objectContaining({
+          id: "codex-cli",
+          method: "NATIVE_SESSION",
+          capability: "Executor CLI native với Sign in with ChatGPT",
+        }),
+        expect.objectContaining({ id: "openai-api", method: "API_KEY", status: "NOT_CONFIGURED" }),
+        expect.objectContaining({ id: "anthropic-api", method: "API_KEY" }),
+        expect.objectContaining({ id: "gemini-api", category: "AI_PROVIDER" }),
+        expect.objectContaining({ id: "xai-api", method: "API_KEY" }),
+        expect.objectContaining({ id: "zai-api", method: "API_KEY" }),
+        expect.objectContaining({
+          id: "development-auth",
+          capability: "Chỉ dùng cho môi trường phát triển local",
+        }),
+      ]),
+    );
+    expect(JSON.stringify(connections.json())).not.toContain("sk-test-secret-that-must-not-leak");
+
+    process.env.MAF_TEST_OPENAI_KEY = "sk-test-secret-that-must-not-leak";
+    const configured = await runtime.app.inject({
+      method: "POST",
+      url: "/api/v1/connections/openai-api/configure",
+      payload: { source: "ENVIRONMENT", environmentVariable: "MAF_TEST_OPENAI_KEY" },
+    });
+    expect(configured.statusCode).toBe(200);
+    expect(configured.json()).toMatchObject({
+      id: "openai-api",
+      status: "CONFIGURED",
+      credentialReference: "credential://environment/maf_test_openai_key",
+    });
+    const providerTest = await runtime.app.inject({
+      method: "POST",
+      url: "/api/v1/connections/openai-api/test",
+    });
+    expect(providerTest.json()).toMatchObject({ status: "CONFIGURED" });
+    expect(`${configured.body}\n${providerTest.body}`).not.toContain(
+      "sk-test-secret-that-must-not-leak",
+    );
+    delete process.env.MAF_TEST_OPENAI_KEY;
 
     const agents = await runtime.app.inject({ method: "GET", url: "/api/v1/agents" });
     expect(agents.json()).toEqual(
@@ -270,5 +308,28 @@ describe("control API", () => {
       attention: [],
       usage: { hasKnownCost: false },
     });
+  });
+
+  it("selects Codex CLI only through its native ChatGPT-owned session", async () => {
+    const priorAgent = process.env.MAF_NATIVE_AGENT;
+    process.env.MAF_NATIVE_AGENT = "codex";
+    try {
+      runtime = await createApp();
+      const agents = await runtime.app.inject({ method: "GET", url: "/api/v1/agents" });
+      expect(agents.json()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "codex-cli",
+            active: true,
+            authMethod: "NATIVE_SESSION",
+          }),
+        ]),
+      );
+      const connections = await runtime.app.inject({ method: "GET", url: "/api/v1/connections" });
+      expect(JSON.stringify(connections.json())).not.toMatch(/refresh.?token|chatgpt.*cookie/iu);
+    } finally {
+      if (priorAgent === undefined) delete process.env.MAF_NATIVE_AGENT;
+      else process.env.MAF_NATIVE_AGENT = priorAgent;
+    }
   });
 });
