@@ -4,10 +4,10 @@ import {
   Input,
   MessageBar,
   MessageBarBody,
+  makeStyles,
   Select,
   Text,
   Textarea,
-  makeStyles,
 } from "@fluentui/react-components";
 import {
   ChevronDown20Regular,
@@ -15,9 +15,9 @@ import {
   Play20Regular,
   ShieldCheckmark20Regular,
 } from "@fluentui/react-icons";
-import { useEffect, useState, type FormEvent } from "react";
-import type { Agent, Navigate, Project, Run } from "../types";
+import { type FormEvent, useEffect, useState } from "react";
 import { qualityPreferenceDescription } from "../presentation";
+import type { Agent, Navigate, Project, Run } from "../types";
 
 const useStyles = makeStyles({
   composer: {
@@ -102,9 +102,12 @@ export function TaskComposer({
   const [projectId, setProjectId] = useState(defaultProjectId ?? projects[0]?.id ?? "");
   const [prompt, setPrompt] = useState("");
   const [quality, setQuality] = useState("BALANCED");
-  const [budget, setBudget] = useState("AUTO");
+  const [qualityTouched, setQualityTouched] = useState(false);
+  const [budgetChoice, setBudgetChoice] = useState<"AUTOMATIC" | "CUSTOM">("AUTOMATIC");
+  const [customBudget, setCustomBudget] = useState("");
   const [advanced, setAdvanced] = useState(false);
   const [mode, setMode] = useState("AUTO");
+  const [modeTouched, setModeTouched] = useState(false);
   const [revision, setRevision] = useState("");
   const [verification, setVerification] = useState("");
   const [expectedFile, setExpectedFile] = useState("");
@@ -115,14 +118,29 @@ export function TaskComposer({
   const selectedProject = projects.find((project) => project.id === projectId) ?? projects[0];
 
   useEffect(() => {
-    if (selectedProject && !revision) setRevision(selectedProject.revision);
-  }, [revision, selectedProject]);
+    if (!selectedProject) return;
+    if (!revision) setRevision(selectedProject.revision);
+    if (!qualityTouched && selectedProject.preferences.qualityPreference) {
+      setQuality(selectedProject.preferences.qualityPreference);
+    }
+    if (!modeTouched && selectedProject.preferences.executionModePreference) {
+      setMode(selectedProject.preferences.executionModePreference);
+    }
+  }, [revision, selectedProject, qualityTouched, modeTouched]);
 
   const startTask = async () => {
     if (!selectedProject) return;
     setRunning(true);
     setError(undefined);
     try {
+      const customLimit = budgetChoice === "CUSTOM" ? Number(customBudget) : undefined;
+      const projectLimit = selectedProject.preferences.budgetLimitUsd;
+      const budgetPayload =
+        customLimit !== undefined && Number.isFinite(customLimit) && customLimit > 0
+          ? { mode: selectedProject.preferences.budgetMode ?? "ADVISORY", limitUsd: customLimit }
+          : budgetChoice === "AUTOMATIC" && projectLimit !== undefined
+            ? { mode: selectedProject.preferences.budgetMode ?? "ADVISORY", limitUsd: projectLimit }
+            : undefined;
       const response = await fetch("/api/v1/runs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -131,6 +149,8 @@ export function TaskComposer({
           repositoryPath: selectedProject.repositoryPath,
           revision: revision.trim() || selectedProject.revision,
           ...(mode !== "AUTO" ? { mode } : {}),
+          qualityPreference: quality,
+          ...(budgetPayload ? { budget: budgetPayload } : {}),
           ...(verification.trim() || expectedFile.trim()
             ? {
                 verification: {
@@ -203,7 +223,10 @@ export function TaskComposer({
             <Select
               className={styles.select}
               value={quality}
-              onChange={(_event, data) => setQuality(data.value)}
+              onChange={(_event, data) => {
+                setQualityTouched(true);
+                setQuality(data.value);
+              }}
             >
               <option value="FAST">Nhanh</option>
               <option value="BALANCED">Cân bằng</option>
@@ -221,12 +244,11 @@ export function TaskComposer({
           <Field className={styles.control} label="Ngân sách" size="small">
             <Select
               className={styles.select}
-              value={budget}
-              onChange={(_event, data) => setBudget(data.value)}
+              value={budgetChoice}
+              onChange={(_event, data) => setBudgetChoice(data.value as "AUTOMATIC" | "CUSTOM")}
             >
-              <option value="AUTO">Tự động</option>
-              <option value="LOW">Ưu tiên thấp</option>
-              <option value="STANDARD">Tiêu chuẩn</option>
+              <option value="AUTOMATIC">Tự động</option>
+              <option value="CUSTOM">Tùy chỉnh</option>
             </Select>
           </Field>
           <Button
@@ -239,11 +261,31 @@ export function TaskComposer({
             {running ? "Đang chạy" : "Chạy tác vụ"}
           </Button>
         </div>
+        {budgetChoice === "CUSTOM" ? (
+          <div className={styles.controls} style={{ gridTemplateColumns: "1fr", paddingTop: 0 }}>
+            <Field
+              hint="MAF giữ trong giới hạn này và dành riêng phần cần thiết cho xác minh."
+              label="Giới hạn tối đa cho tác vụ này ($)"
+            >
+              <Input
+                onChange={(_event, data) => setCustomBudget(data.value)}
+                placeholder="1.00"
+                type="number"
+                value={customBudget}
+              />
+            </Field>
+          </div>
+        ) : null}
         <div className={styles.preferenceNote}>
           <Info20Regular />
           <Text size={200}>
-            {qualityPreferenceDescription(quality)} Chất lượng và ngân sách hiện là ưu tiên giao
-            diện, chưa phải giới hạn thực thi được đảm bảo.
+            {qualityPreferenceDescription(quality)}{" "}
+            {selectedProject?.preferences.budgetLimitUsd !== undefined &&
+            budgetChoice === "AUTOMATIC"
+              ? `Ngân sách tự động dùng mặc định của dự án: $${selectedProject.preferences.budgetLimitUsd.toFixed(2)}.`
+              : budgetChoice === "AUTOMATIC"
+                ? "Chưa đặt giới hạn ngân sách — tác vụ không bị chặn bởi ngân sách."
+                : ""}
           </Text>
         </div>
       </div>
@@ -272,7 +314,13 @@ export function TaskComposer({
               label="Chế độ thực thi"
               hint="Tự động để MAF chọn dựa trên tín hiệu có bằng chứng."
             >
-              <Select value={mode} onChange={(_event, data) => setMode(data.value)}>
+              <Select
+                value={mode}
+                onChange={(_event, data) => {
+                  setModeTouched(true);
+                  setMode(data.value);
+                }}
+              >
                 <option value="AUTO">Tự động</option>
                 <option value="STRICT">STRICT</option>
                 <option value="GUIDED">GUIDED</option>
