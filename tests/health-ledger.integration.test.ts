@@ -80,6 +80,20 @@ describe("M11 health ledger wiring", () => {
     // DomainTelemetryRecorder implements listRecords, so the operational group is measured.
     expect(sample.operational?.taskCount).toBe(1);
     expect(sample.operational?.modelMix).toBeDefined();
+    const firstStrategyEvidence = await store.listStrategyObservations(sample.projectId);
+    expect(firstStrategyEvidence).toHaveLength(1);
+    const strategyEvidence = firstStrategyEvidence[0];
+    if (!strategyEvidence) throw new Error("strategy evidence was not persisted");
+    expect(strategyEvidence).toMatchObject({
+      runId: first.id,
+      candidateId: sample.candidateId,
+      candidateDigest: sample.candidateDigest,
+      source: "RUN",
+      evidenceBasis: "RUN_STORE_VERIFIED",
+    });
+    expect(
+      await service.strategyAssessment(strategyEvidence.scope, strategyEvidence.strategy),
+    ).toMatchObject({ lifecycle: "SHADOW", observationCount: 1 });
 
     // A second run produces a second sample and therefore a trend and a maintenance decision.
     const second = await service.create({
@@ -96,6 +110,7 @@ describe("M11 health ledger wiring", () => {
 
     ledger = await service.healthLedger();
     expect(ledger.samples).toHaveLength(2);
+    expect(await store.listStrategyObservations(sample.projectId)).toHaveLength(2);
     expect(ledger.trend).toBeDefined();
     expect(ledger.maintenance).toBeDefined();
     // Independent run bases do not establish ancestry, so structural direction remains unknown.
@@ -113,6 +128,13 @@ describe("M11 health ledger wiring", () => {
     expect((await service.get(failed.id))?.verificationState).toBe("QUARANTINED");
     ledger = await service.healthLedger();
     expect(ledger.samples).toHaveLength(2);
+    const strategyOutcomes = await store.listStrategyObservations(sample.projectId);
+    expect(strategyOutcomes).toHaveLength(3);
+    expect(strategyOutcomes.at(-1)).toMatchObject({
+      runId: failed.id,
+      verifiedSuccess: false,
+      evidenceBasis: "RUN_STORE_TERMINAL",
+    });
     expect(
       (await service.events(failed.id)).some((event) => event.type === "HealthSampleSkipped"),
     ).toBe(true);

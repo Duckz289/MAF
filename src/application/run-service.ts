@@ -86,6 +86,19 @@ import {
   redactSensitiveText,
 } from "../domain/security";
 import {
+  assessStrategy,
+  buildRunStrategyObservation,
+  deriveStrategyEvidenceBinding,
+  selectStrategy,
+  strategyAllocationKey,
+  strategyObservationBinding,
+  type StrategyAssessment,
+  type StrategyIdentity,
+  type StrategyObservation,
+  type StrategyScope,
+  type StrategySelection,
+} from "../domain/strategy";
+import {
   type Artifact,
   type Event,
   type ExecutionMode,
@@ -697,6 +710,29 @@ export class RunService {
     return { samples, trend, maintenance: deriveMaintenanceNeed(trend) };
   }
 
+  /** Read only store-bound production observations; benchmark shadow evidence is report-local. */
+  async strategyAssessment(
+    scope: StrategyScope,
+    challenger: StrategyIdentity,
+  ): Promise<StrategyAssessment> {
+    const observations = await this.dependencies.store.listStrategyObservations(scope.projectId);
+    return assessStrategy(scope, challenger, observations);
+  }
+
+  async selectExecutionStrategy(
+    scope: StrategyScope,
+    nativeFrontier: StrategyIdentity,
+    challenger: StrategyIdentity,
+  ): Promise<StrategySelection> {
+    const observations = await this.dependencies.store.listStrategyObservations(scope.projectId);
+    const initial = selectStrategy(scope, nativeFrontier, challenger, observations, 1);
+    if (initial.challenger.lifecycle !== "CANARY") return initial;
+    const canaryOrdinal = await this.dependencies.store.allocateStrategyCanaryOrdinal(
+      strategyAllocationKey(scope, challenger),
+    );
+    return selectStrategy(scope, nativeFrontier, challenger, observations, canaryOrdinal);
+  }
+
   /**
    * Cancels every active run and blocks new run creation until resumeNewRuns() is called, while
    * preserving worktrees, checkpoints, evidence, and candidate lineage. Never deletes anything —
@@ -886,6 +922,8 @@ export class RunService {
       let parentCandidateId: string | undefined;
       let verificationAttempts = 0;
       let repairAttempts = 0;
+      let qualityReport: QualityReport | undefined;
+      let strategyObservation: StrategyObservation | undefined;
 
       for (;;) {
         candidate = await this.captureCandidate(
@@ -1020,7 +1058,7 @@ export class RunService {
       // distinguishes correctness from quality, it never replaces or overrides the correctness
       // gate's verdict.
       if (verification.state === "VERIFIED" && candidate) {
-        await this.assessQuality(
+        qualityReport = await this.assessQuality(
           run,
           task,
           sandbox,
@@ -1036,6 +1074,14 @@ export class RunService {
         // outranks model confidence.
         run.trustState = "PROPOSED";
       }
+      if (candidate) {
+        run.strategyEvidenceBinding = deriveStrategyEvidenceBinding(
+          projectIdentity(task.repositoryPath),
+          task,
+          candidate.assessment.riskVector,
+          candidate.assessment.assurancePlan.required,
+        );
+      }
       if (this.active.get(run.id)?.cancelled) {
         throw new Error("Run cancelled during quality assurance");
       }
@@ -1043,6 +1089,34 @@ export class RunService {
       run.state = verification.state === "VERIFIED" ? "COMPLETED" : "FAILED";
       run.completedAt = new Date().toISOString();
       run.updatedAt = run.completedAt;
+      if (candidate) {
+        const change = deriveChangeHealth(candidate.diff.patch);
+        const deterioration =
+          change.architectureViolations +
+          change.unsafeTypeEscapes +
+          change.skippedTests +
+          change.duplicatedBlocks;
+        strategyObservation = buildRunStrategyObservation({
+          id: crypto.randomUUID(),
+          timestamp: run.completedAt,
+          run,
+          task,
+          projectId: projectIdentity(task.repositoryPath),
+          candidate: candidate.artifact,
+          riskVector: candidate.assessment.riskVector,
+          requiredChecks: candidate.assessment.assurancePlan.required,
+          ...(qualityReport ? { qualityReport } : {}),
+          costKnown: modelCostReported,
+          latencyMs: performance.now() - started,
+          healthEffect:
+            verification.state !== "VERIFIED" || !change.changeEvidenceComplete
+              ? "UNKNOWN"
+              : deterioration > 0
+                ? "DEGRADING"
+                : "STABLE",
+        });
+        run.strategyObservationBinding = strategyObservationBinding(strategyObservation);
+      }
       await this.dependencies.store.updateRun(run);
       await this.event(run.id, "RunCompleted", {
         state: run.state,
@@ -1148,6 +1222,17 @@ export class RunService {
         } catch (healthError) {
           await this.event(run.id, "HealthSampleFailed", {
             error: healthError instanceof Error ? healthError.message : String(healthError),
+          });
+        }
+      }
+      // M12 production strategy evidence is derived here, after the run has reached COMPLETED and
+      // the quality vector is final. The store independently re-binds it to the verified candidate.
+      if (strategyObservation) {
+        try {
+          await this.dependencies.store.saveStrategyObservation(strategyObservation);
+        } catch (strategyError) {
+          await this.event(run.id, "StrategyObservationFailed", {
+            error: strategyError instanceof Error ? strategyError.message : String(strategyError),
           });
         }
       }
@@ -1842,7 +1927,7 @@ export class RunService {
     verification: Verification,
     initialModules: string[],
     preExecutionAssessment: RiskAssessment,
-  ): Promise<void> {
+  ): Promise<QualityReport> {
     const assessment = candidate.assessment;
     if (this.active.get(run.id)?.cancelled) throw new Error("Run cancelled before assurance");
     const runtimeGraph = deriveRuntimeGraph(candidate.diff.patch);
@@ -1920,6 +2005,7 @@ export class RunService {
         : {}),
       ...(reviewSkipped ? { reviewSkipped } : {}),
     });
+    return report;
   }
 
   /** M9 candidate-bound baseline/candidate measurement. Missing evidence remains NOT_CHECKED. */

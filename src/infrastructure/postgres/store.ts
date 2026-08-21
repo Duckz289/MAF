@@ -3,6 +3,11 @@ import { assertHealthSample, type HealthSample } from "../../domain/health";
 import type { RunStore } from "../../domain/ports";
 import { projectIdentity } from "../../domain/project-identity";
 import { redactSensitiveData } from "../../domain/security";
+import {
+  assertStrategyObservation,
+  strategyObservationBinding,
+  type StrategyObservation,
+} from "../../domain/strategy";
 import type {
   Artifact,
   Event,
@@ -360,5 +365,157 @@ export class PostgresRunStore implements RunStore {
       }
       return row.payload;
     });
+  }
+
+  async saveStrategyObservation(observation: StrategyObservation): Promise<void> {
+    const sanitized: unknown = redactSensitiveData(observation);
+    assertStrategyObservation(sanitized);
+    observation = sanitized;
+    const binding = await this.pool.query<{ repositoryPath: string }>(
+      `SELECT t.repository_path AS "repositoryPath"
+       FROM runs r JOIN tasks t ON t.id = r.task_id WHERE r.id = $1`,
+      [observation.runId],
+    );
+    const repositoryPath = binding.rows[0]?.repositoryPath;
+    if (!repositoryPath || projectIdentity(repositoryPath) !== observation.scope.projectId)
+      throw new Error("Strategy observation project does not match its run task");
+    const inserted = await this.pool.query(
+      `INSERT INTO strategy_observations(
+         id, observation_id, project_id, timestamp, run_id, candidate_id, candidate_digest,
+         evidence_basis, payload
+       )
+       SELECT $1, $2, $3, $4, r.id, a.id, $7, $8, $9
+      FROM runs r
+      JOIN tasks t ON t.id = r.task_id
+      JOIN artifacts a ON a.id = $6 AND a.run_id = r.id
+      WHERE r.id = $5
+         AND r.state IN ('COMPLETED', 'FAILED')
+         AND CAST($19 AS boolean) = (r.verification_state = 'VERIFIED')
+         AND (($8 = 'RUN_STORE_VERIFIED' AND CAST($19 AS boolean))
+           OR ($8 = 'RUN_STORE_TERMINAL' AND NOT CAST($19 AS boolean)))
+         AND r.payload->>'trustState' = $10
+         AND t.repository_path = $11
+         AND a.kind = 'DIFF'
+         AND a.digest = $7
+         AND r.payload->>'agent' = $12
+         AND r.payload->>'model' = $13
+         AND r.payload->>'provider' = $14
+         AND r.payload->>'effectiveMode' = $15
+         AND COALESCE(t.payload->>'qualityPreference', 'BALANCED') = $16
+         AND $17 = CASE
+           WHEN t.payload->'verification'->>'command' IS NOT NULL THEN 'COMMAND'
+           WHEN t.payload->'verification'->>'expectedFile' IS NOT NULL THEN 'EXPECTED_FILE'
+           ELSE 'DEFAULT'
+         END
+         AND $18 = 'CHALLENGER'
+         AND r.payload->'strategyEvidenceBinding'->>'projectId' = $3
+         AND r.payload->'strategyEvidenceBinding'->>'taskClass' = $20
+         AND r.payload->'strategyEvidenceBinding'->>'riskProfile' = $21
+         AND r.payload->'strategyEvidenceBinding'->>'qualityRequirement' = $22
+         AND r.payload->'strategyEvidenceBinding'->>'reviewPolicy' = $23
+         AND r.payload->'strategyObservationBinding' = $24::jsonb
+         AND (r.payload->>'completedAt')::timestamptz = $4
+         AND (r.payload->>'retryCount')::integer = $25
+         AND ($26::numeric IS NULL OR (r.payload->'cost'->>'total')::numeric = $26::numeric)
+         AND EXISTS (
+           SELECT 1 FROM verifications v
+           WHERE v.run_id = r.id AND v.candidate_id = a.id
+             AND v.state = r.verification_state
+         )
+       RETURNING run_id`,
+      [
+        crypto.randomUUID(),
+        observation.id,
+        observation.scope.projectId,
+        observation.timestamp,
+        observation.runId,
+        observation.candidateId,
+        observation.candidateDigest,
+        observation.evidenceBasis,
+        observation,
+        observation.trustState,
+        repositoryPath,
+        observation.strategy.adapter,
+        observation.strategy.model,
+        observation.strategy.provider,
+        observation.strategy.executionMode,
+        observation.strategy.qualityPreference,
+        observation.strategy.verificationProfile,
+        observation.strategy.baseline,
+        observation.verifiedSuccess,
+        observation.scope.taskClass,
+        observation.scope.riskProfile,
+        observation.scope.qualityRequirement,
+        observation.strategy.reviewPolicy,
+        strategyObservationBinding(observation),
+        observation.retries,
+        observation.costUsd,
+      ],
+    );
+    if (inserted.rowCount !== 1)
+      throw new Error("Strategy observation is not bound to its verified run and candidate");
+  }
+
+  async listStrategyObservations(
+    projectId?: string,
+    limit?: number,
+  ): Promise<StrategyObservation[]> {
+    const bounded = Math.min(500, Math.max(0, limit ?? 500));
+    const result = await this.pool.query<{
+      observationId: string;
+      projectId: string;
+      runId: string;
+      candidateId: string;
+      candidateDigest: string;
+      evidenceBasis: string;
+      timestamp: string;
+      payload: unknown;
+    }>(
+      `SELECT observation_id AS "observationId", project_id AS "projectId",
+              run_id::text AS "runId", candidate_id::text AS "candidateId",
+              candidate_digest AS "candidateDigest", evidence_basis AS "evidenceBasis",
+              timestamp::text, payload
+       FROM (
+         SELECT observation_id, project_id, run_id, candidate_id, candidate_digest,
+                evidence_basis, timestamp, payload
+         FROM strategy_observations
+         WHERE ($1::text IS NULL OR project_id = $1)
+         ORDER BY timestamp DESC, run_id DESC LIMIT $2
+       ) recent ORDER BY timestamp ASC, run_id ASC`,
+      [projectId ?? null, bounded],
+    );
+    return result.rows.map((row) => {
+      assertStrategyObservation(row.payload);
+      if (
+        row.payload.id !== row.observationId ||
+        row.payload.scope.projectId !== row.projectId ||
+        row.payload.runId !== row.runId ||
+        row.payload.candidateId !== row.candidateId ||
+        row.payload.candidateDigest !== row.candidateDigest ||
+        row.payload.evidenceBasis !== row.evidenceBasis ||
+        Date.parse(row.payload.timestamp) !== Date.parse(row.timestamp)
+      )
+        throw new Error(
+          "Strategy observation payload identity does not match its durable row binding",
+        );
+      return row.payload;
+    });
+  }
+
+  async allocateStrategyCanaryOrdinal(allocationKey: string): Promise<number> {
+    if (!/^strategy-[a-f0-9]{64}$/u.test(allocationKey))
+      throw new Error("Malformed strategy allocation key");
+    const result = await this.pool.query<{ ordinal: string }>(
+      `INSERT INTO strategy_canary_counters(allocation_key, next_ordinal)
+       VALUES ($1, 1)
+       ON CONFLICT (allocation_key) DO UPDATE
+         SET next_ordinal = strategy_canary_counters.next_ordinal + 1
+       RETURNING (next_ordinal - 1)::text AS ordinal`,
+      [allocationKey],
+    );
+    const ordinal = Number(result.rows[0]?.ordinal);
+    if (!Number.isSafeInteger(ordinal) || ordinal < 0)
+      throw new Error("Strategy canary allocator returned an invalid ordinal");
+    return ordinal;
   }
 }

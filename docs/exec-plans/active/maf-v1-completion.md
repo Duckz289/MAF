@@ -8,7 +8,7 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 - Start branch: `adaptive-harness/runtime-signals-v0.1` at `357ab60` (clean tree).
 - Baseline validation (2026-08-19): `format:check`, `lint`, `typecheck`, `test` (49 passing),
   `build` (server + UI), `compose:check`, `smoke` — all PASS.
-- Current milestone: M12 — Frontier Baselines and Strategy Learning (M11 implementation verified).
+- Current milestone: M13 — PR / CI Integration (M12 implementation verified).
 
 ## Confirmed repository facts
 
@@ -44,7 +44,7 @@ adaptive software-engineering control plane. Decisions and evidence only; no hid
 | M9 | Performance & runtime assurance | DONE (VERIFIED) | 461a33d |
 | M10 | Production-like resilience | DONE (VERIFIED) | ff59363 + 7dfb1af |
 | M11 | Longitudinal governance | DONE (VERIFIED) | 3449b54 |
-| M12 | Frontier baselines + strategy learning | NOT STARTED | |
+| M12 | Frontier baselines + strategy learning | DONE (VERIFIED) | pending local commit |
 | M13 | PR / CI integration | NOT STARTED | |
 | M14 | Production feedback foundations | NOT STARTED | |
 | M15 | Integrated benchmark + hardening | NOT STARTED | |
@@ -977,6 +977,46 @@ made suppression depend on call order and retained one unsigned PEM body in the 
 - Final `npm run validate`: `format:check`, `lint`, `typecheck`, test (34 files: 352 passing,
   2 skipped because live PostgreSQL is opt-in), server/UI build, `compose:check`, and production smoke
   — all PASS. Separate live PostgreSQL run above passed 2/2.
+
+## M12 design (Frontier Baselines and Strategy Learning)
+
+1. Strategy identity includes adapter, model/provider, execution mode, quality preference,
+   verification profile, review policy, and explicit `NATIVE_FRONTIER`/`CHALLENGER` role. Evidence
+   is keyed by opaque project, task class, risk profile, and quality requirement; exact filtering
+   prevents cross-project or cross-class authorization.
+2. Lifecycle is SHADOW, CANARY, PROMOTED, or DEMOTED. Defaults require 10 scoped observations,
+   5 run/candidate-bound durable successes, 5 known-cost observations, and 90% verified success for
+   promotion. Two successes cannot promote anything. Unknown costs stay null and leave a promotion
+   gap rather than becoming zero/free.
+3. A security failure, repeated quality failures, material recent verification failure, or repeated
+   degrading health effects demotes the scoped strategy. CRITICAL work uses native frontier unless
+   the challenger is fully promoted; CANARY is deterministic and bounded to 10% eligibility.
+4. The existing benchmark runner accepts optional full strategy identity + scope and emits explicit
+   `BENCHMARK_SHADOW` observations. It still requires both NATIVE and MAF_ADAPTIVE executors, but
+   does not schedule duplicate production runs itself; callers opt into benchmark comparison.
+5. Durable observations are produced after RunService finalizes the terminal verifier outcome and,
+   on success, the quality vector. Failures remain in the same scoped history so verified rate and
+   demotion cannot learn from survivors only. The in-memory/PostgreSQL stores rebind project, run,
+   candidate/digest, trust state, executor identity/mode, quality preference, and verification
+   profile plus canonical task/risk/review scope. Migration 007 makes production evidence
+   one-row-per-terminal-run; benchmark shadow evidence is never persisted as durable evidence.
+   Completion timestamp, cost-known/value, retries, and the final quality/assurance/health vector
+   are also rebound to the canonical run payload. Explicit service assessment/selection consumers
+   read only this bound window, and canary slots come from an atomic sequence keyed by opaque exact
+   scope + challenger identity instead of caller-selected ordinals or a project-global counter.
+   Automatic `create()` routing remains disabled; adoption remains an explicit caller decision.
+
+M12 verification (2026-08-21):
+
+- Three adversarial review passes reproduced and closed critical-assurance promotion, survivor-bias,
+  caller-controlled canary allocation, benchmark attribution, canonical scope, and lifecycle-evidence
+  repaint attacks. The final independent rereview reported no material residual findings.
+- Runtime observations are rebound to the terminal Run timestamp, retry/cost state, outcome vector,
+  candidate/digest, executor, and exact strategy scope. Canary allocation is atomic and isolated by
+  exact scope plus full challenger identity.
+- Live PostgreSQL validation passed 3/3 tests across the strategy and health stores, including the
+  adversarial binding cases. Final `npm run validate` passed `format:check`, lint, typecheck, 368
+  tests (3 opt-in PostgreSQL tests skipped), server/UI builds, `compose:check`, and production smoke.
 
 ## Deferred work
 

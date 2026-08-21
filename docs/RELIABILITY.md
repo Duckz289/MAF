@@ -162,4 +162,19 @@ pre-merge observation and cannot impersonate CI, deployment, or production healt
 frozen before candidate execution and labeled `BASE_REVISION`; change is labeled
 `VERIFIED_CANDIDATE_DIFF`. Without proven revision ancestry, structural directions are always
 `UNKNOWN`, and incomplete successful-parse/truncation evidence is explicit.
+
+Strategy-learning tests prove no/tiny evidence remains SHADOW, sufficient scoped durable evidence
+can progress through CANARY to PROMOTED, security degradation DEMOTEs, unknown costs cannot satisfy
+promotion, Project A evidence cannot authorize Project B, and an unapproved challenger cannot
+displace native frontier for CRITICAL work. Benchmark coverage proves optional full identities and
+scopes emit shadow observations while the legacy comparison remains compatible. Executor JSON is
+runtime-validated, missing cost becomes UNKNOWN, and reported identity must match the execution.
+In-memory and live PostgreSQL tests prove strategy observations round-trip only when their
+verified run/candidate/project/strategy bindings match; RunService integration proves completed
+runs and terminal verifier failures produce those observations, so failure rate is not
+success-survivor biased. Canonical task/risk/review scope is rebound at persistence, the canary
+allocator is monotonic, store-owned, and isolated by exact scope + challenger identity, and its
+service consumer selects exactly 2 of 20 eligible slots in the deterministic regression. Store
+tests also reject backdated/repriced/repainted lifecycle fields even when the run and candidate IDs
+are genuine.
 The production-bundle smoke test repeats both outcomes against in-memory and PostgreSQL adapters.

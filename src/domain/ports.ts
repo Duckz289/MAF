@@ -5,6 +5,7 @@ import type {
   ResilienceMeasurement,
   ResilienceRelevanceEvidence,
 } from "./resilience";
+import type { StrategyObservation } from "./strategy";
 import type {
   AgentCapabilities,
   AgentEvent,
@@ -44,6 +45,11 @@ export interface RunStore {
   /** M11 health ledger: append a sample; list returns samples oldest-first, bounded by the store. */
   saveHealthSample(sample: HealthSample): Promise<void>;
   listHealthSamples(projectId?: string, limit?: number): Promise<HealthSample[]>;
+  /** M12: append only after binding the observation to verified run/candidate records. */
+  saveStrategyObservation(observation: StrategyObservation): Promise<void>;
+  listStrategyObservations(projectId?: string, limit?: number): Promise<StrategyObservation[]>;
+  /** Atomic exact-scope/challenger sequence; the caller cannot choose/reuse canary slots. */
+  allocateStrategyCanaryOrdinal(allocationKey: string): Promise<number>;
 }
 
 export interface AgentStartInput {

@@ -1,7 +1,13 @@
+import { isDeepStrictEqual } from "node:util";
 import { assertHealthSample, type HealthSample } from "../domain/health";
 import type { RunStore } from "../domain/ports";
 import { projectIdentity } from "../domain/project-identity";
 import { redactSensitiveData } from "../domain/security";
+import {
+  assertStrategyObservation,
+  strategyObservationBinding,
+  type StrategyObservation,
+} from "../domain/strategy";
 import type {
   Artifact,
   Event,
@@ -21,6 +27,8 @@ export class InMemoryRunStore implements RunStore {
   private readonly signalSnapshotsByRun = new Map<string, RuntimeSignalSnapshot[]>();
   private readonly recoveryCapsulesByRun = new Map<string, RecoveryCapsule>();
   private readonly healthSamples: HealthSample[] = [];
+  private readonly strategyObservations: StrategyObservation[] = [];
+  private readonly strategyCanaryOrdinals = new Map<string, number>();
 
   async createTask(task: Task): Promise<void> {
     this.tasks.set(task.id, structuredClone(task));
@@ -150,5 +158,89 @@ export class InMemoryRunStore implements RunStore {
     const boundedLimit = Math.min(500, limit === undefined ? ordered.length : Math.max(0, limit));
     const window = boundedLimit === 0 ? [] : ordered.slice(-boundedLimit);
     return structuredClone(window);
+  }
+
+  async saveStrategyObservation(observation: StrategyObservation): Promise<void> {
+    const sanitized: unknown = redactSensitiveData(observation);
+    assertStrategyObservation(sanitized);
+    observation = sanitized;
+    const run = observation.runId ? this.runs.get(observation.runId) : undefined;
+    const task = run ? this.tasks.get(run.taskId) : undefined;
+    const artifact = run
+      ? (this.artifactsByRun.get(run.id) ?? []).find(
+          (entry) => entry.id === observation.candidateId,
+        )
+      : undefined;
+    const matchingCandidateOutcome = run
+      ? (this.verificationsByRun.get(run.id) ?? []).some(
+          (entry) =>
+            entry.state === run.verificationState && entry.candidateId === observation.candidateId,
+        )
+      : false;
+    const expectedProfile = task?.verification.command
+      ? "COMMAND"
+      : task?.verification.expectedFile
+        ? "EXPECTED_FILE"
+        : "DEFAULT";
+    if (
+      !run ||
+      !task ||
+      (run.state !== "COMPLETED" && run.state !== "FAILED") ||
+      observation.verifiedSuccess !== (run.verificationState === "VERIFIED") ||
+      (observation.evidenceBasis === "RUN_STORE_VERIFIED") !== observation.verifiedSuccess ||
+      (observation.evidenceBasis === "RUN_STORE_TERMINAL") !== !observation.verifiedSuccess ||
+      run.trustState !== observation.trustState ||
+      run.completedAt !== observation.timestamp ||
+      run.retryCount !== observation.retries ||
+      (observation.costUsd !== null && run.cost.total !== observation.costUsd) ||
+      projectIdentity(task.repositoryPath) !== observation.scope.projectId ||
+      artifact?.kind !== "DIFF" ||
+      artifact.runId !== run.id ||
+      artifact.digest !== observation.candidateDigest ||
+      !matchingCandidateOutcome ||
+      observation.strategy.adapter !== run.agent ||
+      observation.strategy.model !== run.model ||
+      observation.strategy.provider !== run.provider ||
+      observation.strategy.executionMode !== run.effectiveMode ||
+      observation.strategy.qualityPreference !== (task.qualityPreference ?? "BALANCED") ||
+      observation.strategy.verificationProfile !== expectedProfile ||
+      observation.strategy.baseline !== "CHALLENGER" ||
+      !run.strategyEvidenceBinding ||
+      run.strategyEvidenceBinding.projectId !== observation.scope.projectId ||
+      run.strategyEvidenceBinding.taskClass !== observation.scope.taskClass ||
+      run.strategyEvidenceBinding.riskProfile !== observation.scope.riskProfile ||
+      run.strategyEvidenceBinding.qualityRequirement !== observation.scope.qualityRequirement ||
+      run.strategyEvidenceBinding.reviewPolicy !== observation.strategy.reviewPolicy ||
+      !run.strategyObservationBinding ||
+      !isDeepStrictEqual(run.strategyObservationBinding, strategyObservationBinding(observation))
+    ) {
+      throw new Error("Strategy observation is not bound to its verified run and candidate");
+    }
+    if (this.strategyObservations.some((entry) => entry.runId === run.id))
+      throw new Error(`Strategy observation already exists for run: ${run.id}`);
+    this.strategyObservations.push(structuredClone(observation));
+  }
+
+  async listStrategyObservations(
+    projectId?: string,
+    limit?: number,
+  ): Promise<StrategyObservation[]> {
+    const ordered = this.strategyObservations
+      .filter((entry) => projectId === undefined || entry.scope.projectId === projectId)
+      .toSorted(
+        (left, right) =>
+          left.timestamp.localeCompare(right.timestamp) ||
+          (left.runId ?? "").localeCompare(right.runId ?? ""),
+      );
+    const bounded = Math.min(500, Math.max(0, limit ?? 500));
+    return structuredClone(bounded === 0 ? [] : ordered.slice(-bounded));
+  }
+
+  async allocateStrategyCanaryOrdinal(allocationKey: string): Promise<number> {
+    if (!/^strategy-[a-f0-9]{64}$/u.test(allocationKey))
+      throw new Error("Malformed strategy allocation key");
+    const ordinal = this.strategyCanaryOrdinals.get(allocationKey) ?? 0;
+    this.strategyCanaryOrdinals.set(allocationKey, ordinal + 1);
+    return ordinal;
   }
 }

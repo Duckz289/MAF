@@ -154,6 +154,31 @@ export interface Run {
   cost: CostBreakdown;
   usage: TokenUsage;
   retryCount: number;
+  /** Canonical M12 scope, persisted before strategy evidence can be appended. */
+  strategyEvidenceBinding?: {
+    projectId: string;
+    taskClass: string;
+    riskProfile: string;
+    qualityRequirement: "FAST" | "BALANCED" | "HIGH" | "CRITICAL";
+    reviewPolicy: "NONE" | "REQUIRED";
+  };
+  /** Exact lifecycle-driving M12 values constructed by RunService and rebound by the store. */
+  strategyObservationBinding?: StrategyObservationBinding;
+}
+
+export interface StrategyObservationBinding {
+  id: string;
+  timestamp: string;
+  verifiedSuccess: boolean;
+  costUsd: number | null;
+  latencyMs: number;
+  retries: number;
+  qualityOutcome: "PASS" | "FAIL" | "UNKNOWN";
+  security: "PASS" | "FAIL" | "NOT_CHECKED" | "NOT_REQUIRED";
+  performance: "PASS" | "FAIL" | "NOT_CHECKED" | "NOT_REQUIRED";
+  resilience: "PASS" | "FAIL" | "NOT_CHECKED" | "NOT_REQUIRED";
+  healthEffect: "STABLE" | "DEGRADING" | "UNKNOWN";
+  evidenceBasis: "RUN_STORE_VERIFIED" | "RUN_STORE_TERMINAL";
 }
 
 export interface Event<T = unknown> {

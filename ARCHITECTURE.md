@@ -437,6 +437,36 @@ credential references, telemetry, runtime-signal snapshots, user/session records
 state, and codebase-health samples. Tests use in-memory ports. Numbered migrations live under
 `migrations/` and run in order.
 
+## Scoped strategy learning
+
+M12's `src/domain/strategy.ts` evaluates a complete execution identity (adapter, model/provider,
+mode, quality preference, verification profile, review policy, and native/challenger role) inside
+an exact project + task-class + risk-profile + quality-requirement scope. It never learns global
+model claims. Lifecycle is `SHADOW` → bounded `CANARY` → `PROMOTED`, with `DEMOTED` on material
+security, quality, reliability, or longitudinal degradation. Promotion requires 10 observations,
+5 candidate/run-bound durable successes, known cost evidence, and a 90% verified rate by default;
+unknown cost is never treated as zero. Critical work retains the explicit native-frontier baseline
+until a challenger is actually promoted.
+
+The existing NATIVE-vs-MAF benchmark runner can optionally carry the same scope and full strategy
+identities. It emits `BENCHMARK_SHADOW` observations alongside the original samples; this does not
+automatically run extra frontier work and generic benchmark results without candidate-bound durable
+trust cannot satisfy promotion requirements.
+
+Production observations are constructed by `RunService` after the terminal verification outcome
+and, for successes, the final quality vector are known, then persisted through `RunStore`. Failed
+terminal outcomes are retained so success rate and demotion do not learn from survivors only. Both stores independently bind
+project, run, candidate/digest, verified state, trust state, adapter/model/provider, effective mode,
+quality preference, verification profile, canonical task/risk scope, and review policy; PostgreSQL
+uses migration 007 and one durable row per terminal run. Benchmark observations never enter that
+table. `RunService.strategyAssessment()` and `selectExecutionStrategy()` are the read/decision
+boundary. Stores also compare the canonical completion timestamp, cost-known/value, retries, and
+final quality/assurance/health vector persisted on the run, so callers cannot reorder or repaint a
+genuine outcome. Selection obtains its 10% canary slots from an atomic store sequence keyed by an
+opaque hash of exact scope plus challenger identity, rather than caller input or a project-global
+counter. Automatic routing of `create()` is not enabled, so callers must explicitly adopt a
+returned decision.
+
 ## Mission tree and project graph
 
 `MissionTree` represents work flow, while `RepositoryIndex` represents code dependency flow.
