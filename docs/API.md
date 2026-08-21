@@ -38,6 +38,10 @@ All routes are versioned under `/api/v1`.
 Errors use `{ "error": "CODE", "message": "description" }`. Run creation returns HTTP 202. Event
 streams use standard SSE `id`, `event`, and JSON `data` fields.
 
+The M15 integrated benchmark is a local CLI/report workflow, not a control-plane route. No API
+response turns manifest-declared families or executor-reported state into production trust,
+strategy promotion, CI status, or production feedback.
+
 `POST /runs/:id/mode` remains an operator compatibility surface. Its values are persisted as
 `EXTERNAL_HINT` evidence; collector-derived deterministic signals take precedence at the next
 checkpoint. Unknown model cost is serialized as `null`, never inferred from a hard-coded price.

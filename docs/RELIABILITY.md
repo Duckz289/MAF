@@ -197,3 +197,16 @@ reference server has no live observability adapter, so external collection remai
 Strategy demotion filters exact project/scope/identity with property-order-independent equality and
 does not use the bounded API display window. PostgreSQL repeats every payload identity and impact
 field in canonical columns and rejects row/payload drift.
+
+M15 benchmark tests validate executor JSON and internal metric relationships, require full suite
+strategy attribution, reject label-only family coverage, and refuse missing, constant, noncontiguous,
+candidate-unbound, or verification-unbound state chains. N+1 evidence must identify a prior
+comparable workload in the same sequence. The deterministic integrated fixture executes ten local
+family probes over ten advancing Git checkpoints and emits two non-causal changeability series.
+External executor processes are bounded to a configured timeout and one MiB of output; failure text
+is redacted and bounded before it reaches the CLI error surface.
+
+The fixture result is `PARTIALLY_VERIFIED`, not an agent-performance result. Its security,
+performance, resilience, recovery, and budget inputs are local/synthetic policy-path probes. Real
+frontier/challenger comparative quality, independently metered cost, production load behavior, live
+CI polling, and live observability feedback remain `NOT_VERIFIED` in the reference configuration.

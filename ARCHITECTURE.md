@@ -503,6 +503,29 @@ Material evidence is sticky: strategy decisions read the complete exact-project 
 future explicit trusted remediation model exists, so unrelated later observations cannot wash an
 incident out of a bounded display window.
 
+## Integrated benchmark and hardening
+
+M15 extends the existing benchmark runner with suite manifests for ten declared scenario families,
+family-specific executor check evidence, bounded external executors, and runtime validation of all
+reported metrics. An integrated suite requires exactly one fully attributed native-frontier
+executor and one fully attributed adaptive challenger. Family coverage is complete only when both
+executors report an `EXERCISED` result with bounded checks for a representative task; a manifest
+label alone remains merely declared coverage.
+
+Long-horizon evidence is a sequential per-executor state chain. Checkpoints must be contiguous from
+one, advance the state digest, bind the result digest to candidate and verification evidence, carry
+new run/candidate identities, and use the previous result as the next base. Ten checkpoints are the
+minimum for `sufficient: true`. N+1 changeability requires a prior task in the same sequence with an
+exact workload definition and comparison class; missing pairs fail rather than disappearing from
+the report. Deltas cover tokens, latency, retries, files, context expansion/context tokens, and tool
+calls where reported, always with `causalClaim: NONE`.
+
+The shipped integrated fixture advances real temporary Git repositories and invokes deterministic
+domain checks for the ten families. It is `PARTIALLY_VERIFIED`: executor assertions and synthetic
+local measurements test orchestration and evidence semantics, not comparative model quality,
+production performance, or strategy eligibility. Live/paid-agent comparison remains
+`NOT_VERIFIED` unless independently run with existing credentials and an explicit cost bound.
+
 ## Mission tree and project graph
 
 `MissionTree` represents work flow, while `RepositoryIndex` represents code dependency flow.
