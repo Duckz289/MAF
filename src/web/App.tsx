@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell } from "./components/AppShell";
 import { LoadingState } from "./components/LoadingState";
 import { ConnectionsPage } from "./pages/ConnectionsPage";
+import { DecisionsPage } from "./pages/DecisionsPage";
+import { EvaluationPage } from "./pages/EvaluationPage";
 import { HomePage } from "./pages/HomePage";
 import { NewTaskPage } from "./pages/NewTaskPage";
 import { ProjectPage } from "./pages/ProjectPage";
@@ -12,7 +14,7 @@ import { RunsPage } from "./pages/RunsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { UsagePage } from "./pages/UsagePage";
 import { mafDarkTheme } from "./theme";
-import type { Agent, Connection, HomeData, Project, Run } from "./types";
+import type { Agent, Connection, DecisionItem, HomeData, Project, Run } from "./types";
 import { readJson } from "./utils";
 
 export function App() {
@@ -24,6 +26,7 @@ export function App() {
   const [connections, setConnections] = useState<Connection[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [home, setHome] = useState<HomeData>();
+  const [decisions, setDecisions] = useState<DecisionItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [technicalError, setTechnicalError] = useState<string>();
   const url = useMemo(() => new URL(location, window.location.origin), [location]);
@@ -37,18 +40,21 @@ export function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextRuns, nextProjects, nextConnections, nextAgents, nextHome] = await Promise.all([
-        readJson<Run[]>("/api/v1/runs"),
-        readJson<{ projects: Project[] }>("/api/v1/projects"),
-        readJson<Connection[]>("/api/v1/connections"),
-        readJson<Agent[]>("/api/v1/agents"),
-        readJson<HomeData>("/api/v1/home"),
-      ]);
+      const [nextRuns, nextProjects, nextConnections, nextAgents, nextHome, nextDecisions] =
+        await Promise.all([
+          readJson<Run[]>("/api/v1/runs"),
+          readJson<{ projects: Project[] }>("/api/v1/projects"),
+          readJson<Connection[]>("/api/v1/connections"),
+          readJson<Agent[]>("/api/v1/agents"),
+          readJson<HomeData>("/api/v1/home"),
+          readJson<DecisionItem[]>("/api/v1/decisions").catch(() => []),
+        ]);
       setRuns(nextRuns);
       setProjects(nextProjects.projects);
       setConnections(nextConnections);
       setAgents(nextAgents);
       setHome(nextHome);
+      setDecisions(nextDecisions);
       setTechnicalError(undefined);
     } catch (error) {
       setTechnicalError(error instanceof Error ? error.message : String(error));
@@ -115,6 +121,10 @@ export function App() {
     content = <RunsPage navigate={navigate} runs={runs} />;
   } else if (selectedRunId) {
     content = <RunPage navigate={navigate} refresh={refresh} run={selectedRun} />;
+  } else if (path === "/decisions") {
+    content = <DecisionsPage navigate={navigate} />;
+  } else if (path === "/evaluation") {
+    content = <EvaluationPage projects={projects} runs={runs} />;
   } else if (path === "/connections") {
     content = (
       <ConnectionsPage
@@ -122,6 +132,7 @@ export function App() {
         connections={connections}
         navigate={navigate}
         projects={projects}
+        refresh={refresh}
       />
     );
   } else if (path === "/usage") {
@@ -130,7 +141,14 @@ export function App() {
     content = <SettingsPage agents={agents} />;
   } else {
     content = (
-      <HomePage agents={agents} home={home} navigate={navigate} projects={projects} runs={runs} />
+      <HomePage
+        agents={agents}
+        decisions={decisions}
+        home={home}
+        navigate={navigate}
+        projects={projects}
+        runs={runs}
+      />
     );
   }
 
@@ -138,6 +156,7 @@ export function App() {
     <FluentProvider theme={mafDarkTheme}>
       <AppShell
         contextProject={contextProject}
+        decisionCount={decisions.length}
         navigate={navigate}
         path={path}
         technicalError={technicalError}
