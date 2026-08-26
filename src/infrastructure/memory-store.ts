@@ -7,7 +7,7 @@ import {
   type DeliveryHandoff,
 } from "../domain/delivery";
 import { assertHealthSample, type HealthSample } from "../domain/health";
-import type { RunStore } from "../domain/ports";
+import type { HarnessControlState, RunStore } from "../domain/ports";
 import { projectIdentity } from "../domain/project-identity";
 import { assertProductionFeedback, type ProductionFeedback } from "../domain/production-feedback";
 import { redactSensitiveData } from "../domain/security";
@@ -34,6 +34,7 @@ export class InMemoryRunStore implements RunStore {
   private readonly verificationsByRun = new Map<string, Verification[]>();
   private readonly signalSnapshotsByRun = new Map<string, RuntimeSignalSnapshot[]>();
   private readonly recoveryCapsulesByRun = new Map<string, RecoveryCapsule>();
+  private controlState: HarnessControlState | undefined;
   private readonly healthSamples: HealthSample[] = [];
   private readonly strategyObservations: StrategyObservation[] = [];
   private readonly strategyCanaryOrdinals = new Map<string, number>();
@@ -123,6 +124,14 @@ export class InMemoryRunStore implements RunStore {
 
   async saveRecoveryCapsule(capsule: RecoveryCapsule): Promise<void> {
     this.recoveryCapsulesByRun.set(capsule.runId, structuredClone(capsule));
+  }
+
+  async saveControlState(state: HarnessControlState): Promise<void> {
+    this.controlState = { ...state };
+  }
+
+  async getControlState(): Promise<HarnessControlState | undefined> {
+    return this.controlState ? { ...this.controlState } : undefined;
   }
 
   async getRecoveryCapsule(runId: string): Promise<RecoveryCapsule | undefined> {

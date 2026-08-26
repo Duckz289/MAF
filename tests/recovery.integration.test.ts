@@ -14,6 +14,7 @@ import { InMemoryProjectBrain, LocalRepositoryIndex } from "../src/infrastructur
 import { runProcess } from "../src/infrastructure/process-utils";
 import { DomainTelemetryRecorder } from "../src/infrastructure/telemetry";
 import { CommandVerifier } from "../src/infrastructure/verifier";
+import { emptyCost, emptyUsage, type Run, type Task } from "../src/domain/types";
 import {
   createAdaptiveFixtureRepository,
   createFixtureRepository,
@@ -54,6 +55,56 @@ const harness = (sandboxRoot: string, recoveryPolicy?: Partial<RecoveryPolicy>) 
 };
 
 describe("recovery plane", () => {
+  it("sweeps persisted in-flight runs into restart-attributed durable recovery", async () => {
+    const fixture = await createFixtureRepository();
+    fixtures.push(fixture);
+    const { service, store } = harness(fixture.sandboxRoot);
+    const task: Task = {
+      id: "restart-task",
+      prompt: "persisted work",
+      repositoryPath: fixture.path,
+      revision: "main",
+      createdAt: "2026-08-25T00:00:00.000Z",
+      verification: { command: "npm test" },
+    };
+    const run: Run = {
+      id: "restart-run",
+      taskId: task.id,
+      state: "RUNNING",
+      executionMode: "GUIDED",
+      desiredMode: "GUIDED",
+      effectiveMode: "GUIDED",
+      verificationState: "VERIFYING",
+      trustState: "PROPOSED",
+      agent: "fixture",
+      model: "fixture",
+      provider: "fixture",
+      createdAt: "2026-08-25T00:00:00.000Z",
+      updatedAt: "2026-08-25T00:00:01.000Z",
+      changedFiles: [],
+      cost: emptyCost(),
+      usage: emptyUsage(),
+      retryCount: 0,
+    };
+    await store.createTask(task);
+    await store.createRun(run);
+
+    expect(await service.reconcileInterruptedRuns()).toBe(1);
+    await expect(service.get(run.id)).resolves.toMatchObject({
+      state: "PAUSED",
+      verificationState: "NOT_CHECKED",
+    });
+    await expect(service.recoveryCapsule(run.id)).resolves.toMatchObject({
+      recoveryReason: "PROCESS_RESTART",
+      safetyCountersUsed: { recoveryAttempts: 1 },
+    });
+    const events = await service.events(run.id);
+    expect(events.at(-1)).toMatchObject({
+      type: "RunReconciledAfterRestart",
+      data: { reason: "process-restart", resumable: false },
+    });
+  });
+
   it("auto-retries a network failure with a new bounded session and completes verified", async () => {
     const fixture = await createFixtureRepository();
     fixtures.push(fixture);
@@ -415,6 +466,8 @@ describe("emergency stop", () => {
       listCiEvidence: baseStore.listCiEvidence.bind(baseStore),
       saveProductionFeedback: baseStore.saveProductionFeedback.bind(baseStore),
       listProductionFeedback: baseStore.listProductionFeedback.bind(baseStore),
+      saveControlState: baseStore.saveControlState.bind(baseStore),
+      getControlState: baseStore.getControlState.bind(baseStore),
     };
     const brain = new InMemoryProjectBrain();
     const service = new RunService({

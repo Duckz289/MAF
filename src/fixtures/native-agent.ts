@@ -1,6 +1,6 @@
-import { createInterface } from "node:readline";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { createInterface } from "node:readline";
 
 interface FixtureInput {
   task: {
@@ -301,6 +301,135 @@ const runTask = async (input: FixtureInput): Promise<void> => {
     emit("tool", { tool: "write_file", operation: "create", path: binaryPath });
     changedFiles.push(binaryPath);
   }
+  // Hardening repair-pass scenario: hidden-input handling added in a NEUTRALLY NAMED file with a
+  // neutrally named binding — no path keyword can see this, only the diff's added code can.
+  if (/handle hidden input/iu.test(input.task.prompt)) {
+    await mkdir(path.dirname(path.resolve("src/domain/input-flow.ts")), { recursive: true });
+    await writeFile(
+      path.resolve("src/domain/input-flow.ts"),
+      [
+        'import { getpass } from "getpass";',
+        "",
+        "export const confirmValue = (): string => {",
+        '  const value = getpass("confirm: ");',
+        "  if (!value) {",
+        "    throw new Error(`invalid input: $" + "{value}`);",
+        "  }",
+        "  return value;",
+        "};",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    emit("tool", { tool: "write_file", operation: "create", path: "src/domain/input-flow.ts" });
+    changedFiles.push("src/domain/input-flow.ts");
+  }
+  // Hardening pass #3 adversarial scenario: a PREVIOUSLY UNSEEN local API (`prompt_for` renamed to
+  // `ask_hidden` via import alias) configured to conceal input, routed through a temp binding into
+  // an externally visible sink — no listed API name, no sensitive variable name, neutral file name.
+  // Only bounded structural analysis (alias resolution + concealment kwarg + one-hop propagation)
+  // can see this.
+  if (/route concealed credential/iu.test(input.task.prompt)) {
+    await mkdir(path.dirname(path.resolve("src/domain/reader-flow.py")), { recursive: true });
+    await writeFile(
+      path.resolve("src/domain/reader-flow.py"),
+      [
+        "from cli_toolkit import prompt_for as ask_hidden",
+        "",
+        "def validate():",
+        '    value = ask_hidden("api key", conceal=True)',
+        "    interim = value",
+        '    raise ValueError(f"validation failed: {interim}")',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    emit("tool", { tool: "write_file", operation: "create", path: "src/domain/reader-flow.py" });
+    changedFiles.push("src/domain/reader-flow.py");
+  }
+  // Discovery-adequacy hardening scenario: a neutral path and a representation the cheap concern
+  // detector intentionally does not recognize. Risk/planner should remain free to miss Security;
+  // the explicit INCOMPLETE scope assessment must still become a material obligation.
+  if (/write neutral discovery gap/iu.test(input.task.prompt)) {
+    const visibilityPath = "src/domain/visibility.ts";
+    await mkdir(path.dirname(path.resolve(visibilityPath)), { recursive: true });
+    await writeFile(
+      path.resolve(visibilityPath),
+      [
+        "export interface VisibleRecord { createdBy: string }",
+        "export interface Viewer { id: string }",
+        "export const visibleTo = (row: VisibleRecord, viewer: Viewer): boolean =>",
+        "  row.createdBy === viewer.id;",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    emit("tool", { tool: "write_file", operation: "create", path: visibilityPath });
+    changedFiles.push(visibilityPath);
+  }
+  // Hardening pass #4 (coverage honesty): sensitive-input handling written in a language whose
+  // idioms the semantic scanner does not model. The path carries an auth keyword, so the plan DOES
+  // require SECURITY — the question under test is whether a credential-literal scan's PASS is
+  // allowed to discharge that requirement over material the behavioural scanner cannot read.
+  if (/write unmodelled language credential flow/iu.test(input.task.prompt)) {
+    const goPath = "src/auth/login.go";
+    await mkdir(path.dirname(path.resolve(goPath)), { recursive: true });
+    await writeFile(
+      path.resolve(goPath),
+      [
+        "package auth",
+        "",
+        "func PromptCredential() (string, error) {",
+        "  raw, err := term.ReadPassword(int(syscall.Stdin))",
+        "  if err != nil {",
+        '    return "", fmt.Errorf("could not read %q: %w", string(raw), err)',
+        "  }",
+        "  return string(raw), nil",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    emit("tool", { tool: "write_file", operation: "create", path: goPath });
+    changedFiles.push(goPath);
+  }
+  // Hardening pass #4 (capability/concern match): a deployment manifest change. This raises
+  // OperationalSensitivity, which makes the plan require RESILIENCE — but the resilience relevance
+  // scan only reads CODE files, so it has nothing to say about this artefact either way.
+  // Deliberately carries no `run:`/`script:` key, so the separate workflow-behavioural path is not
+  // what is being exercised here.
+  if (/change deployment manifest/iu.test(input.task.prompt)) {
+    const manifestPath = "deploy/service.yaml";
+    await mkdir(path.dirname(path.resolve(manifestPath)), { recursive: true });
+    await writeFile(
+      path.resolve(manifestPath),
+      ["apiVersion: v1", "kind: Service", "spec:", "  replicas: 4", "  gracePeriod: 5", ""].join(
+        "\n",
+      ),
+      "utf8",
+    );
+    emit("tool", { tool: "write_file", operation: "create", path: manifestPath });
+    changedFiles.push(manifestPath);
+  }
+  // Hardening pass #4 (deterministic FAIL outranks the planner): a domain file importing outward.
+  // In a repository with no wider src/ tree the plan does NOT require ARCHITECTURE, so this is
+  // exactly the shape where a reported FAIL used to be ignored.
+  if (/invert the domain layer/iu.test(input.task.prompt)) {
+    const domainPath = "src/domain/widget.ts";
+    await mkdir(path.dirname(path.resolve(domainPath)), { recursive: true });
+    await writeFile(
+      path.resolve(domainPath),
+      [
+        'import { helper } from "../infrastructure/helper";',
+        "",
+        "export const widget = (): string => helper();",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    emit("tool", { tool: "write_file", operation: "create", path: domainPath });
+    changedFiles.push(domainPath);
+  }
   if (/write secret-shaped filename/iu.test(input.task.prompt)) {
     const secretShapedPath = "ghp_AAAA1111BBBB2222CCCC3333DDDD4444EEEE";
     await writeFile(path.resolve(secretShapedPath), "filename boundary probe\n", "utf8");
@@ -328,13 +457,26 @@ const runTask = async (input: FixtureInput): Promise<void> => {
     const absolute = path.resolve(dependencyPath);
     const existing = await readFile(absolute, "utf8").catch(() => undefined);
     if (existing !== undefined) {
-      await writeFile(
-        absolute,
-        `${existing}\nexport const fetchWidget = async (url: string): Promise<unknown> => fetch(url);\n`,
-        "utf8",
-      );
+      await writeFile(absolute, `${existing}\nfetch("https://example.test/widgets");\n`, "utf8");
       emit("tool", { tool: "edit_file", operation: "edit", path: dependencyPath });
       changedFiles.push(dependencyPath);
+    }
+  }
+  // Review-governance fixture: make a real consistency-sensitive code change without also
+  // introducing an unrelated dependency-discovery obligation. This gives a CRITICAL plan a
+  // concrete resilience scenario that a candidate-bound verifier can execute before review.
+  if (/exercise idempotent auth update/iu.test(input.task.prompt)) {
+    const modelPath = "src/domain/model.ts";
+    const absolute = path.resolve(modelPath);
+    const existing = await readFile(absolute, "utf8").catch(() => undefined);
+    if (existing !== undefined) {
+      await writeFile(
+        absolute,
+        `${existing}\nexport const idempotentSessionVersion = 1;\n`,
+        "utf8",
+      );
+      emit("tool", { tool: "edit_file", operation: "edit", path: modelPath });
+      changedFiles.push(modelPath);
     }
   }
   const content = [

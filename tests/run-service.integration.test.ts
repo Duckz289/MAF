@@ -1,17 +1,19 @@
 import path from "node:path";
+import { writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { GuidedContextBuilder } from "../src/application/context-builder";
 import { RunService } from "../src/application/run-service";
 import { EvidenceRuntimeSignalCollector } from "../src/application/runtime-signal-collector";
+import type { AgentAdapter, ProjectBrain, VerifierPort } from "../src/domain/ports";
 import { ACPAdapter } from "../src/infrastructure/acp-adapter";
 import { LocalWorktreeSandbox } from "../src/infrastructure/local-worktree";
 import { InMemoryRunStore } from "../src/infrastructure/memory-store";
 import { NativeCliAdapter } from "../src/infrastructure/native-cli-adapter";
+import { runProcess } from "../src/infrastructure/process-utils";
 import { InMemoryProjectBrain, LocalRepositoryIndex } from "../src/infrastructure/project-brain";
 import { DomainTelemetryRecorder } from "../src/infrastructure/telemetry";
 import { CommandVerifier } from "../src/infrastructure/verifier";
-import type { AgentAdapter, VerifierPort } from "../src/domain/ports";
 import {
   createAdaptiveFixtureRepository,
   createFixtureRepository,
@@ -24,9 +26,14 @@ afterEach(async () => {
   await Promise.all(fixtures.splice(0).map((fixture) => fixture.cleanup()));
 });
 
-const harness = (sandboxRoot: string, agent?: AgentAdapter, verifier?: VerifierPort) => {
+const harness = (
+  sandboxRoot: string,
+  agent?: AgentAdapter,
+  verifier?: VerifierPort,
+  projectBrain?: ProjectBrain,
+) => {
   const store = new InMemoryRunStore();
-  const brain = new InMemoryProjectBrain();
+  const brain = projectBrain ?? new InMemoryProjectBrain();
   const telemetry = new DomainTelemetryRecorder();
   const service = new RunService({
     store,
@@ -49,14 +56,43 @@ const harness = (sandboxRoot: string, agent?: AgentAdapter, verifier?: VerifierP
     telemetry,
     runtimeSignals: new EvidenceRuntimeSignalCollector(),
   });
-  return { service, telemetry, store };
+  return { service, telemetry, store, brain };
 };
 
 describe("single native-agent execution", () => {
+  it("keeps an unconfigured verification spec NOT_CHECKED without repair or promotion", async () => {
+    const fixture = await createFixtureRepository();
+    fixtures.push(fixture);
+    const { service } = harness(fixture.sandboxRoot);
+    const created = await service.create({
+      prompt: "Write the fixture artifact",
+      repositoryPath: fixture.path,
+    });
+    const completed = await waitFor(
+      () => service.get(created.id),
+      (run) => run?.state === "COMPLETED" || run?.state === "FAILED" || run?.state === "PAUSED",
+    );
+    await service.waitForIdle(created.id);
+    expect(completed).toMatchObject({
+      state: "FAILED",
+      verificationState: "NOT_CHECKED",
+      trustState: "PROPOSED",
+      retryCount: 0,
+    });
+    const events = await service.events(created.id);
+    expect(events.some((event) => event.type === "VerificationRepairStarted")).toBe(false);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "VerificationRepairStopped",
+        data: expect.objectContaining({ reason: "verification-not-configured" }),
+      }),
+    );
+  });
+
   it("captures a diff and reaches VERIFIED", async () => {
     const fixture = await createFixtureRepository();
     fixtures.push(fixture);
-    const { service, telemetry } = harness(fixture.sandboxRoot);
+    const { service, telemetry, brain } = harness(fixture.sandboxRoot);
     const created = await service.create({
       prompt: "Write the fixture artifact",
       repositoryPath: fixture.path,
@@ -75,6 +111,61 @@ describe("single native-agent execution", () => {
     expect(completed?.changedFiles).toContain("agent-output.md");
     expect((await service.artifacts(created.id))[0]?.kind).toBe("DIFF");
     expect(await telemetry.costPerVerifiedSuccess()).toBeNull();
+    const revision = (
+      await runProcess("git", ["rev-parse", "HEAD"], { cwd: fixture.path })
+    ).stdout.trim();
+    expect(await brain.list(fixture.path, revision, ["FACT"], 100)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "FACT",
+          provenance: expect.objectContaining({ producer: "LOCAL_REPOSITORY_INDEX" }),
+        }),
+      ]),
+    );
+    expect(lifecycle.some((event) => event.type === "ProjectKnowledgeRecorded")).toBe(true);
+    expect(lifecycle.some((event) => event.type === "ContextLedgerRecorded")).toBe(true);
+  });
+
+  it("keeps execution trust independent when optional ProjectBrain operations fail", async () => {
+    const fixture = await createFixtureRepository();
+    fixtures.push(fixture);
+    const unavailable: ProjectBrain = {
+      add: async () => {
+        throw new Error("brain write unavailable");
+      },
+      addBatch: async () => {
+        throw new Error("brain write unavailable");
+      },
+      list: async () => {
+        throw new Error("brain read unavailable");
+      },
+      resolveCurrent: async () => {
+        throw new Error("brain read unavailable");
+      },
+      reconcileStaleness: async () => {
+        throw new Error("brain staleness unavailable");
+      },
+      markStale: async () => {
+        throw new Error("brain staleness unavailable");
+      },
+    };
+    const { service } = harness(fixture.sandboxRoot, undefined, undefined, unavailable);
+    const created = await service.create({
+      prompt: "Write the fixture artifact",
+      repositoryPath: fixture.path,
+      verification: { expectedFile: "agent-output.md" },
+    });
+    const completed = await waitFor(
+      () => service.get(created.id),
+      (run) => run?.state === "COMPLETED" || run?.state === "FAILED",
+    );
+    await service.waitForIdle(created.id);
+    const events = await service.events(created.id);
+    expect(completed?.verificationState, completed?.error).toBe("VERIFIED");
+    expect(events.some((event) => event.type === "ProjectKnowledgeStalenessFailed")).toBe(true);
+    expect(events.some((event) => event.type === "ProjectKnowledgeWriteFailed")).toBe(true);
+    expect(events.some((event) => event.type === "ProjectKnowledgeReadFailed")).toBe(true);
+    expect(events.some((event) => event.type === "ProjectKnowledgeRecorded")).toBe(false);
   });
 
   it("quarantines an unverifiable run and records a mode transition", async () => {
@@ -345,6 +436,46 @@ describe("single native-agent execution", () => {
     expect(exposed).not.toContain("hunter2hunter2");
     expect(exposed).not.toContain("BEGIN ENCRYPTED PRIVATE KEY");
     expect(exposed).toContain("REDACTED PRIVATE KEY");
+  });
+
+  it("discards verifier success when the literal candidate mutates during verification", async () => {
+    const fixture = await createFixtureRepository();
+    fixtures.push(fixture);
+    const verifier: VerifierPort = {
+      verify: async (run, _task, sandbox) => {
+        await writeFile(path.join(sandbox.path, "verifier-mutated.txt"), "not candidate bytes\n");
+        const now = new Date().toISOString();
+        return {
+          id: crypto.randomUUID(),
+          runId: run.id,
+          type: "probe",
+          state: "VERIFIED",
+          exitCode: 0,
+          output: "claimed success",
+          startedAt: now,
+          completedAt: now,
+        };
+      },
+      cancel: async () => {},
+    };
+    const { service } = harness(fixture.sandboxRoot, undefined, verifier);
+    const created = await service.create({
+      prompt: "Write the fixture artifact",
+      repositoryPath: fixture.path,
+      verification: { expectedFile: "agent-output.md" },
+    });
+    const completed = await waitFor(
+      () => service.get(created.id),
+      (run) => run?.state === "COMPLETED" || run?.state === "FAILED" || run?.state === "PAUSED",
+    );
+    await service.waitForIdle(created.id);
+    expect(completed?.verificationState).toBe("QUARANTINED");
+    expect(completed?.trustState).toBe("PROPOSED");
+    expect(
+      (await service.events(created.id)).some(
+        (event) => event.type === "VerificationCandidateFenceFailed",
+      ),
+    ).toBe(true);
   });
 
   it("rejects secret-bearing durable locators and raw agent credential inputs", async () => {

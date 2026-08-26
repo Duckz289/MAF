@@ -104,19 +104,34 @@ export interface ProjectDetection {
 
 export interface Connection {
   id: string;
-  category: "AI_PROVIDER" | "MAF_ACCOUNT";
+  category: "ACCOUNT_AGENT" | "AI_PROVIDER" | "MAF_ACCOUNT";
   provider: string;
   method: string;
   status: string;
+  authentication?: string;
   capability: string;
   credentialReference?: string;
+  connectionReference?: string;
+  protocol?: "OPENAI_COMPATIBLE" | "ANTHROPIC_COMPATIBLE";
+  baseUrl?: string;
+  defaultModel?: string;
   detail: string;
+  account?: { email: string; planType?: string };
   credentialSources?: Array<{
     id: "ENVIRONMENT" | "LOCAL_ENCRYPTED_VAULT" | "OAUTH_PKCE";
     label: string;
     available: boolean;
     detail: string;
   }>;
+  authCapabilities?: {
+    supportsNativeLogin: boolean;
+    supportsOAuth: boolean;
+    supportsDeviceFlow: boolean;
+    requiresCli: boolean;
+    cliAvailable: boolean;
+    loginMethod: "NATIVE_CLI_BROWSER" | "ANTIGRAVITY_IDE_SESSION";
+    installUrl: string;
+  };
 }
 
 export interface AgentCapabilities {

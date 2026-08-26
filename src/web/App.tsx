@@ -5,14 +5,18 @@ import { LoadingState } from "./components/LoadingState";
 import { ConnectionsPage } from "./pages/ConnectionsPage";
 import { DecisionsPage } from "./pages/DecisionsPage";
 import { EvaluationPage } from "./pages/EvaluationPage";
+import { EvolutionInspectionPage } from "./pages/EvolutionInspectionPage";
 import { HomePage } from "./pages/HomePage";
+import { MissionControlPage } from "./pages/MissionControlPage";
 import { NewTaskPage } from "./pages/NewTaskPage";
 import { ProjectPage } from "./pages/ProjectPage";
 import { ProjectsPage } from "./pages/ProjectsPage";
+import { ProvidersStatusPage } from "./pages/ProvidersStatusPage";
 import { RunPage } from "./pages/RunPage";
 import { RunsPage } from "./pages/RunsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { UsagePage } from "./pages/UsagePage";
+import { WorkItemsPage } from "./pages/WorkItemsPage";
 import { mafDarkTheme } from "./theme";
 import type { Agent, Connection, DecisionItem, HomeData, Project, Run } from "./types";
 import { readJson } from "./utils";
@@ -77,9 +81,10 @@ export function App() {
     return () => window.clearInterval(timer);
   }, [hasActiveWork, refresh]);
 
+  const rawRunId = path.match(/^\/runs\/([^/]+)\/raw$/)?.[1];
   const selectedRunId = path.match(/^\/runs\/([^/]+)$/)?.[1];
   const selectedProjectId = path.match(/^\/projects\/([^/]+)$/)?.[1];
-  const selectedRun = runs.find((run) => run.id === selectedRunId);
+  const selectedRun = runs.find((run) => run.id === selectedRunId || run.id === rawRunId);
   const selectedProject = projects.find((project) => project.id === selectedProjectId);
   const requestedProject = projects.find(
     (project) => project.id === url.searchParams.get("project"),
@@ -127,8 +132,16 @@ export function App() {
     );
   } else if (path === "/runs") {
     content = <RunsPage navigate={navigate} runs={runs} />;
-  } else if (selectedRunId) {
+  } else if (rawRunId) {
     content = <RunPage navigate={navigate} refresh={refresh} run={selectedRun} />;
+  } else if (selectedRunId) {
+    content = <MissionControlPage navigate={navigate} runId={selectedRunId} />;
+  } else if (path === "/work") {
+    content = <WorkItemsPage navigate={navigate} projects={projects} />;
+  } else if (path === "/evolution") {
+    content = <EvolutionInspectionPage />;
+  } else if (path === "/providers") {
+    content = <ProvidersStatusPage navigate={navigate} />;
   } else if (path === "/decisions") {
     content = <DecisionsPage navigate={navigate} />;
   } else if (path === "/evaluation") {

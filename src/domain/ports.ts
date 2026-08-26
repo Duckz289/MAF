@@ -8,6 +8,22 @@ import type {
   ResilienceRelevanceEvidence,
 } from "./resilience";
 import type { StrategyObservation } from "./strategy";
+import type { MonetaryCost, ModelPricingCatalog } from "./model-intelligence";
+import type {
+  ContextBudget,
+  ContextBuildStage,
+  ContextLedger,
+  ContextSelection,
+  ContextTokenMeasurement,
+  ContextTokenMeter,
+  TokenEstimateBasis,
+} from "./context";
+import type {
+  ContextHandle,
+  ContextPageRequest,
+  ContextPageSourceResult,
+  ContextWorkingSet,
+} from "./context-navigation";
 import type {
   AgentCapabilities,
   AgentEvent,
@@ -25,6 +41,32 @@ import type {
   TokenUsage,
   Verification,
 } from "./types";
+
+export type {
+  CapabilityProbe,
+  CapabilityFinding,
+  CapabilityInput,
+  CapabilityProvider,
+  CapabilityResult,
+  ProviderExecution,
+  ProviderProvenance,
+} from "./capability/provider";
+export type {
+  ActiveCapabilityBinding,
+  BoundCapabilityResult,
+  CapabilityBindingValidation,
+} from "./capability/binding";
+
+/**
+ * Durable, process-independent harness control state. Emergency Stop is an explicit operator
+ * decision to stop accepting work; holding it only in process memory meant a restart revoked it
+ * without anyone deciding to. Stored as one named row so the flag survives the process that set it.
+ */
+export interface HarnessControlState {
+  emergencyStopped: boolean;
+  updatedAt: string;
+  reason?: string | undefined;
+}
 
 export interface RunStore {
   createTask(task: Task): Promise<void>;
@@ -59,6 +101,9 @@ export interface RunStore {
   listCiEvidence(handoffId: string): Promise<CiEvidence[]>;
   saveProductionFeedback(feedback: ProductionFeedback): Promise<void>;
   listProductionFeedback(projectId?: string, limit?: number): Promise<ProductionFeedback[]>;
+  /** Durable Emergency Stop state. Undefined means no operator decision has ever been recorded. */
+  saveControlState(state: HarnessControlState): Promise<void>;
+  getControlState(): Promise<HarnessControlState | undefined>;
 }
 
 /**
@@ -114,12 +159,17 @@ export interface Sandbox {
   id: string;
   path: string;
   repositoryPath: string;
+  /** Immutable commit captured when the sandbox transaction was created. */
+  baseRevision: string;
+  /** Human/requested ref retained for reporting and source-drift checks. */
   revision: string;
 }
 
 export interface SandboxDiff {
   patch: string;
   changedFiles: string[];
+  /** SHA-256 of the literal verification-workspace manifest, independent of Git presentation. */
+  identityDigest?: string;
 }
 
 export interface SandboxProvider {
@@ -206,7 +256,7 @@ export interface RepositoryIndex {
    * Bounded parse of specific files into symbols and resolved local import relations, merged onto
    * the given snapshot. Each file's parse is cached by content digest, so calling this repeatedly
    * as scope grows during a run only does new work for files not already parsed at their current
-   * content. Files already in `snapshot.parsedFiles` are skipped.
+   * digest. A changed digest invalidates the cached parse even when the URI remains present.
    */
   indexScope(
     repositoryPath: string,
@@ -226,8 +276,33 @@ export interface RepositoryIndexStatus {
   detail: string;
 }
 
-export type KnowledgeStatus = "ACTIVE" | "STALE";
+export type KnowledgeStatus = "ACTIVE" | "STALE" | "CONFLICTED";
 export type KnowledgeKind = "FACT" | "INFERENCE" | "EVIDENCE" | "DECISION";
+
+export type KnowledgeStalenessInput =
+  | { type: "SOURCE_DIGEST"; uri: string; digest: string }
+  | { type: "MODULE_MEMBERSHIP"; module: string; digest: string };
+
+export type KnowledgeScope =
+  | { kind: "FILE"; identity: string }
+  | { kind: "MODULE"; identity: string };
+
+/** Minimal deterministic compiled-knowledge base; model compression is not eligible for this. */
+export interface KnowledgeCompilation {
+  schemaVersion: 1;
+  kind: "MODULE_BOUNDARY";
+  method: "DETERMINISTIC_REPOSITORY_INDEX";
+  subject: string;
+}
+
+export interface KnowledgeProvenance {
+  producer: "LOCAL_REPOSITORY_INDEX" | "VERIFIED_RUN" | "EXPLICIT_PROJECT_ASSERTION";
+  source: "REPOSITORY_SNAPSHOT" | "VERIFICATION" | "USER_ASSERTION";
+  sourceId: string;
+  /** Digest of the exact source state. Never a model confidence score. */
+  sourceDigest: string;
+  runId?: string;
+}
 
 export interface KnowledgeRecord {
   id: string;
@@ -238,11 +313,69 @@ export interface KnowledgeRecord {
   evidenceIds: string[];
   status: KnowledgeStatus;
   createdAt: string;
+  provenance: KnowledgeProvenance;
+  /** Empty/missing means revision-global conservative invalidation. */
+  stalenessInputs?: KnowledgeStalenessInput[];
+  scope?: KnowledgeScope;
+  compilation?: KnowledgeCompilation;
+}
+
+export type KnowledgeWriteResult = "INSERTED" | "REACTIVATED" | "UNCHANGED";
+
+export interface KnowledgeBatchWriteResult {
+  outcomes: Array<{ id: string; result: KnowledgeWriteResult }>;
+  inserted: number;
+  reactivated: number;
+  unchanged: number;
+}
+
+export type KnowledgeResolutionState = "CURRENT" | "STALE" | "UNKNOWN" | "CONFLICTED";
+
+export interface KnowledgeResolutionInput {
+  projectId: string;
+  revision: string;
+  sourceDigests: Record<string, string>;
+  moduleMembershipDigests: Record<string, string>;
+  kinds?: KnowledgeKind[];
+  ids?: string[];
+  limit?: number;
+}
+
+export interface KnowledgeResolutionResult {
+  current: KnowledgeRecord[];
+  staleIds: string[];
+  unknownIds: string[];
+  conflictedIds: string[];
+  examined: number;
+  truncated: boolean;
+}
+
+export interface KnowledgeStalenessResult {
+  examined: number;
+  current: number;
+  stale: number;
+  unknown: number;
+  conflicted: number;
+  truncated: boolean;
 }
 
 export interface ProjectBrain {
-  add(record: KnowledgeRecord): Promise<void>;
-  list(projectId: string, revision: string, kinds?: KnowledgeKind[]): Promise<KnowledgeRecord[]>;
+  add(record: KnowledgeRecord): Promise<KnowledgeWriteResult>;
+  /** Atomic publication boundary: every outcome commits, or no record in the batch is published. */
+  addBatch(records: KnowledgeRecord[]): Promise<KnowledgeBatchWriteResult>;
+  /** Every read is bounded. Callers may request a smaller page, never an unbounded collection. */
+  list(
+    projectId: string,
+    revision: string,
+    kinds?: KnowledgeKind[],
+    limit?: number,
+  ): Promise<KnowledgeRecord[]>;
+  /** Revalidates source bindings at read time; handle/record existence never implies currency. */
+  resolveCurrent(input: KnowledgeResolutionInput): Promise<KnowledgeResolutionResult>;
+  /** Precise where source provenance is present; missing provenance stays conservative. */
+  reconcileStaleness(
+    input: Omit<KnowledgeResolutionInput, "kinds" | "ids" | "limit">,
+  ): Promise<KnowledgeStalenessResult>;
   markStale(projectId: string, activeRevision: string): Promise<number>;
 }
 
@@ -251,18 +384,52 @@ export interface ContextRequest {
   mode: ExecutionMode;
   snapshot: RepositorySnapshot;
   projectId: string;
+  runId?: string;
+  stage?: ContextBuildStage;
+  budget?: ContextBudget;
+  /** Reuses the scope-only pager result after bounded parsing; avoids a second whole-map rank. */
+  selection?: ContextSelection;
 }
 
 export interface ContextBuilderPort {
+  selectInitialScope(request: ContextRequest): Promise<ContextSelection>;
   build(request: ContextRequest): Promise<ContextBuildResult>;
+}
+
+/** Cold-state resolver used by bounded navigation; the Working Set remains application-owned. */
+export interface ContextPageSource {
+  resolve(input: {
+    repositoryPath: string;
+    projectId: string;
+    snapshot: RepositorySnapshot;
+    handle: ContextHandle;
+    request: ContextPageRequest;
+    maxCharacters: number;
+    maxItems: number;
+    tokenMeter?: ContextTokenMeter;
+  }): Promise<{ result: ContextPageSourceResult; snapshot: RepositorySnapshot }>;
 }
 
 export interface ContextBuildResult {
   text: string;
   evidenceIds: string[];
   tokenEstimate: number;
+  tokenEstimateBasis: TokenEstimateBasis;
+  tokenMeasurement: ContextTokenMeasurement;
   initialFiles: string[];
   initialModules: string[];
+  handles: ContextHandle[];
+  workingSet: ContextWorkingSet;
+  evidenceReferencesTruncated: boolean;
+  contextTruncated: boolean;
+  knowledgeRead: {
+    status: "AVAILABLE" | "UNAVAILABLE" | "NOT_REQUESTED";
+    error?: string;
+    stale?: number;
+    unknown?: number;
+    conflicted?: number;
+  };
+  ledger: ContextLedger;
 }
 
 export type RuntimeObservation =
@@ -373,7 +540,7 @@ export interface ModelRequest {
 export interface ModelResponse {
   content: string;
   usage: TokenUsage;
-  cost: number | null;
+  cost: MonetaryCost;
   latencyMs: number;
   retryCount: number;
 }
@@ -381,9 +548,11 @@ export interface ModelResponse {
 export interface ModelGateway {
   listModels(): Promise<string[]>;
   execute(request: ModelRequest): Promise<ModelResponse>;
-  estimateCost(provider: string, model: string, usage: TokenUsage): Promise<number | null>;
+  estimateCost(provider: string, model: string, usage: TokenUsage): Promise<MonetaryCost>;
   getProviderHealth(provider: string): Promise<ModelHealth>;
 }
+
+export type { ModelPricingCatalog };
 
 export interface TelemetryRecord {
   taskId: string;
@@ -404,6 +573,12 @@ export interface TelemetryRecord {
   inputTokens: number;
   outputTokens: number;
   cachedTokens: number;
+  /**
+   * Model spend. When non-null this is the agent client's own cost estimate (e.g. Claude CLI's
+   * `total_cost_usd`) — an ESTIMATE computed client-side from token usage, not observed billed
+   * spend. Evaluation/benchmark layers must label it as an estimate (costBasis/costStatus =
+   * UNKNOWN), never present it as actual billed cost. Null means no estimate was reported at all.
+   */
   modelCost: number | null;
   sandboxCost: number;
   verificationCost: number;

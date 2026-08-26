@@ -15,12 +15,13 @@ import {
   DataUsage20Regular,
   Folder20Regular,
   Home20Regular,
+  Important20Regular,
   Person20Regular,
   PlugDisconnected20Regular,
   ScaleFill20Regular,
   Settings20Regular,
-  TasksApp20Regular,
   TaskListSquareLtr20Regular,
+  TasksApp20Regular,
 } from "@fluentui/react-icons";
 import type { ReactNode } from "react";
 import { isNavigationSelected } from "../presentation";
@@ -186,21 +187,26 @@ const navigationGroups = [
   {
     label: undefined,
     items: [
-      { href: "/", label: "Trang chủ", icon: <Home20Regular /> },
-      { href: "/projects", label: "Dự án", icon: <Folder20Regular /> },
-      { href: "/runs", label: "Tác vụ", icon: <TasksApp20Regular /> },
-      { href: "/decisions", label: "Quyết định", icon: <TaskListSquareLtr20Regular /> },
+      { href: "/", label: "Control Center", icon: <Home20Regular /> },
+      { href: "/projects", label: "Projects", icon: <Folder20Regular /> },
+      { href: "/work", label: "Work", icon: <TaskListSquareLtr20Regular /> },
+      { href: "/runs", label: "Missions", icon: <TasksApp20Regular /> },
+      { href: "/decisions", label: "Decisions", icon: <Important20Regular /> },
     ],
   },
   {
-    label: "Thông tin",
-    items: [{ href: "/evaluation", label: "Đánh giá", icon: <ScaleFill20Regular /> }],
+    label: "Inspection",
+    items: [
+      { href: "/evolution", label: "Evolution", icon: <ScaleFill20Regular /> },
+      { href: "/evaluation", label: "Evaluation", icon: <ScaleFill20Regular /> },
+    ],
   },
   {
-    label: "Hệ thống",
+    label: "System",
     items: [
-      { href: "/connections", label: "Kết nối", icon: <PlugDisconnected20Regular /> },
-      { href: "/usage", label: "Sử dụng", icon: <DataUsage20Regular /> },
+      { href: "/providers", label: "Providers", icon: <PlugDisconnected20Regular /> },
+      { href: "/connections", label: "Connections", icon: <PlugDisconnected20Regular /> },
+      { href: "/usage", label: "Usage", icon: <DataUsage20Regular /> },
     ],
   },
 ] as const;
@@ -234,7 +240,7 @@ export function AppShell({
                 MAF
               </Text>
               <Text size={100} style={{ color: "#858f9a" }}>
-                Không gian kỹ thuật AI
+                Engineering Control Center
               </Text>
             </span>
           </div>
@@ -312,7 +318,7 @@ export function AppShell({
           <header className={styles.topbar}>
             <div className={styles.context}>
               <Text className={styles.contextName} weight="semibold">
-                {contextProject?.name ?? "Tất cả dự án"}
+                {contextProject?.name ?? "All projects"}
               </Text>
               {contextProject ? (
                 <div className={styles.contextMeta}>
@@ -329,7 +335,7 @@ export function AppShell({
                   navigate(contextProject ? `/runs/new?project=${contextProject.id}` : "/runs/new")
                 }
               >
-                Tác vụ mới
+                New mission
               </Button>
             ) : null}
           </header>

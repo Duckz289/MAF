@@ -82,6 +82,7 @@ describe("isAutoRetryable", () => {
     expect(isAutoRetryable("USER_INTERRUPT")).toBe(false);
     expect(isAutoRetryable("REVISION_CONFLICT")).toBe(false);
     expect(isAutoRetryable("VERIFICATION_FAILURE")).toBe(false);
+    expect(isAutoRetryable("PROCESS_RESTART")).toBe(false);
     expect(isAutoRetryable("UNKNOWN_FAILURE")).toBe(false);
   });
 });
@@ -197,6 +198,12 @@ describe("buildRecoveryCapsule", () => {
           evidenceIds: ["evidence-1"],
           status: "ACTIVE",
           createdAt: "2026-08-19T00:00:00.000Z",
+          provenance: {
+            producer: "LOCAL_REPOSITORY_INDEX",
+            source: "REPOSITORY_SNAPSHOT",
+            sourceId: "src/auth.ts",
+            sourceDigest: "a".repeat(64),
+          },
         },
       ],
       recoveryReason: "NETWORK_FAILURE",

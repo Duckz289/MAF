@@ -1,4 +1,4 @@
-import { Skeleton, SkeletonItem, makeStyles } from "@fluentui/react-components";
+import { makeStyles, Skeleton, SkeletonItem } from "@fluentui/react-components";
 
 const useStyles = makeStyles({
   root: { display: "grid", gap: "22px" },

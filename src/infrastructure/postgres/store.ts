@@ -8,7 +8,7 @@ import {
   type CiEvidence,
   type DeliveryHandoff,
 } from "../../domain/delivery";
-import type { RunStore } from "../../domain/ports";
+import type { HarnessControlState, RunStore } from "../../domain/ports";
 import { projectIdentity } from "../../domain/project-identity";
 import {
   assertProductionFeedback,
@@ -272,6 +272,37 @@ export class PostgresRunStore implements RunStore {
          updated_at = EXCLUDED.updated_at`,
       [capsule.runId, capsule.recoveryReason, capsule, capsule.createdAt],
     );
+  }
+
+  async saveControlState(state: HarnessControlState): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO harness_control_state(name, emergency_stopped, reason, updated_at)
+       VALUES('default', $1, $2, $3)
+       ON CONFLICT (name) DO UPDATE SET
+         emergency_stopped = EXCLUDED.emergency_stopped,
+         reason = EXCLUDED.reason,
+         updated_at = EXCLUDED.updated_at`,
+      [state.emergencyStopped, state.reason ?? null, state.updatedAt],
+    );
+  }
+
+  async getControlState(): Promise<HarnessControlState | undefined> {
+    const result = await this.pool.query<{
+      emergencyStopped: boolean;
+      reason: string | null;
+      updatedAt: string;
+    }>(
+      `SELECT emergency_stopped AS "emergencyStopped", reason, updated_at::text AS "updatedAt"
+       FROM harness_control_state WHERE name='default'`,
+    );
+    const row = result.rows[0];
+    return row
+      ? {
+          emergencyStopped: row.emergencyStopped,
+          updatedAt: row.updatedAt,
+          ...(row.reason === null ? {} : { reason: row.reason }),
+        }
+      : undefined;
   }
 
   async getRecoveryCapsule(runId: string): Promise<RecoveryCapsule | undefined> {

@@ -1,4 +1,5 @@
-import { MissionTree, type MissionNode } from "../domain/mission-tree";
+import { type MissionNode, MissionTree, type MissionTrustBinding } from "../domain/mission-tree";
+import type { TrustState, VerificationState } from "../domain/types";
 
 export interface MissionSnapshot {
   id: string;
@@ -34,6 +35,19 @@ export class MissionRegistry {
   promote(id: string, nodeId: string, output: string): MissionSnapshot {
     const tree = this.require(id);
     tree.promote(nodeId, output);
+    return { id, nodes: tree.list() };
+  }
+
+  bindVerification(
+    id: string,
+    nodeId: string,
+    state: VerificationState,
+    outputs: string[],
+    trustState: TrustState,
+    binding: MissionTrustBinding,
+  ): MissionSnapshot {
+    const tree = this.require(id);
+    tree.setVerification(nodeId, state, outputs, trustState, binding);
     return { id, nodes: tree.list() };
   }
 

@@ -1,4 +1,4 @@
-import { Button, Text, makeStyles } from "@fluentui/react-components";
+import { Button, makeStyles, Text } from "@fluentui/react-components";
 import { ChevronRight20Regular } from "@fluentui/react-icons";
 import type { Navigate, Run } from "../types";
 import { formatCost, formatRelativeTime, friendlyMode, translatedValue } from "../utils";

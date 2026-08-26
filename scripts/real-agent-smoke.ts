@@ -7,8 +7,8 @@ import { EvidenceRuntimeSignalCollector } from "../src/application/runtime-signa
 import { ClaudeCodeAdapter } from "../src/infrastructure/claude-code-adapter";
 import { LocalWorktreeSandbox } from "../src/infrastructure/local-worktree";
 import { InMemoryRunStore } from "../src/infrastructure/memory-store";
-import { InMemoryProjectBrain, LocalRepositoryIndex } from "../src/infrastructure/project-brain";
 import { runProcess } from "../src/infrastructure/process-utils";
+import { InMemoryProjectBrain, LocalRepositoryIndex } from "../src/infrastructure/project-brain";
 import { DomainTelemetryRecorder } from "../src/infrastructure/telemetry";
 import { CommandVerifier } from "../src/infrastructure/verifier";
 

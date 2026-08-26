@@ -1,9 +1,9 @@
 import type { ModeDecision } from "./mode-controller";
 import {
-  modeTransitionDirection,
   type AgentCapabilities,
   type ExecutionMode,
   type ModeEnforcementMethod,
+  modeTransitionDirection,
 } from "./types";
 
 export interface EnforcementPolicy {

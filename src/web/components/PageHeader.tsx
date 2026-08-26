@@ -1,4 +1,4 @@
-import { Text, Title1, makeStyles } from "@fluentui/react-components";
+import { makeStyles, Text, Title1 } from "@fluentui/react-components";
 import type { ReactNode } from "react";
 
 const useStyles = makeStyles({

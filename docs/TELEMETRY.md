@@ -26,3 +26,24 @@ Cost is nullable. Unknown cost stays `null` and is excluded from cost-per-verifi
 it is never converted to zero. Real pricing comes from native agent or provider usage metadata rather
 than hard-coded model price tables. Benchmark reports expose both `costStatus` and the number of
 verified samples with known cost.
+
+## Optional provider-execution traces
+
+Session 3 adds a trace-only OTLP/HTTP protobuf adapter for capability execution. It is active only
+when `MAF_OTEL_ENABLED=true` and either `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` or
+`OTEL_EXPORTER_OTLP_ENDPOINT` is explicitly configured. A generic endpoint receives the standard
+`/v1/traces` suffix. Missing, invalid, or unreachable OTLP configuration never changes provider or
+mission results.
+
+The single `maf.capability.execution` span contains an allowlisted, bounded schema: capability,
+provider name/version, execution outcome, coverage, failure category, duration, finding count, and
+analyzed-file count. It excludes candidate/digest identifiers, timestamps, paths, rule IDs,
+messages, findings, diffs, stdout/stderr, exceptions, credentials, headers, and endpoint values.
+The runtime uses a provider-owned tracer rather than registering a process-global provider, so
+existing run telemetry cannot be captured accidentally; its only resource field is the fixed
+service name `adaptive-agent-harness-capabilities`. SDK/exporter failures are swallowed and
+shutdown is idempotent and time-bounded.
+
+OTLP is an observability transport only. Exported spans are not candidate evidence and cannot set
+an obligation, trust state, policy, or execution mode. MAF's candidate-bound internal event and
+obligation ledger remain authoritative.

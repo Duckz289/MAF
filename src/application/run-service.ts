@@ -21,6 +21,13 @@ import {
 import { ProviderCircuitBreaker, ProviderCircuitOpenError } from "../domain/circuit-breaker";
 import { deriveDebtDelta } from "../domain/debt";
 import {
+  parseContextPageRequest,
+  rebaseWorkingSet,
+  type ContextPage,
+  type ContextPageRequest,
+} from "../domain/context-navigation";
+import type { AgentSkillRegistryPort, AgentSkillSelection } from "../domain/agent-skill";
+import {
   assertCiEvidence,
   buildDeliveryHandoff,
   deliveryHandoffDigest,
@@ -80,13 +87,22 @@ import type {
   VerifierPort,
 } from "../domain/ports";
 import { projectIdentity } from "../domain/project-identity";
+import { knowledgeResolutionBasis } from "../domain/knowledge";
+import type { AuthorityCapability, MissionContract } from "../domain/mission";
+import { normalizeModelIdentity } from "../domain/model-intelligence";
 import {
   assertProductionFeedback,
   deriveProductionImpact,
   type ProductionFeedback,
   type ProductionImpact,
 } from "../domain/production-feedback";
-import { deriveQualityReport, deriveTrustState, type QualityReport } from "../domain/quality";
+import {
+  assuranceObligationsFor,
+  deriveQualityReport,
+  deriveTrustState,
+  type QualityReport,
+} from "../domain/quality";
+import { unresolvedObligations } from "../domain/assurance-obligation";
 import {
   AgentReportedFailure,
   buildRecoveryCapsule,
@@ -94,8 +110,18 @@ import {
   isAutoRetryable,
   verificationSeverity,
 } from "../domain/recovery";
-import { buildReviewPrompt, parseReviewVerdict, type ReviewVerdict } from "../domain/review";
+import {
+  buildReviewPrompt,
+  deriveReviewIndependence,
+  parseReviewVerdict,
+  type ReviewIndependenceEvidence,
+  type ReviewVerdict,
+} from "../domain/review";
 import { countCrossModuleEdges, deriveRiskVector, type RiskVector } from "../domain/risk";
+import {
+  attributeVerificationFailure,
+  type VerificationFailureKind,
+} from "../domain/verification-attribution";
 import { deriveRuntimeGraph } from "../domain/runtime-graph";
 import {
   isSafeCredentialReference,
@@ -136,7 +162,18 @@ import {
 } from "../domain/types";
 import { LocalWorktreeSandbox } from "../infrastructure/local-worktree";
 import { runProcess } from "../infrastructure/process-utils";
+import {
+  executeRegisteredCapabilities,
+  projectCapabilityConcerns,
+  type CapabilityConcernProjection,
+  type CapabilityExecutionObserver,
+} from "./capability-execution";
+import type { CapabilityRegistry } from "./capability-registry";
+import type { ContextExpansionResult, ContextNavigationService } from "./context-navigation";
 import { extractFileCandidates, findRepositoryFile, normalizeFile } from "./file-candidates";
+import { compileMissionContract } from "./mission-compiler";
+import { PromptCompiler } from "./prompt-compiler";
+import { persistSelectedRepositoryKnowledge } from "./project-knowledge";
 
 export interface CreateRunRequest {
   prompt: string;
@@ -153,6 +190,24 @@ export interface CreateRunRequest {
   credentialReferences?: string[] | undefined;
   budget?: { mode: "ADVISORY" | "HARD"; limitUsd: number } | undefined;
   qualityPreference?: QualityPreference | undefined;
+  scopePaths?: string[] | undefined;
+  scopeExclusions?: string[] | undefined;
+  constraints?: string[] | undefined;
+  acceptanceCriteria?: string[] | undefined;
+  acceptanceCriteriaAmbiguous?: boolean | undefined;
+  expectedEvidence?: string[] | undefined;
+  requestedAuthority?: AuthorityCapability[] | undefined;
+  skillIds?: string[] | undefined;
+}
+
+export interface ContextPageAccessResult {
+  status: ContextExpansionResult["status"];
+  reason: string;
+  page?: ContextPage;
+  residentCharacters: number;
+  requestCount: number;
+  pageCount: number;
+  exhaustion: ContextBuildResult["workingSet"]["exhaustion"];
 }
 
 export interface RunSummary extends Run {
@@ -211,6 +266,10 @@ interface RunServiceDependencies {
   contextBuilder: ContextBuilderPort;
   telemetry: TelemetrySink;
   runtimeSignals: RuntimeSignalCollector;
+  capabilities?: CapabilityRegistry;
+  contextNavigation?: ContextNavigationService;
+  skills?: AgentSkillRegistryPort;
+  capabilityObserver?: CapabilityExecutionObserver;
   modeController?: AdaptiveModeController;
   repairPolicy?: Partial<VerificationRepairPolicy>;
   enforcementPolicy?: Partial<EnforcementPolicy>;
@@ -286,6 +345,8 @@ interface ActiveRunState {
    * persisted state from the enforcement events already appended to the log.
    */
   run: Run;
+  /** Present once initial selection/rendering completes; owns the mission Working Set. */
+  contextState?: ContextState;
   /**
    * Aborted by cancel() so in-flight trusted verification subprocesses (M10 resilience scenarios)
    * are killed immediately rather than running to their full timeout after the run is cancelled.
@@ -299,6 +360,9 @@ interface ContextState {
   mode: ExecutionMode;
   snapshot: RepositorySnapshot;
   projectId: string;
+  workingSet: ContextBuildResult["workingSet"];
+  mission: MissionContract;
+  skills: AgentSkillSelection[];
   /** Frozen pre-execution observation; candidate-driven scope growth cannot impersonate a base change. */
   baselineStructuralHealth: StructuralHealthMetrics;
 }
@@ -310,6 +374,17 @@ const newTransitionState = (): TransitionState => ({
   boundaryEnforcements: 0,
   safeRestarts: 0,
 });
+
+/**
+ * Verification failure kinds a CANDIDATE change cannot fix, so model repair would be pure spend.
+ * EXECUTION_LIMIT_FAILURE is intentionally absent: a timeout or a resource ceiling can be caused
+ * by the candidate's own code, and repair remains a rational move for it.
+ */
+const unrepairableVerificationFailures = new Set<VerificationFailureKind>([
+  "ENVIRONMENT_FAILURE",
+  "DEPENDENCY_FAILURE",
+  "INFRASTRUCTURE_FAILURE",
+]);
 
 /** Failure classes that reflect provider/network health, not agent code quality. */
 const providerRelatedClassifications = new Set<FailureClassification>([
@@ -341,8 +416,20 @@ export class RunService {
   private readonly recoveryPolicy: RecoveryPolicy;
   private readonly budgetReservationPolicy: BudgetReservationPolicy;
   private readonly circuitBreaker: ProviderCircuitBreaker;
-  /** Blocks new run creation while true (Emergency Stop). Existing evidence is never touched. */
+  private readonly promptCompiler = new PromptCompiler();
+  /**
+   * Blocks new run creation while true (Emergency Stop). Existing evidence is never touched.
+   *
+   * This is a CACHE of the durable control row, not the source of truth. It used to be the only
+   * copy, which meant a process restart silently revoked an operator's explicit stop: nobody
+   * decided to resume, the decision just evaporated with the process. It is now hydrated from the
+   * store before any run can be created or resumed, and every change is written back.
+   */
   private emergencyStopped = false;
+  /** Set once the durable control row has been read into {@link emergencyStopped}. */
+  private controlStateHydrated = false;
+  /** In-flight control-state read or write, awaited before any admission decision. */
+  private controlStateWrite: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly dependencies: RunServiceDependencies) {
     this.modeController = dependencies.modeController ?? new AdaptiveModeController();
@@ -368,6 +455,9 @@ export class RunService {
   }
 
   async create(request: CreateRunRequest): Promise<Run> {
+    // Admission consults the DURABLE decision, not just this process's memory: a restart must not
+    // hand out a fresh start to work an operator already stopped.
+    await this.loadControlState();
     if (this.emergencyStopped) {
       throw new Error("New runs are blocked: an emergency stop is active");
     }
@@ -378,13 +468,47 @@ export class RunService {
     assertPersistenceSafeLocator("Expected-file path", request.verification?.expectedFile);
     assertCredentialReferences(request.credentialReferences ?? []);
     const now = new Date().toISOString();
+    const verification = request.verification ?? {};
+    const missionContract = compileMissionContract({
+      objective: redactSensitiveText(request.prompt),
+      repositoryPath: resolvedRepositoryPath,
+      revision: requestedRevision,
+      ...(request.mode ? { requestedMode: request.mode } : {}),
+      ...(request.scopePaths
+        ? { scopePaths: request.scopePaths.map((item) => redactSensitiveText(item)) }
+        : {}),
+      ...(request.scopeExclusions
+        ? { scopeExclusions: request.scopeExclusions.map((item) => redactSensitiveText(item)) }
+        : {}),
+      ...(request.constraints
+        ? { constraints: request.constraints.map((item) => redactSensitiveText(item)) }
+        : {}),
+      ...(request.acceptanceCriteria
+        ? {
+            acceptanceCriteria: request.acceptanceCriteria.map((item) => redactSensitiveText(item)),
+          }
+        : {}),
+      ...(request.acceptanceCriteriaAmbiguous ? { acceptanceCriteriaAmbiguous: true } : {}),
+      ...(request.expectedEvidence
+        ? { expectedEvidence: request.expectedEvidence.map((item) => redactSensitiveText(item)) }
+        : {}),
+      ...(request.requestedAuthority ? { requestedAuthority: request.requestedAuthority } : {}),
+      ...(request.budget ? { budget: request.budget } : {}),
+      verification,
+      ...(request.qualityPreference ? { qualityPreference: request.qualityPreference } : {}),
+      ...(request.model ? { modelPreference: redactSensitiveText(request.model) } : {}),
+      ...(request.skillIds
+        ? { skillIds: request.skillIds.map((item) => redactSensitiveText(item)) }
+        : {}),
+    });
     const task: Task = {
       id: crypto.randomUUID(),
       prompt: request.prompt,
+      missionContract,
       repositoryPath: resolvedRepositoryPath,
       revision: requestedRevision,
       createdAt: now,
-      verification: request.verification ?? {},
+      verification,
       ...(request.performance ? { performance: request.performance } : {}),
       ...(request.resilience ? { resilience: request.resilience } : {}),
       ...(request.signals ? { signals: request.signals } : {}),
@@ -462,6 +586,16 @@ export class RunService {
       executionMode: run.executionMode,
       agent: run.agent,
       model: run.model,
+    });
+    await this.event(run.id, "MissionCompiled", {
+      missionId: missionContract.id,
+      missionDigest: missionContract.digest,
+      scopeStatus: missionContract.scope.status,
+      acceptanceCriteriaStatus: missionContract.acceptanceCriteria.status,
+      authoritySource: missionContract.authority.source,
+      grantedAuthority: missionContract.authority.granted,
+      deniedAuthority: missionContract.authority.denied,
+      ambiguities: missionContract.ambiguities,
     });
     const allocation = computeAllocation(
       task.budget ?? { mode: "ADVISORY", limitUsd: null },
@@ -561,6 +695,32 @@ export class RunService {
     return this.dependencies.store.listEvents(id, after);
   }
 
+  /** Bounded native-agent/tool seam. A handle is resolved only while its owning mission is active. */
+  async requestContextPage(
+    id: string,
+    request: ContextPageRequest,
+  ): Promise<ContextPageAccessResult> {
+    const active = this.active.get(id);
+    if (!active?.sandbox || !active.contextState) {
+      throw new Error(`Run ${id} has no active Context Working Set`);
+    }
+    const expansion = await this.expandContextPage(
+      active.run,
+      active.sandbox,
+      active.contextState,
+      request,
+    );
+    return {
+      status: expansion.status,
+      reason: expansion.reason,
+      ...(expansion.page ? { page: structuredClone(expansion.page) } : {}),
+      residentCharacters: expansion.workingSet.residentCharacters,
+      requestCount: expansion.workingSet.requestCount,
+      pageCount: expansion.workingSet.pageCount,
+      exhaustion: expansion.workingSet.exhaustion,
+    };
+  }
+
   async artifacts(id: string): Promise<Artifact[]> {
     return this.dependencies.store.listArtifacts(id);
   }
@@ -658,6 +818,82 @@ export class RunService {
     return structuredClone(run);
   }
 
+  /** Reconciles durable in-flight records left behind by a prior process before serving traffic. */
+  async reconcileInterruptedRuns(): Promise<number> {
+    const interrupted = (await this.dependencies.store.listRuns()).filter(
+      (run) => (run.state === "RUNNING" || run.state === "QUEUED") && !this.active.has(run.id),
+    );
+    let reconciled = 0;
+    for (const run of interrupted) {
+      const task = await this.dependencies.store.getTask(run.taskId);
+      if (!task) {
+        run.state = "PAUSED";
+        if (run.verificationState === "VERIFYING") run.verificationState = "NOT_CHECKED";
+        run.error =
+          "Process restarted while this run was in flight; its task record is unavailable";
+        run.updatedAt = new Date().toISOString();
+        await this.dependencies.store.updateRun(run);
+        await this.event(run.id, "RunReconciledAfterRestart", {
+          transition: { from: "RUNNING_OR_QUEUED", to: "PAUSED" },
+          reason: "process-restart",
+          evidence: ["no active in-process owner exists", "the persisted task record is missing"],
+          resumable: false,
+        });
+        reconciled += 1;
+        continue;
+      }
+      const artifacts = await this.dependencies.store.listArtifacts(run.id);
+      const resolvedRevision = artifacts
+        .filter((artifact) => artifact.kind === "DIFF")
+        .map((artifact) => artifact.metadata.baseRevision)
+        .find((value): value is string => typeof value === "string");
+      const workspacePresent = Boolean(run.sandboxPath && existsSync(run.sandboxPath));
+      const sandbox: Sandbox | undefined = workspacePresent
+        ? {
+            id: run.id,
+            path: run.sandboxPath as string,
+            repositoryPath: task.repositoryPath,
+            revision: task.revision,
+            baseRevision: resolvedRevision ?? task.revision,
+          }
+        : undefined;
+      const capsule = await this.captureRecoveryCapsule(
+        run,
+        task,
+        sandbox,
+        "PROCESS_RESTART",
+        workspacePresent
+          ? "The owning process restarted. The workspace was preserved, but no live agent session or in-memory execution context is claimed to survive."
+          : "The owning process restarted and no preserved workspace exists; this capsule is evidence-only and cannot be resumed in place.",
+      );
+      capsule.safetyCountersUsed = {
+        recoveryAttempts: this.recoveryPolicy.maxRecoveryAttempts,
+        policyRestarts: this.enforcementPolicy.maxPolicyRestarts,
+      };
+      await this.dependencies.store.saveRecoveryCapsule(capsule);
+      const priorState = run.state;
+      run.state = "PAUSED";
+      if (run.verificationState === "VERIFYING") run.verificationState = "NOT_CHECKED";
+      run.error = "Process restarted while this run was in flight; recovery evidence was captured";
+      run.updatedAt = new Date().toISOString();
+      await this.dependencies.store.updateRun(run);
+      await this.event(run.id, "RunReconciledAfterRestart", {
+        transition: { from: priorState, to: "PAUSED" },
+        reason: "process-restart",
+        evidence: [
+          "the durable run was RUNNING/QUEUED",
+          "no active in-process owner exists",
+          workspacePresent ? "the workspace path still exists" : "no workspace path is recoverable",
+        ],
+        resumable: false,
+        workspacePreserved: workspacePresent,
+        recoveryCapsuleCreated: true,
+      });
+      reconciled += 1;
+    }
+    return reconciled;
+  }
+
   /**
    * Explicitly resumes a PAUSED run from its durable RecoveryCapsule. Detects revision conflict
    * (M3C) before trusting prior evidence: the sandbox worktree stays frozen at whatever commit it
@@ -666,6 +902,7 @@ export class RunService {
    * itself would never observe that drift.
    */
   async resume(id: string, credentialReferences: string[] = []): Promise<Run> {
+    await this.loadControlState();
     if (this.emergencyStopped) {
       throw new Error("Cannot resume runs: an emergency stop is active");
     }
@@ -676,6 +913,18 @@ export class RunService {
     if (!capsule) throw new Error(`No recovery capsule is stored for run ${id}`);
     const task = await this.dependencies.store.getTask(run.taskId);
     if (!task) throw new Error(`Unknown task for run ${id}`);
+    if (capsule.recoveryReason === "PROCESS_RESTART") {
+      await this.event(id, "ResumeRefused", {
+        reason: "PROCESS_RESTART_CONTEXT_UNAVAILABLE",
+        evidence: [
+          "the original live session no longer exists",
+          "the literal pre-candidate workspace baseline is process-local and cannot be reconstructed from a mutable worktree",
+        ],
+      });
+      throw new Error(
+        `Cannot resume run ${id} in place after a process restart; preserve its evidence and start a newly planned run`,
+      );
+    }
     if (!capsule.workspacePath) {
       throw new Error(`Recovery capsule for run ${id} has no preserved workspace to resume`);
     }
@@ -724,15 +973,38 @@ export class RunService {
       path: capsule.workspacePath,
       repositoryPath: capsule.repositoryPath,
       revision: capsule.requestedRevision,
+      baseRevision: capsule.resolvedRevision,
     };
     run.state = "RUNNING";
     run.updatedAt = new Date().toISOString();
     await this.dependencies.store.updateRun(run);
+    // A resume continues the SAME run under the SAME bounded allowance. Restarting the counters
+    // would make every per-run safety limit unbounded by repetition: pause, resume, spend the
+    // budget again, repeat. A capsule written before this field existed cannot say how much was
+    // used; the conservative reading — the whole allowance — is recorded explicitly rather than
+    // silently defaulting to zero, and the run can still be re-planned by an operator.
+    const countersUsed = capsule.safetyCountersUsed;
+    const restoredCounters = countersUsed ?? {
+      recoveryAttempts: this.recoveryPolicy.maxRecoveryAttempts,
+      policyRestarts: this.enforcementPolicy.maxPolicyRestarts,
+    };
+    await this.event(id, "ResumeSafetyCountersRestored", {
+      source: countersUsed ? "CAPSULE" : "LEGACY_CAPSULE_CONSERVATIVE_DEFAULT",
+      recoveryAttemptsUsed: restoredCounters.recoveryAttempts,
+      policyRestartsUsed: restoredCounters.policyRestarts,
+      maxRecoveryAttempts: this.recoveryPolicy.maxRecoveryAttempts,
+      maxPolicyRestarts: this.enforcementPolicy.maxPolicyRestarts,
+      ...(countersUsed
+        ? {}
+        : {
+            note: "this capsule predates durable safety counters; the remaining automatic allowance is treated as spent rather than assumed unused",
+          }),
+    });
     this.active.set(run.id, {
       cancelled: false,
       sessionActive: false,
-      policyRestartsUsed: 0,
-      recoveryAttemptsUsed: 0,
+      policyRestartsUsed: restoredCounters.policyRestarts,
+      recoveryAttemptsUsed: restoredCounters.recoveryAttempts,
       budgetExhaustedObserved: false,
       transitionState: newTransitionState(),
       run,
@@ -883,6 +1155,10 @@ export class RunService {
    */
   async emergencyStop(): Promise<{ cancelledRunIds: string[] }> {
     this.emergencyStopped = true;
+    this.controlStateHydrated = true;
+    // Persisted BEFORE the cancellation sweep and awaited: if this process dies mid-sweep, the
+    // stop must already be durable, because the whole point is that it outlives the process.
+    await this.persistControlState("operator emergency stop");
     const cancelledRunIds: string[] = [];
     for (const id of [...this.active.keys()]) {
       await this.cancel(id);
@@ -891,8 +1167,16 @@ export class RunService {
     return { cancelledRunIds };
   }
 
+  /**
+   * Clears the stop. Kept synchronous so the existing API surface is unchanged; the durable write
+   * is tracked in {@link controlStateWrite} and awaited by every admission path before it reads
+   * the flag, so a create() cannot observe a half-applied clear. A crash between the in-memory
+   * clear and the durable write leaves the STOP in place — the fail-safe direction.
+   */
   resumeNewRuns(): void {
     this.emergencyStopped = false;
+    this.controlStateHydrated = true;
+    void this.persistControlState("operator resumed new runs");
   }
 
   isEmergencyStopped(): boolean {
@@ -962,39 +1246,89 @@ export class RunService {
         });
       }
 
-      await this.dependencies.projectBrain.markStale(task.repositoryPath, task.revision);
       // Cheap full pass: file list plus path-derived package/module ownership, no content read.
       const cheapSnapshot = await this.dependencies.repositoryIndex.index(
         sandbox.path,
-        task.revision,
+        sandbox.baseRevision,
       );
-      // Selecting scope needs only moduleMap/paths, not symbols, so this first build is cheap.
-      const scope = await this.dependencies.contextBuilder.build({
+      // The existing pager is now an explicit scope-only operation: it ranks paths but does not
+      // render context or read ProjectBrain merely to return initialFiles.
+      const selection = await this.dependencies.contextBuilder.selectInitialScope({
         task,
         mode: run.effectiveMode,
         snapshot: cheapSnapshot,
         projectId: task.repositoryPath,
+        runId: run.id,
+        stage: "INITIAL_SCOPE",
       });
       const enrichedSnapshot = await this.dependencies.repositoryIndex.indexScope(
         sandbox.path,
-        task.revision,
+        sandbox.baseRevision,
         cheapSnapshot,
-        scope.initialFiles,
+        selection.initialFiles,
       );
-      // Re-render with the now-parsed initial scope so the context text carries real symbols.
+      try {
+        const staleness = await this.dependencies.projectBrain.reconcileStaleness({
+          projectId: task.repositoryPath,
+          revision: sandbox.baseRevision,
+          ...knowledgeResolutionBasis(enrichedSnapshot),
+        });
+        await this.event(run.id, "ProjectKnowledgeStalenessApplied", {
+          reason:
+            "Source digests and module membership preserve proven-independent knowledge; changed or provenance-free prior revisions remain conservative.",
+          evidence: { activeRevision: sandbox.baseRevision, ...staleness },
+        });
+      } catch (error) {
+        // Project knowledge is optional execution context, never verification authority. A failed
+        // historical-state update is explicit evidence, but cannot upgrade or fail a candidate.
+        await this.event(run.id, "ProjectKnowledgeStalenessFailed", {
+          reason:
+            "ProjectBrain staleness reconciliation was unavailable; no stored record was promoted.",
+          evidence: {
+            activeRevision: sandbox.baseRevision,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        });
+      }
+      await this.recordSelectedRepositoryKnowledge(
+        run,
+        task,
+        enrichedSnapshot,
+        selection.initialFiles,
+      );
+      // Render once with the reused selection and now-parsed scope, so ranking also occurs once.
       const context = await this.dependencies.contextBuilder.build({
         task,
         mode: run.effectiveMode,
         snapshot: enrichedSnapshot,
         projectId: task.repositoryPath,
+        runId: run.id,
+        stage: "INITIAL_RENDER",
+        selection,
       });
+      const mission =
+        task.missionContract ??
+        compileMissionContract({
+          objective: redactSensitiveText(task.prompt),
+          repositoryPath: task.repositoryPath,
+          revision: task.revision,
+          verification: task.verification,
+          ...(task.budget ? { budget: task.budget } : {}),
+          ...(task.qualityPreference ? { qualityPreference: task.qualityPreference } : {}),
+        });
+      const skillSelections = await this.selectMissionSkills(mission);
       const contextState: ContextState = {
         current: context,
         mode: run.effectiveMode,
         snapshot: enrichedSnapshot,
         projectId: task.repositoryPath,
+        workingSet: context.workingSet,
+        mission,
+        skills: skillSelections,
         baselineStructuralHealth: deriveStructuralHealth(enrichedSnapshot),
       };
+      const activeContextOwner = this.active.get(run.id);
+      if (activeContextOwner) activeContextOwner.contextState = contextState;
       await this.event(run.id, "ContextBuilt", {
         tokenEstimate: context.tokenEstimate,
         evidenceIds: context.evidenceIds,
@@ -1004,6 +1338,23 @@ export class RunService {
         initialModules: context.initialModules,
         filesTruncated: enrichedSnapshot.filesTruncated,
         scopeTruncated: enrichedSnapshot.scopeTruncated,
+        tokenEstimateBasis: context.tokenEstimateBasis,
+        evidenceReferencesTruncated: context.evidenceReferencesTruncated,
+        contextTruncated: context.contextTruncated,
+      });
+      await this.recordContextLedger(run, context);
+      await this.event(run.id, "AgentSkillsSelected", {
+        selections: skillSelections
+          .filter((selection) => selection.status !== "NOT_SELECTED")
+          .map((selection) => ({
+            skillId: selection.skillId,
+            status: selection.status,
+            reason: selection.reason,
+            version: selection.discovery?.declaredVersion ?? null,
+            packageDigest: selection.discovery?.packageDigest ?? null,
+            lifecycle: selection.discovery?.lifecycle ?? null,
+            effectiveAuthority: selection.effectiveAuthority,
+          })),
       });
       // Pre-execution estimate: the only thing available before any diff exists. Refined once a
       // candidate's actual diff exists (see captureCandidate) — see the M5 design note.
@@ -1062,6 +1413,13 @@ export class RunService {
       let parentCandidateId: string | undefined;
       let verificationAttempts = 0;
       let repairAttempts = 0;
+      // One cheap deterministic environment retry per run (Finding A/B): non-candidate-bound
+      // verification failures get a verifier re-run before any model repair is considered.
+      let environmentRetried = false;
+      // Digest of the candidate that the LAST repair session was launched against (Finding B):
+      // if the next captured candidate is byte-identical, that repair produced no change and a
+      // further repair would re-run a model session against identical evidence.
+      let lastFailedCandidateDigest: string | undefined;
       let qualityReport: QualityReport | undefined;
       let strategyObservation: StrategyObservation | undefined;
       let deliveryHandoff: DeliveryHandoff | undefined;
@@ -1089,11 +1447,17 @@ export class RunService {
         // there is no budget gate here, by design. (The current CommandVerifier is $0 per run
         // either way; the "verification" allocation exists for a future costed verifier, at which
         // point this comment is the reminder that it still must never be skipped for budget.)
-        const verifierResult = await this.dependencies.verifier.verify(
+        const rawVerifierResult = await this.dependencies.verifier.verify(
           run,
           task,
           sandbox,
           candidate.diff,
+        );
+        const verifierResult = await this.enforcePostVerificationCandidateFence(
+          run,
+          sandbox,
+          candidate,
+          rawVerifierResult,
         );
         verification = {
           ...verifierResult,
@@ -1120,6 +1484,157 @@ export class RunService {
           output: verification.output,
         });
         if (verification.state === "VERIFIED") break;
+        if (rawVerifierResult.state === "VERIFIED" && verification.state === "QUARANTINED") {
+          await this.event(run.id, "VerificationRepairStopped", {
+            reason: "candidate-identity-fence-failed",
+            evidence: [
+              "the verifier reported success",
+              "the post-verification literal workspace digest did not match the captured candidate",
+              "mutated verifier workspace bytes are not eligible to become a repair candidate",
+            ],
+            verificationAttempts,
+            repairAttempts,
+            candidateId: candidate.id,
+          });
+          break;
+        }
+        if (
+          verification.state === "NOT_CHECKED" &&
+          !task.verification.command &&
+          !task.verification.expectedFile
+        ) {
+          await this.event(run.id, "VerificationRepairStopped", {
+            reason: "verification-not-configured",
+            evidence: [
+              "no verification command was configured",
+              "no expected-file assertion was configured",
+              "candidate capture is identity evidence, not correctness evidence",
+            ],
+            verificationAttempts,
+            repairAttempts,
+            candidateId: candidate.id,
+          });
+          break;
+        }
+
+        // Post-pilot hardening (Finding A): attribute the failure BEFORE spending any model
+        // budget on repair. A failing verification command is not automatically a failing
+        // candidate — the pilot's correct candidate was "repaired" because the verification
+        // environment lacked package metadata. Attribution is deterministic from the
+        // verification's own evidence and is always observable.
+        const attribution = attributeVerificationFailure({
+          command: task.verification.command,
+          exitCode: verification.exitCode,
+          output: verification.output,
+          expectedFileVerification: !task.verification.command,
+          execution: verification.execution,
+        });
+        await this.event(run.id, "VerificationFailureAttributed", {
+          verificationId: verification.id,
+          candidateId: candidate.id,
+          attempt: verificationAttempts,
+          kind: attribution.kind,
+          evidence: attribution.evidence,
+          candidateBound: attribution.candidateBound,
+          environmentRetryUseful: attribution.environmentRetryUseful,
+          ...(verification.execution ? { execution: verification.execution } : {}),
+        });
+        if (attribution.environmentRetryUseful && !environmentRetried) {
+          // A cheap deterministic remediation is tried first when — and only when — re-running the
+          // same trusted verifier unchanged could plausibly produce a different outcome: a cold
+          // dependency cache, a briefly unreachable service, a toolchain mid-install, or output the
+          // classifier honestly could not read. This gate used to be `!candidateBound`, which
+          // conflated "not the candidate's fault" with "worth trying again" and made a verifier
+          // TIMEOUT spend a second full timeout before repair could even be considered. Attribution
+          // of the ORIGINAL failure still stands as evidence; this retry can only produce new
+          // verification evidence, never trust by itself.
+          environmentRetried = true;
+          await this.event(run.id, "VerificationEnvironmentRetryStarted", {
+            verificationId: verification.id,
+            candidateId: candidate.id,
+            kind: attribution.kind,
+            evidence: attribution.evidence,
+          });
+          const rawRetriedResult = await this.dependencies.verifier.verify(
+            run,
+            task,
+            sandbox,
+            candidate.diff,
+          );
+          const retriedResult = await this.enforcePostVerificationCandidateFence(
+            run,
+            sandbox,
+            candidate,
+            rawRetriedResult,
+          );
+          verificationAttempts += 1;
+          verification = {
+            ...retriedResult,
+            ...(retriedResult.command
+              ? { command: redactSensitiveText(retriedResult.command) }
+              : {}),
+            output: redactSensitiveText(retriedResult.output),
+            attempt: verificationAttempts,
+            candidateId: candidate.id,
+          };
+          await this.dependencies.store.addVerification(verification);
+          await this.observeAndDecide(run, {
+            runId: run.id,
+            type: "VERIFICATION",
+            timestamp: verification.completedAt,
+            checkpoint: `verification-environment-retry-${verificationAttempts}-${verification.state.toLowerCase()}`,
+            verification,
+          });
+          await this.event(run.id, "VerificationEnvironmentRetried", {
+            fromVerificationId: retriedResult.id,
+            candidateId: candidate.id,
+            kind: attribution.kind,
+            outcome: verification.state,
+            exitCode: verification.exitCode,
+          });
+          if (verification.state === "VERIFIED") break;
+          if (rawRetriedResult.state === "VERIFIED" && verification.state === "QUARANTINED") {
+            await this.event(run.id, "VerificationRepairStopped", {
+              reason: "candidate-identity-fence-failed",
+              evidence: [
+                "the retried verifier reported success",
+                "the post-verification literal workspace digest did not match the captured candidate",
+              ],
+              verificationAttempts,
+              repairAttempts,
+              candidateId: candidate.id,
+            });
+            break;
+          }
+          const retryAttribution = attributeVerificationFailure({
+            command: task.verification.command,
+            exitCode: verification.exitCode,
+            output: verification.output,
+            expectedFileVerification: !task.verification.command,
+            execution: verification.execution,
+          });
+          if (unrepairableVerificationFailures.has(retryAttribution.kind)) {
+            // Deterministically environment/dependency/infrastructure-bound even after a retry:
+            // repairing the CANDIDATE cannot fix the verification environment, so model repair
+            // would be unjustified spend. Fail closed — the last verification result stands
+            // (non-PASS), the run ends non-verified, and the evidence says why. EXECUTION_LIMIT is
+            // deliberately NOT in that set: a candidate can introduce a hang or a runaway
+            // allocation, so repair stays available for it.
+            await this.event(run.id, "VerificationRepairStopped", {
+              reason: `verification-${retryAttribution.kind.toLowerCase().replace(/_failure$/u, "")}-failure`,
+              verificationAttempts,
+              repairAttempts,
+              maxRepairAttempts: this.repairPolicy.maxRepairAttempts,
+              candidateId: candidate.id,
+              failureKind: retryAttribution.kind,
+              failureEvidence: retryAttribution.evidence,
+            });
+            break;
+          }
+          // UNKNOWN after retry (or the retry re-attributed to the candidate): continue toward
+          // repair — evidence is insufficient to exonerate the candidate, and repair remains
+          // possible for genuinely candidate-bound failures.
+        }
 
         const previousVerification = (await this.dependencies.store.listVerifications(run.id)).at(
           -2,
@@ -1133,9 +1648,13 @@ export class RunService {
           "execution",
           budgetMode,
         );
+        const repairProducedNoChange =
+          lastFailedCandidateDigest !== undefined &&
+          candidate.artifact.digest === lastFailedCandidateDigest;
         if (
           repairAttempts >= this.repairPolicy.maxRepairAttempts ||
           worseState ||
+          repairProducedNoChange ||
           !repairAuthorization.authorized
         ) {
           if (!repairAuthorization.authorized) {
@@ -1149,7 +1668,9 @@ export class RunService {
               ? "budget-exhausted"
               : worseState
                 ? "verification-state-worsened"
-                : "repair-limit-reached",
+                : repairProducedNoChange
+                  ? "repair-produced-no-candidate-change"
+                  : "repair-limit-reached",
             verificationAttempts,
             repairAttempts,
             maxRepairAttempts: this.repairPolicy.maxRepairAttempts,
@@ -1173,12 +1694,16 @@ export class RunService {
           output: verification.output.slice(0, this.repairPolicy.maxVerifierOutputChars),
           changedFiles: candidate.diff.changedFiles,
           diffDigest: candidate.artifact.digest,
+          // Recovery ROI evidence (Finding B): what justified spending model budget on repair.
+          failureKind: attribution.kind,
+          triggerEvidence: attribution.evidence,
           sessionStrategy:
             capabilities.resumeSession && session.nativeSessionId
               ? "NATIVE_RESUME"
               : "NEW_BOUNDED_SESSION",
         });
         parentCandidateId = candidate.id;
+        lastFailedCandidateDigest = candidate.artifact.digest;
         await this.refreshContext(run, task, sandbox, contextState);
         sessionResult = await this.runGovernedSession(
           run,
@@ -1199,6 +1724,7 @@ export class RunService {
       // distinguishes correctness from quality, it never replaces or overrides the correctness
       // gate's verdict.
       if (verification.state === "VERIFIED" && candidate) {
+        const capabilityProjection = await this.assessCapabilities(run, sandbox, candidate);
         qualityReport = await this.assessQuality(
           run,
           task,
@@ -1208,6 +1734,7 @@ export class RunService {
           verification,
           context.initialModules,
           preExecutionAssessment,
+          capabilityProjection,
         );
       } else {
         // A candidate whose deterministic verification did not pass stays PROPOSED — no model
@@ -1651,6 +2178,38 @@ export class RunService {
     resumeFrom?: AgentSession,
     costCategory: BudgetCategory = "execution",
   ): Promise<{ session: AgentSession; modelCostReported: boolean; restartRequested: boolean }> {
+    const adapterName = this.dependencies.agent.name.toLowerCase();
+    const promptArtifact = this.promptCompiler.compile({
+      mission: contextState.mission,
+      skills: contextState.skills,
+      initialContext: contextState.current.text,
+      workingSet: contextState.workingSet,
+      executionDirective: message,
+      modelTarget: normalizeModelIdentity({
+        provider: run.provider,
+        model: run.model,
+        executionInterface: adapterName.includes("acp")
+          ? "NATIVE_ACP"
+          : run.provider.toLowerCase() === "native"
+            ? "NATIVE_CLI"
+            : "API_GATEWAY",
+      }),
+    });
+    await this.event(run.id, "PromptCompiled", {
+      promptArtifactId: promptArtifact.id,
+      templateVersion: promptArtifact.templateVersion,
+      policyVersion: promptArtifact.policyVersion,
+      missionContractDigest: promptArtifact.missionContractDigest,
+      skillVersions: promptArtifact.skillVersions,
+      contextIdentity: promptArtifact.contextIdentity,
+      modelTarget: promptArtifact.modelTarget,
+      sections: promptArtifact.sections.map((section) => ({
+        kind: section.kind,
+        version: section.version,
+        stability: section.stability,
+        digest: section.digest,
+      })),
+    });
     const session =
       resumeFrom?.nativeSessionId !== undefined
         ? await this.dependencies.agent.resume(resumeFrom.nativeSessionId)
@@ -1658,7 +2217,7 @@ export class RunService {
             run,
             task,
             workspacePath: sandbox.path,
-            initialContext: contextState.current.text,
+            initialContext: promptArtifact.stablePrefix,
             credentialReferences,
           });
     const active = this.active.get(run.id);
@@ -1669,7 +2228,7 @@ export class RunService {
     let modelCostReported = false;
     let restartRequested = false;
     try {
-      await this.dependencies.agent.send(session, message);
+      await this.dependencies.agent.send(session, promptArtifact.variablePrompt);
       for await (const agentEvent of this.dependencies.agent.events(session)) {
         if (this.active.get(run.id)?.cancelled) {
           await this.dependencies.agent.cancel(session);
@@ -1717,6 +2276,21 @@ export class RunService {
             ...agentEvent.data,
             executionAttempt: run.retryCount + 1,
           });
+          if (agentEvent.data.pageRequest !== undefined) {
+            const pageRequest = parseContextPageRequest(agentEvent.data.pageRequest);
+            if (!pageRequest) {
+              await this.event(run.id, "ContextPageRejected", {
+                reason: "Agent page request was malformed or exceeded structural bounds.",
+              });
+            } else {
+              try {
+                await this.expandContextPage(run, sandbox, contextState, pageRequest);
+              } catch {
+                // Context is optional reasoning material. The explicit rejection event records
+                // unavailability; a paging failure cannot fail or strengthen candidate trust.
+              }
+            }
+          }
         }
         if (agentEvent.type === "tool" || agentEvent.type === "context_expansion") {
           const grown = await this.growGraph(
@@ -1756,6 +2330,24 @@ export class RunService {
       }
     }
     return { session, modelCostReported, restartRequested };
+  }
+
+  private async selectMissionSkills(mission: MissionContract): Promise<AgentSkillSelection[]> {
+    const requested = mission.preferences.skills;
+    if (requested.length === 0) return [];
+    if (!this.dependencies.skills) {
+      return requested.map((skillId) => ({
+        skillId,
+        status: "UNAVAILABLE" as const,
+        reason: "No Agent Skill registry is configured for this runtime.",
+        effectiveAuthority: [],
+      }));
+    }
+    return this.dependencies.skills.select({
+      skillIds: requested,
+      missionAuthority: mission.authority.granted,
+      purpose: "PRODUCTION",
+    });
   }
 
   /** A live policy update becomes effective only after the session acknowledges it. */
@@ -1948,27 +2540,151 @@ export class RunService {
     // Selecting scope for the new mode needs only path/module data; scope-index any of the newly
     // selected files not already parsed so the re-rendered text carries real symbols, not a blank
     // "Relevant symbols" section for files the graph has not seen yet.
-    const scope = await this.dependencies.contextBuilder.build({
+    const selection = await this.dependencies.contextBuilder.selectInitialScope({
       task,
       mode: run.effectiveMode,
       snapshot: contextState.snapshot,
       projectId: contextState.projectId,
+      runId: run.id,
+      stage: "MODE_REBUILD_SCOPE",
     });
-    await this.growGraphTrusted(run, task, sandbox, contextState, scope.initialFiles);
+    await this.growGraphTrusted(run, task, sandbox, contextState, selection.initialFiles);
+    await this.recordSelectedRepositoryKnowledge(
+      run,
+      task,
+      contextState.snapshot,
+      selection.initialFiles,
+    );
     const rebuilt = await this.dependencies.contextBuilder.build({
       task,
       mode: run.effectiveMode,
       snapshot: contextState.snapshot,
       projectId: contextState.projectId,
+      runId: run.id,
+      stage: "MODE_REBUILD_RENDER",
+      selection,
     });
+    const rebasedWorkingSet = rebaseWorkingSet(contextState.workingSet, rebuilt.workingSet);
+    rebuilt.workingSet = rebasedWorkingSet;
     contextState.current = rebuilt;
+    contextState.workingSet = rebasedWorkingSet;
     contextState.mode = run.effectiveMode;
     await this.event(run.id, "ContextRebuilt", {
       mode: run.effectiveMode,
       tokenEstimate: rebuilt.tokenEstimate,
       initialFiles: rebuilt.initialFiles,
       initialModules: rebuilt.initialModules,
+      evidenceReferencesTruncated: rebuilt.evidenceReferencesTruncated,
+      contextTruncated: rebuilt.contextTruncated,
     });
+    await this.recordContextLedger(run, rebuilt);
+  }
+
+  private async recordSelectedRepositoryKnowledge(
+    run: Run,
+    task: Task,
+    snapshot: RepositorySnapshot,
+    selectedFiles: string[],
+  ): Promise<void> {
+    try {
+      const result = await persistSelectedRepositoryKnowledge({
+        brain: this.dependencies.projectBrain,
+        projectId: task.repositoryPath,
+        revision: snapshot.revision,
+        runId: run.id,
+        snapshot,
+        selectedFiles,
+      });
+      await this.event(run.id, "ProjectKnowledgeRecorded", {
+        reason:
+          "Only selected repository files with deterministic SHA-256 index evidence are eligible.",
+        evidence: result,
+        producer: "LOCAL_REPOSITORY_INDEX",
+      });
+    } catch (error) {
+      await this.event(run.id, "ProjectKnowledgeWriteFailed", {
+        reason:
+          "Optional project-context persistence failed; candidate trust and merge eligibility were unchanged.",
+        evidence: {
+          selectedFiles: selectedFiles.length,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
+
+  private async expandContextPage(
+    run: Run,
+    sandbox: Sandbox,
+    contextState: ContextState,
+    request: ContextPageRequest,
+  ): Promise<ContextExpansionResult> {
+    const navigation = this.dependencies.contextNavigation;
+    if (!navigation) {
+      await this.event(run.id, "ContextPageRejected", {
+        requestId: request.requestId,
+        handleId: request.handleId,
+        operation: request.operation,
+        reason: "Context navigation is unavailable in this runtime.",
+      });
+      throw new Error("Context navigation is unavailable in this runtime");
+    }
+    const expansion = await navigation.expand({
+      repositoryPath: sandbox.path,
+      snapshot: contextState.snapshot,
+      workingSet: contextState.workingSet,
+      request,
+    });
+    contextState.snapshot = expansion.snapshot;
+    contextState.workingSet = expansion.workingSet;
+    contextState.current.workingSet = expansion.workingSet;
+    for (const navigationEvent of expansion.events) {
+      await this.event(run.id, "ContextLedgerRecorded", {
+        missionId: contextState.current.ledger.missionId,
+        runId: run.id,
+        projectId: contextState.projectId,
+        sourceRevision: contextState.snapshot.revision,
+        navigationEvent,
+      });
+    }
+    await this.event(
+      run.id,
+      expansion.status === "RESOLVED" || expansion.status === "REUSED"
+        ? "ContextPageResolved"
+        : "ContextPageRejected",
+      {
+        requestId: request.requestId,
+        handleId: request.handleId,
+        operation: request.operation,
+        status: expansion.status,
+        reason: expansion.reason,
+        residentCharacters: expansion.workingSet.residentCharacters,
+        requestCount: expansion.workingSet.requestCount,
+        pageCount: expansion.workingSet.pageCount,
+        exhaustion: expansion.workingSet.exhaustion,
+        ...(expansion.page
+          ? {
+              measuredCharacters: expansion.page.measuredCharacters,
+              tokenMeasurement: expansion.page.tokenMeasurement,
+              truncated: expansion.page.truncated,
+              authority: expansion.page.authority,
+              source: expansion.page.source,
+            }
+          : {}),
+      },
+    );
+    return expansion;
+  }
+
+  private async recordContextLedger(run: Run, context: ContextBuildResult): Promise<void> {
+    await this.event(run.id, "ContextLedgerRecorded", context.ledger);
+    if (context.knowledgeRead.status === "UNAVAILABLE") {
+      await this.event(run.id, "ProjectKnowledgeReadFailed", {
+        reason:
+          "Project knowledge was unavailable; the context contains no substituted or authority-strengthening facts.",
+        evidence: { error: context.knowledgeRead.error ?? "unknown ProjectBrain read failure" },
+      });
+    }
   }
 
   private async captureCandidate(
@@ -1987,7 +2703,7 @@ export class RunService {
     run.updatedAt = new Date().toISOString();
     await this.dependencies.store.updateRun(run);
     const id = crypto.randomUUID();
-    const baseRevision = await this.resolveRevision(sandbox.path);
+    const baseRevision = sandbox.baseRevision;
     const artifact: Artifact = {
       id,
       runId: run.id,
@@ -2048,6 +2764,53 @@ export class RunService {
   }
 
   /**
+   * Verification authority is bound to the literal candidate captured before the command ran.
+   * Commands are allowed to read that workspace, but a successful command that rewrites it has
+   * verified a different byte-set. Re-capture immediately and quarantine on either drift or an
+   * inability to prove stability; later quality/review stages therefore never consume mutable or
+   * ambiguous verification success.
+   */
+  private async enforcePostVerificationCandidateFence(
+    run: Run,
+    sandbox: Sandbox,
+    candidate: Candidate,
+    verification: Verification,
+  ): Promise<Verification> {
+    if (verification.state !== "VERIFIED") return verification;
+    try {
+      const after = await this.dependencies.sandbox.collectDiff(sandbox);
+      const afterDigest = LocalWorktreeSandbox.digest(after);
+      if (afterDigest === candidate.artifact.digest) return verification;
+      await this.event(run.id, "VerificationCandidateFenceFailed", {
+        reason: "candidate-mutated-during-verification",
+        evidence: {
+          capturedCandidateDigest: candidate.artifact.digest,
+          postVerificationDigest: afterDigest,
+          verificationId: verification.id,
+        },
+      });
+      return {
+        ...verification,
+        state: "QUARANTINED",
+        exitCode: 1,
+        output: `${verification.output}\nCandidate identity changed while verification was running; success was discarded`,
+      };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      await this.event(run.id, "VerificationCandidateFenceFailed", {
+        reason: "candidate-stability-could-not-be-established",
+        evidence: { verificationId: verification.id, error: redactSensitiveText(reason) },
+      });
+      return {
+        ...verification,
+        state: "QUARANTINED",
+        exitCode: 1,
+        output: `${verification.output}\nCandidate stability could not be established after verification`,
+      };
+    }
+  }
+
+  /**
    * Computes a risk vector + assurance plan from the best currently-available estimate of touched
    * files and emits both as inspectable evidence, never a hidden internal value. Called from two
    * points: context-built scope (pre-execution estimate, before any diff exists) and the actual
@@ -2104,6 +2867,7 @@ export class RunService {
     verification: Verification,
     initialModules: string[],
     preExecutionAssessment: RiskAssessment,
+    capabilityProjection: CapabilityConcernProjection,
   ): Promise<QualityReport> {
     const assessment = candidate.assessment;
     if (this.active.get(run.id)?.cancelled) throw new Error("Run cancelled before assurance");
@@ -2128,6 +2892,7 @@ export class RunService {
     const report: QualityReport = deriveQualityReport({
       verificationState: verification.state,
       verificationCommand: task.verification.command ?? null,
+      verificationExpectedFile: task.verification.expectedFile ?? null,
       verificationExitCode: verification.exitCode,
       assurancePlan: assessment.assurancePlan,
       preExecutionRisk: preExecutionAssessment.riskVector,
@@ -2139,18 +2904,47 @@ export class RunService {
       ...(performancePosture ? { performancePosture } : {}),
       ...(resiliencePosture ? { resiliencePosture } : {}),
     });
-    // The report is derived before any reviewer session starts: if a gated dimension already caps
-    // promotion at CORRECTNESS_VERIFIED, no verdict — approved or not — can change the outcome, so
-    // the review spend would be dead weight. Skip it and record why.
-    let review: { verdict: ReviewVerdict; reviewerSessionId: string } | undefined;
+    const concernContext = {
+      candidateId: candidate.id,
+      diffDigest: candidate.artifact.digest,
+      // The diff itself, so concerns are discovered from structural shapes in the added code
+      // rather than only from path keywords, and the requested depth, so a CRITICAL request is a
+      // demand for stronger evidence rather than for more cheap checks.
+      diffPatch: candidate.diff.patch,
+      qualityPreference: task.qualityPreference,
+      ...(resiliencePosture ? { resiliencePosture } : {}),
+      capabilityConcerns: capabilityProjection.concerns,
+      capabilityConcernEvidence: capabilityProjection.concernEvidence,
+    };
+    // The obligation set behind the trust decision, bound to this exact candidate. Derived from
+    // the same plan and report the fold uses, so the emitted explanation can never drift from the
+    // decision it explains.
+    const obligations = assuranceObligationsFor(report, assessment.assurancePlan, concernContext);
+    const unresolved = unresolvedObligations(obligations);
+    // The report is derived before any reviewer session starts: if an unresolved obligation already
+    // caps promotion at CORRECTNESS_VERIFIED, no verdict — approved or not — can change the
+    // outcome, so the review spend would be dead weight. Skip it and record why.
+    let review:
+      | {
+          verdict: ReviewVerdict;
+          reviewerSessionId: string;
+          independence: ReviewIndependenceEvidence;
+        }
+      | undefined;
     let reviewSkipped: string | undefined;
     if (assessment.assurancePlan.required.includes("INDEPENDENT_REVIEW")) {
       if (
-        deriveTrustState(verification.state, report, assessment.assurancePlan, true) ===
-        "CORRECTNESS_VERIFIED"
+        deriveTrustState(
+          verification.state,
+          report,
+          assessment.assurancePlan,
+          true,
+          concernContext,
+        ) === "CORRECTNESS_VERIFIED"
       ) {
-        reviewSkipped =
-          "a gated quality dimension is not PASS, so no verdict can raise the trust state above CORRECTNESS_VERIFIED";
+        reviewSkipped = `an assurance obligation is unresolved (${unresolved
+          .map((obligation) => `${obligation.id}=${obligation.status}`)
+          .join(", ")}), so no verdict can raise the trust state above CORRECTNESS_VERIFIED`;
       } else {
         review = await this.runIndependentReview(run, task, sandbox, candidate, assessment);
       }
@@ -2160,6 +2954,7 @@ export class RunService {
       report,
       assessment.assurancePlan,
       review?.verdict.status === "APPROVED",
+      concernContext,
     );
     run.trustState = trustState;
     run.updatedAt = new Date().toISOString();
@@ -2169,6 +2964,12 @@ export class RunService {
       diffDigest: candidate.artifact.digest,
       report,
       trustState,
+      // The obligation ledger: what had to be established, why, which capability could establish
+      // it, whether that capability could read the material, and how it resolved. Emitted whether
+      // or not promotion succeeded — "why MERGE_ELIGIBLE" is exactly as much a question as
+      // "why not".
+      obligations,
+      unresolvedObligations: unresolved.map((obligation) => obligation.id),
       ...(review
         ? {
             review: {
@@ -2177,12 +2978,113 @@ export class RunService {
               reviewerSessionId: review.reviewerSessionId,
               candidateId: candidate.id,
               diffDigest: candidate.artifact.digest,
+              independence: review.independence,
             },
           }
         : {}),
       ...(reviewSkipped ? { reviewSkipped } : {}),
     });
     return report;
+  }
+
+  /**
+   * Executes optional external capabilities only for the final verifier-approved candidate.
+   * Every result is re-bound and folded by the canonical executor; a second workspace capture
+   * prevents a provider or concurrent writer from turning evidence about one diff into evidence
+   * consumed for another. Only positive exact-concern witnesses enter the trust ledger.
+   */
+  private async assessCapabilities(
+    run: Run,
+    sandbox: Sandbox,
+    candidate: Candidate,
+  ): Promise<CapabilityConcernProjection> {
+    const registry = this.dependencies.capabilities;
+    if (!registry || registry.capabilityIds().length === 0) {
+      return { concerns: [], concernEvidence: [] };
+    }
+    const diffDigest = candidate.artifact.digest;
+    const capturedBaseRevision = candidate.artifact.metadata.baseRevision;
+    if (
+      !diffDigest ||
+      typeof capturedBaseRevision !== "string" ||
+      capturedBaseRevision !== sandbox.baseRevision
+    ) {
+      await this.event(run.id, "CapabilityEvidenceRejected", {
+        reason: "active candidate binding was incomplete before provider execution",
+        candidateId: candidate.id,
+        candidateDigestPresent: Boolean(diffDigest),
+        baseRevisionMatched: capturedBaseRevision === sandbox.baseRevision,
+      });
+      throw new Error("Active candidate binding was incomplete before capability execution");
+    }
+    const activeState = this.active.get(run.id);
+    const results = await executeRegisteredCapabilities({
+      registry,
+      input: {
+        sandbox,
+        diff: candidate.diff,
+        candidateId: candidate.id,
+        diffDigest,
+        ...(activeState ? { signal: activeState.verificationAbort.signal } : {}),
+      },
+      ...(this.dependencies.capabilityObserver
+        ? { observer: this.dependencies.capabilityObserver }
+        : {}),
+      revalidate: async () => {
+        const activeDiff = await this.dependencies.sandbox.collectDiff(sandbox);
+        return {
+          diffDigest: LocalWorktreeSandbox.digest(activeDiff),
+          baseRevision: sandbox.baseRevision,
+        };
+      },
+    });
+    const finalDiff = await this.dependencies.sandbox.collectDiff(sandbox);
+    const finalDigest = LocalWorktreeSandbox.digest(finalDiff);
+    if (finalDigest !== diffDigest || sandbox.baseRevision !== capturedBaseRevision) {
+      await this.event(run.id, "CapabilityEvidenceRejected", {
+        reason: "active candidate changed during capability execution",
+        candidateId: candidate.id,
+        expectedDigest: diffDigest,
+        observedDigest: finalDigest,
+        expectedBaseRevision: capturedBaseRevision,
+        observedBaseRevision: sandbox.baseRevision,
+      });
+      throw new Error("Active candidate changed during capability execution");
+    }
+
+    const projection = projectCapabilityConcerns(results);
+    await this.event(run.id, "CapabilityEvidenceProduced", {
+      candidateId: candidate.id,
+      diffDigest,
+      baseRevision: sandbox.baseRevision,
+      resultCount: results.length,
+      concernWitnessCount: projection.concerns.length,
+      results: results.map((result) => ({
+        capabilityId: result.capabilityId,
+        providerName: result.providerName,
+        providerVersion: result.providerVersion,
+        outcome: result.outcome,
+        binding: result.binding,
+        status: result.status,
+        coverage: result.coverage,
+        findingCount: result.findingCount,
+        analyzedFileCount: result.analyzedFileCount,
+        failureCategory: result.failureCategory,
+        justification: result.justification,
+        rulesetDigest: result.rulesetDigest,
+        telemetry: result.telemetry,
+        findings: result.findings.map((finding) => ({
+          target: finding.target,
+          claim: finding.claim,
+          strength: finding.strength,
+          file: finding.file ?? null,
+          line: finding.line ?? null,
+          ruleId: finding.ruleId,
+          severity: finding.severity,
+        })),
+      })),
+    });
+    return projection;
   }
 
   /** M9 candidate-bound baseline/candidate measurement. Missing evidence remains NOT_CHECKED. */
@@ -2416,7 +3318,11 @@ export class RunService {
     sandbox: Sandbox,
     candidate: Candidate,
     assessment: RiskAssessment,
-  ): Promise<{ verdict: ReviewVerdict; reviewerSessionId: string }> {
+  ): Promise<{
+    verdict: ReviewVerdict;
+    reviewerSessionId: string;
+    independence: ReviewIndependenceEvidence;
+  }> {
     const verdictFileName = "independent-review-verdict.json";
     const maxChars = this.repairPolicy.maxDiffPreviewChars;
     const fullPatch = candidate.diff.patch;
@@ -2433,10 +3339,19 @@ export class RunService {
       assurancePlan: assessment.assurancePlan,
       verdictFileName,
     });
+    // What this review actually is, derived from the identities in play rather than asserted by
+    // its name. The reviewer runs on the SAME AgentAdapter the author used, so today this resolves
+    // to CONTEXT_ONLY: fresh context, not independent authority. Recording it means nothing
+    // downstream can read an approval as more than it is.
+    const independence = deriveReviewIndependence(
+      { adapter: this.dependencies.agent.name, model: run.model, provider: run.provider },
+      { adapter: this.dependencies.agent.name, model: run.model, provider: run.provider },
+    );
     await this.event(run.id, "IndependentReviewRequested", {
       candidateId: candidate.id,
       diffDigest: candidate.artifact.digest,
       reason: assessment.assurancePlan.reasons.INDEPENDENT_REVIEW,
+      independence,
       ...(diffTruncated ? { diffTruncated: true } : {}),
     });
     try {
@@ -2455,8 +3370,9 @@ export class RunService {
         reasons: verdict.reasons,
         reviewerSessionId,
         provenance: "MODEL_REVIEW",
+        independence,
       });
-      return { verdict, reviewerSessionId };
+      return { verdict, reviewerSessionId, independence };
     } catch (error) {
       // A cancellation is not a reviewer failure: rethrow so it propagates to the outer handler
       // and the run stays CANCELLED instead of being resurrected as COMPLETED below.
@@ -2472,8 +3388,9 @@ export class RunService {
         status: verdict.status,
         reasons: verdict.reasons,
         provenance: "REVIEWER_SESSION_FAILED",
+        independence,
       });
-      return { verdict, reviewerSessionId: "none" };
+      return { verdict, reviewerSessionId: "none", independence };
     }
   }
 
@@ -2660,7 +3577,7 @@ export class RunService {
 
   private async applyGraphGrowth(
     run: Run,
-    task: Task,
+    _task: Task,
     sandbox: Sandbox,
     contextState: ContextState,
     files: string[],
@@ -2670,7 +3587,7 @@ export class RunService {
     try {
       updated = await this.dependencies.repositoryIndex.indexScope(
         sandbox.path,
-        task.revision,
+        contextState.snapshot.revision,
         contextState.snapshot,
         files,
       );
@@ -2762,13 +3679,27 @@ export class RunService {
     classification: ReturnType<typeof classifyFailure>,
     detail: string,
   ): Promise<RecoveryCapsule> {
-    const [artifacts, verifications, latestSignalSnapshot, knowledge] = await Promise.all([
-      this.dependencies.store.listArtifacts(run.id),
-      this.dependencies.store.listVerifications(run.id),
-      this.dependencies.runtimeSignals.latest(run.id),
-      this.dependencies.projectBrain.list(task.repositoryPath, task.revision, ["FACT", "DECISION"]),
-    ]);
-    const resolvedRevision = sandbox ? await this.resolveRevision(sandbox.path) : undefined;
+    const knowledgeRevision = sandbox?.baseRevision ?? task.revision;
+    const knowledgeRead = this.dependencies.projectBrain
+      .list(task.repositoryPath, knowledgeRevision, ["FACT", "DECISION"])
+      .catch(async (error): Promise<[]> => {
+        await this.event(run.id, "ProjectKnowledgeReadFailed", {
+          reason:
+            "Recovery continued without optional project knowledge; no missing record was treated as authority.",
+          evidence: { error: error instanceof Error ? error.message : String(error) },
+        });
+        return [];
+      });
+    const [artifacts, verifications, liveSignalSnapshot, persistedSignalSnapshots, knowledge] =
+      await Promise.all([
+        this.dependencies.store.listArtifacts(run.id),
+        this.dependencies.store.listVerifications(run.id),
+        this.dependencies.runtimeSignals.latest(run.id),
+        this.dependencies.store.listSignalSnapshots(run.id),
+        knowledgeRead,
+      ]);
+    const latestSignalSnapshot = liveSignalSnapshot ?? persistedSignalSnapshots.at(-1);
+    const resolvedRevision = sandbox?.baseRevision;
     const allocation = computeAllocation(
       task.budget ?? { mode: "ADVISORY", limitUsd: null },
       this.budgetReservationPolicy,
@@ -2796,6 +3727,12 @@ export class RunService {
       recoveryReason: classification,
       recoveryDetail: detail,
       remainingBudget,
+      // Carried into the capsule so a resume continues under the SAME bounded allowance this run
+      // has already been spending, instead of being handed a fresh one.
+      safetyCountersUsed: {
+        recoveryAttempts: this.active.get(run.id)?.recoveryAttemptsUsed ?? 0,
+        policyRestarts: this.active.get(run.id)?.policyRestartsUsed ?? 0,
+      },
     });
   }
 
@@ -2889,6 +3826,41 @@ export class RunService {
       latestSignals: latest?.signals ?? {},
       timeline: transitions,
     };
+  }
+
+  private async persistControlState(reason: string): Promise<void> {
+    const write = this.dependencies.store
+      .saveControlState({
+        emergencyStopped: this.emergencyStopped,
+        updatedAt: new Date().toISOString(),
+        reason,
+      })
+      .catch(() => {
+        // A control-state write failure must not crash the caller, but it must not be silently
+        // treated as success either: the next admission decision re-reads the store, and an
+        // unwritten stop simply is not durable. Surfaced through the event log by the caller.
+      });
+    this.controlStateWrite = write;
+    await write;
+  }
+
+  /**
+   * Reads the durable Emergency Stop decision into the in-memory cache exactly once per process,
+   * and always waits for any in-flight control write. Every admission path (create, resume) calls
+   * this before consulting {@link emergencyStopped}, so a restarted process cannot admit work that
+   * an operator already stopped. A store that cannot answer leaves the current value untouched —
+   * an unreadable control row is not evidence that no stop exists.
+   */
+  private async loadControlState(): Promise<void> {
+    await this.controlStateWrite;
+    if (this.controlStateHydrated) return;
+    try {
+      const state = await this.dependencies.store.getControlState();
+      if (state) this.emergencyStopped = state.emergencyStopped;
+      this.controlStateHydrated = true;
+    } catch {
+      // Leave the cache as it is and retry on the next admission decision.
+    }
   }
 
   private async requireRun(id: string): Promise<Run> {

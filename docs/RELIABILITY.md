@@ -116,7 +116,13 @@ for a deployment. Neither `resume()` nor new-run creation is permitted while an 
 active. `RunService.emergencyStop()` cancels every active run while preserving all worktrees,
 events, artifacts, and candidate lineage, and blocks new run creation until explicitly resumed; the
 flag is re-checked immediately before a run's first agent session starts (no `await` in between),
-closing the window where a run created concurrently with the stop could otherwise slip through.
+closing the window where a run created concurrently with the stop could otherwise slip through. The
+stop is durable rather than process-local: it is persisted before the cancellation sweep and re-read
+on every admission decision, so a restart does not silently revoke it. A resume likewise restores
+the recovery-attempt and policy-restart counters the run had already spent, recorded on the capsule
+as `safetyCountersUsed` — otherwise a bounded per-run limit could be reset indefinitely by pausing
+and resuming. A capsule written before that field existed is read conservatively (the remaining
+automatic allowance is treated as spent) and the `ResumeSafetyCountersRestored` event says so.
 
 An agent's own reported error message never drives its failure classification beyond
 `AGENT_FAILURE` — pattern-matching arbitrary agent-supplied text into a more specific category

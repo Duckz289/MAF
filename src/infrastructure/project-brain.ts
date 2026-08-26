@@ -1,33 +1,120 @@
 import type {
   KnowledgeKind,
+  KnowledgeBatchWriteResult,
   KnowledgeRecord,
+  KnowledgeResolutionInput,
+  KnowledgeResolutionResult,
+  KnowledgeStalenessResult,
+  KnowledgeWriteResult,
   ProjectBrain,
   RepositoryIndex,
   RepositoryIndexStatus,
   RepositorySnapshot,
 } from "../domain/ports";
+import type { Pool, PoolClient } from "pg";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { moduleOwnerForFile, packageOwnerForFile } from "../domain/module-ownership";
+import {
+  boundedKnowledgeLimit,
+  classifyKnowledgeRecords,
+  knowledgeIdentityDigest,
+  MAX_PROJECT_BRAIN_RECONCILE_RECORDS,
+  normalizeKnowledgeRecord,
+  resolveKnowledgeRecords,
+} from "../domain/knowledge";
+
+const summarizeBatch = (
+  outcomes: KnowledgeBatchWriteResult["outcomes"],
+): KnowledgeBatchWriteResult => ({
+  outcomes,
+  inserted: outcomes.filter((outcome) => outcome.result === "INSERTED").length,
+  reactivated: outcomes.filter((outcome) => outcome.result === "REACTIVATED").length,
+  unchanged: outcomes.filter((outcome) => outcome.result === "UNCHANGED").length,
+});
 
 export class InMemoryProjectBrain implements ProjectBrain {
   private readonly records = new Map<string, KnowledgeRecord>();
+  private readonly identityById = new Map<string, string>();
+  private readonly idByIdentity = new Map<string, string>();
 
-  async add(record: KnowledgeRecord): Promise<void> {
-    if (record.kind === "FACT" && record.evidenceIds.length === 0) {
-      throw new Error("Facts require at least one evidence record");
+  async add(record: KnowledgeRecord): Promise<KnowledgeWriteResult> {
+    const normalized = normalizeKnowledgeRecord(record);
+    const identity = knowledgeIdentityDigest(normalized);
+    const existingIdentity = this.identityById.get(normalized.id);
+    const existingId = this.idByIdentity.get(identity);
+    if (
+      (existingIdentity !== undefined && existingIdentity !== identity) ||
+      (existingId !== undefined && existingId !== normalized.id)
+    ) {
+      throw new Error(`Knowledge identity collision: ${normalized.id}`);
     }
-    this.records.set(record.id, structuredClone(record));
+    if (existingIdentity !== undefined) {
+      const existing = this.records.get(normalized.id);
+      if (existing?.status === "STALE" && normalized.status === "ACTIVE") {
+        existing.status = "ACTIVE";
+        return "REACTIVATED";
+      }
+      return "UNCHANGED";
+    }
+    this.records.set(normalized.id, normalized);
+    this.identityById.set(normalized.id, identity);
+    this.idByIdentity.set(identity, normalized.id);
+    return "INSERTED";
+  }
+
+  async addBatch(records: KnowledgeRecord[]): Promise<KnowledgeBatchWriteResult> {
+    const normalizedRecords = records.map(normalizeKnowledgeRecord);
+    const stagedRecords = new Map(
+      [...this.records].map(([id, record]) => [id, structuredClone(record)]),
+    );
+    const stagedIdentityById = new Map(this.identityById);
+    const stagedIdByIdentity = new Map(this.idByIdentity);
+    const outcomes: KnowledgeBatchWriteResult["outcomes"] = [];
+    for (const normalized of normalizedRecords) {
+      const identity = knowledgeIdentityDigest(normalized);
+      const existingIdentity = stagedIdentityById.get(normalized.id);
+      const existingId = stagedIdByIdentity.get(identity);
+      if (
+        (existingIdentity !== undefined && existingIdentity !== identity) ||
+        (existingId !== undefined && existingId !== normalized.id)
+      ) {
+        throw new Error(`Knowledge identity collision: ${normalized.id}`);
+      }
+      if (existingIdentity !== undefined) {
+        const existing = stagedRecords.get(normalized.id);
+        if (existing?.status === "STALE" && normalized.status === "ACTIVE") {
+          existing.status = "ACTIVE";
+          outcomes.push({ id: normalized.id, result: "REACTIVATED" });
+        } else {
+          outcomes.push({ id: normalized.id, result: "UNCHANGED" });
+        }
+        continue;
+      }
+      stagedRecords.set(normalized.id, normalized);
+      stagedIdentityById.set(normalized.id, identity);
+      stagedIdByIdentity.set(identity, normalized.id);
+      outcomes.push({ id: normalized.id, result: "INSERTED" });
+    }
+    this.records.clear();
+    this.identityById.clear();
+    this.idByIdentity.clear();
+    for (const [id, record] of stagedRecords) this.records.set(id, record);
+    for (const [id, identity] of stagedIdentityById) this.identityById.set(id, identity);
+    for (const [identity, id] of stagedIdByIdentity) this.idByIdentity.set(identity, id);
+    return summarizeBatch(outcomes);
   }
 
   async list(
     projectId: string,
     revision: string,
     kinds?: KnowledgeKind[],
+    limit?: number,
   ): Promise<KnowledgeRecord[]> {
+    const boundedLimit = boundedKnowledgeLimit(limit);
     return [...this.records.values()]
       .filter(
         (record) =>
@@ -36,6 +123,11 @@ export class InMemoryProjectBrain implements ProjectBrain {
           record.status === "ACTIVE" &&
           (!kinds || kinds.includes(record.kind)),
       )
+      .sort(
+        (left, right) =>
+          right.createdAt.localeCompare(left.createdAt) || left.id.localeCompare(right.id),
+      )
+      .slice(0, boundedLimit)
       .map((record) => structuredClone(record));
   }
 
@@ -52,6 +144,301 @@ export class InMemoryProjectBrain implements ProjectBrain {
       }
     }
     return count;
+  }
+
+  async resolveCurrent(input: KnowledgeResolutionInput): Promise<KnowledgeResolutionResult> {
+    const candidates = [...this.records.values()]
+      .filter((record) => record.projectId === input.projectId)
+      .slice(0, MAX_PROJECT_BRAIN_RECONCILE_RECORDS + 1);
+    return resolveKnowledgeRecords(
+      candidates.slice(0, MAX_PROJECT_BRAIN_RECONCILE_RECORDS),
+      input,
+      candidates.length > MAX_PROJECT_BRAIN_RECONCILE_RECORDS,
+    );
+  }
+
+  async reconcileStaleness(
+    input: Omit<KnowledgeResolutionInput, "kinds" | "ids" | "limit">,
+  ): Promise<KnowledgeStalenessResult> {
+    const candidates = [...this.records.values()]
+      .filter((record) => record.projectId === input.projectId && record.status === "ACTIVE")
+      .slice(0, MAX_PROJECT_BRAIN_RECONCILE_RECORDS + 1);
+    const bounded = candidates.slice(0, MAX_PROJECT_BRAIN_RECONCILE_RECORDS);
+    const states = classifyKnowledgeRecords(bounded, input);
+    let current = 0;
+    let stale = 0;
+    let unknown = 0;
+    let conflicted = 0;
+    for (const record of bounded) {
+      const state = states.get(record.id);
+      if (state === "CURRENT") current += 1;
+      else if (state === "STALE") {
+        record.status = "STALE";
+        stale += 1;
+      } else if (state === "CONFLICTED") {
+        record.status = "CONFLICTED";
+        conflicted += 1;
+      } else unknown += 1;
+    }
+    return {
+      examined: bounded.length,
+      current,
+      stale,
+      unknown,
+      conflicted,
+      truncated: candidates.length > MAX_PROJECT_BRAIN_RECONCILE_RECORDS,
+    };
+  }
+}
+
+interface ProjectKnowledgeRow {
+  id: string;
+  projectId: string;
+  revision: string;
+  kind: KnowledgeKind;
+  statement: string;
+  evidenceIds: string[];
+  status: KnowledgeRecord["status"];
+  createdAt: string;
+  producer: KnowledgeRecord["provenance"]["producer"];
+  source: KnowledgeRecord["provenance"]["source"];
+  sourceId: string;
+  sourceDigest: string;
+  runId: string | null;
+  identityDigest: string;
+  stalenessInputs: KnowledgeRecord["stalenessInputs"] | null;
+  scope: KnowledgeRecord["scope"] | null;
+  compilation: KnowledgeRecord["compilation"] | null;
+}
+
+const hydrateKnowledgeRow = (row: ProjectKnowledgeRow): KnowledgeRecord =>
+  normalizeKnowledgeRecord({
+    id: row.id,
+    projectId: row.projectId,
+    revision: row.revision,
+    kind: row.kind,
+    statement: row.statement,
+    evidenceIds: row.evidenceIds,
+    status: row.status,
+    createdAt: new Date(row.createdAt).toISOString(),
+    provenance: {
+      producer: row.producer,
+      source: row.source,
+      sourceId: row.sourceId,
+      sourceDigest: row.sourceDigest,
+      ...(row.runId === null ? {} : { runId: row.runId }),
+    },
+    ...(row.stalenessInputs == null ? {} : { stalenessInputs: row.stalenessInputs }),
+    ...(row.scope == null ? {} : { scope: row.scope }),
+    ...(row.compilation == null ? {} : { compilation: row.compilation }),
+  });
+
+const writeKnowledgeRecord = async (
+  executor: Pool | PoolClient,
+  normalized: KnowledgeRecord,
+): Promise<KnowledgeWriteResult> => {
+  const identityDigest = knowledgeIdentityDigest(normalized);
+  const inserted = await executor.query<{ id: string }>(
+    `INSERT INTO project_knowledge(
+       id, project_id, revision, kind, statement, evidence_ids, status, created_at,
+       producer, source, source_id, source_digest, run_id, identity_digest,
+       staleness_inputs, scope, compilation
+     ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+     ON CONFLICT DO NOTHING
+     RETURNING id`,
+    [
+      normalized.id,
+      normalized.projectId,
+      normalized.revision,
+      normalized.kind,
+      normalized.statement,
+      JSON.stringify(normalized.evidenceIds),
+      normalized.status,
+      normalized.createdAt,
+      normalized.provenance.producer,
+      normalized.provenance.source,
+      normalized.provenance.sourceId,
+      normalized.provenance.sourceDigest,
+      normalized.provenance.runId ?? null,
+      identityDigest,
+      JSON.stringify(normalized.stalenessInputs ?? []),
+      normalized.scope ? JSON.stringify(normalized.scope) : null,
+      normalized.compilation ? JSON.stringify(normalized.compilation) : null,
+    ],
+  );
+  if (inserted.rowCount === 1) return "INSERTED";
+
+  const existing = await executor.query<{
+    id: string;
+    identityDigest: string;
+    status: KnowledgeRecord["status"];
+  }>(
+    `SELECT id, identity_digest AS "identityDigest", status
+     FROM project_knowledge WHERE id=$1 OR identity_digest=$2`,
+    [normalized.id, identityDigest],
+  );
+  const exact = existing.rows.find(
+    (row) => row.id === normalized.id && row.identityDigest === identityDigest,
+  );
+  if (!exact) throw new Error(`Knowledge identity collision: ${normalized.id}`);
+  if (exact.status === "STALE" && normalized.status === "ACTIVE") {
+    await executor.query(
+      `UPDATE project_knowledge SET status='ACTIVE'
+       WHERE id=$1 AND identity_digest=$2 AND status='STALE'`,
+      [normalized.id, identityDigest],
+    );
+    return "REACTIVATED";
+  }
+  return "UNCHANGED";
+};
+
+/** Durable ProjectBrain adapter. It shares the application's existing PostgreSQL pool. */
+export class PostgresProjectBrain implements ProjectBrain {
+  constructor(private readonly pool: Pool) {}
+
+  async add(record: KnowledgeRecord): Promise<KnowledgeWriteResult> {
+    const normalized = normalizeKnowledgeRecord(record);
+    return writeKnowledgeRecord(this.pool, normalized);
+  }
+
+  async addBatch(records: KnowledgeRecord[]): Promise<KnowledgeBatchWriteResult> {
+    const normalizedRecords = records.map(normalizeKnowledgeRecord);
+    if (normalizedRecords.length === 0) return summarizeBatch([]);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const outcomes: KnowledgeBatchWriteResult["outcomes"] = [];
+      for (const record of normalizedRecords) {
+        outcomes.push({ id: record.id, result: await writeKnowledgeRecord(client, record) });
+      }
+      await client.query("COMMIT");
+      return summarizeBatch(outcomes);
+    } catch (error) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        // The original transactional failure is authoritative; rollback failure must not mask it.
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async list(
+    projectId: string,
+    revision: string,
+    kinds?: KnowledgeKind[],
+    limit?: number,
+  ): Promise<KnowledgeRecord[]> {
+    const boundedLimit = boundedKnowledgeLimit(limit);
+    if (boundedLimit === 0) return [];
+    const result = await this.pool.query<ProjectKnowledgeRow>(
+      `SELECT id, project_id AS "projectId", revision, kind, statement,
+              evidence_ids AS "evidenceIds", status, created_at::text AS "createdAt",
+              producer, source, source_id AS "sourceId", source_digest AS "sourceDigest",
+              run_id AS "runId", identity_digest AS "identityDigest",
+              staleness_inputs AS "stalenessInputs", scope, compilation
+       FROM project_knowledge
+       WHERE project_id=$1 AND revision=$2 AND status='ACTIVE'
+         AND ($3::text[] IS NULL OR kind = ANY($3::text[]))
+       ORDER BY created_at DESC, id ASC
+       LIMIT $4`,
+      [projectId, revision, kinds ?? null, boundedLimit],
+    );
+    return result.rows.map(hydrateKnowledgeRow);
+  }
+
+  async markStale(projectId: string, activeRevision: string): Promise<number> {
+    const result = await this.pool.query(
+      `UPDATE project_knowledge SET status='STALE'
+       WHERE project_id=$1 AND revision<>$2 AND status='ACTIVE'`,
+      [projectId, activeRevision],
+    );
+    return result.rowCount ?? 0;
+  }
+
+  private async resolutionCandidates(
+    projectId: string,
+    executor: Pool | PoolClient = this.pool,
+    onlyActive = false,
+  ): Promise<{ records: KnowledgeRecord[]; truncated: boolean }> {
+    const result = await executor.query<ProjectKnowledgeRow>(
+      `SELECT id, project_id AS "projectId", revision, kind, statement,
+              evidence_ids AS "evidenceIds", status, created_at::text AS "createdAt",
+              producer, source, source_id AS "sourceId", source_digest AS "sourceDigest",
+              run_id AS "runId", identity_digest AS "identityDigest",
+              staleness_inputs AS "stalenessInputs", scope, compilation
+       FROM project_knowledge
+       WHERE project_id=$1 AND ($2::boolean = false OR status='ACTIVE')
+       ORDER BY created_at DESC, id ASC
+       LIMIT $3`,
+      [projectId, onlyActive, MAX_PROJECT_BRAIN_RECONCILE_RECORDS + 1],
+    );
+    return {
+      records: result.rows.slice(0, MAX_PROJECT_BRAIN_RECONCILE_RECORDS).map(hydrateKnowledgeRow),
+      truncated: result.rows.length > MAX_PROJECT_BRAIN_RECONCILE_RECORDS,
+    };
+  }
+
+  async resolveCurrent(input: KnowledgeResolutionInput): Promise<KnowledgeResolutionResult> {
+    const candidates = await this.resolutionCandidates(input.projectId);
+    return resolveKnowledgeRecords(candidates.records, input, candidates.truncated);
+  }
+
+  async reconcileStaleness(
+    input: Omit<KnowledgeResolutionInput, "kinds" | "ids" | "limit">,
+  ): Promise<KnowledgeStalenessResult> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const candidates = await this.resolutionCandidates(input.projectId, client, true);
+      const states = classifyKnowledgeRecords(candidates.records, input);
+      const staleIds = candidates.records
+        .filter((record) => states.get(record.id) === "STALE")
+        .map((record) => record.id);
+      const conflictedIds = candidates.records
+        .filter((record) => states.get(record.id) === "CONFLICTED")
+        .map((record) => record.id);
+      if (staleIds.length > 0) {
+        await client.query(
+          `UPDATE project_knowledge SET status='STALE'
+           WHERE project_id=$1 AND id = ANY($2::text[]) AND status='ACTIVE'`,
+          [input.projectId, staleIds],
+        );
+      }
+      if (conflictedIds.length > 0) {
+        await client.query(
+          `UPDATE project_knowledge SET status='CONFLICTED'
+           WHERE project_id=$1 AND id = ANY($2::text[]) AND status='ACTIVE'`,
+          [input.projectId, conflictedIds],
+        );
+      }
+      await client.query("COMMIT");
+      const current = candidates.records.filter(
+        (record) => states.get(record.id) === "CURRENT",
+      ).length;
+      const unknown = candidates.records.filter(
+        (record) => states.get(record.id) === "UNKNOWN",
+      ).length;
+      return {
+        examined: candidates.records.length,
+        current,
+        stale: staleIds.length,
+        unknown,
+        conflicted: conflictedIds.length,
+        truncated: candidates.truncated,
+      };
+    } catch (error) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        // Preserve the primary reconciliation failure.
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 }
 

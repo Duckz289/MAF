@@ -132,7 +132,7 @@ export function HomePage({
   return (
     <div className={styles.page}>
       <PageHeader
-        description="Đây là những việc MAF đang xử lý trong không gian kỹ thuật của bạn."
+        description="Engineering Control Center — Project, Work, Mission, Execution, Candidate, Verification, Evidence, Trust, Delivery."
         title={greeting()}
       />
 

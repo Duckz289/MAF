@@ -1,11 +1,11 @@
-import { Tab, TabList, makeStyles } from "@fluentui/react-components";
+import { makeStyles, Tab, TabList } from "@fluentui/react-components";
 import { TasksApp20Regular } from "@fluentui/react-icons";
 import { useState } from "react";
-import type { Navigate, Run } from "../types";
-import { matchesRunFilter } from "../presentation";
 import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
 import { TaskList } from "../components/TaskRow";
+import { matchesRunFilter } from "../presentation";
+import type { Navigate, Run } from "../types";
 
 const useStyles = makeStyles({
   filters: { marginBottom: "18px", borderBottom: "1px solid #252b31" },

@@ -5,13 +5,13 @@ import {
   Input,
   MessageBar,
   MessageBarBody,
+  makeStyles,
   Select,
   Spinner,
   Tab,
   TabList,
   Text,
   Title2,
-  makeStyles,
 } from "@fluentui/react-components";
 import {
   ArrowClockwise20Regular,
@@ -35,6 +35,7 @@ import {
 } from "../status";
 import type { Agent, HealthLedger, Navigate, Project, ProjectDetection, Run } from "../types";
 import { formatCost, friendlyMode, readJson } from "../utils";
+import { ProjectMapPanel } from "./ProjectMapPage";
 
 const useStyles = makeStyles({
   tabs: { marginBottom: "22px", borderBottom: "1px solid #252b31" },
@@ -198,11 +199,13 @@ export function ProjectPage({
         onTabSelect={(_event, data) => setTab(String(data.value))}
       >
         <Tab value="overview">Tổng quan</Tab>
+        <Tab value="map">Project Map</Tab>
         <Tab value="tasks">Tác vụ</Tab>
         <Tab value="health">Sức khỏe</Tab>
         <Tab value="understanding">Hiểu biết</Tab>
         <Tab value="controls">Kiểm soát</Tab>
       </TabList>
+      {tab === "map" ? <ProjectMapPanel projectId={project.id} /> : null}
       {tab === "overview" ? (
         <div className={styles.overview}>
           <section style={{ display: "grid", gap: 20 }}>

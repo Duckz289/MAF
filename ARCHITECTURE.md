@@ -6,7 +6,9 @@ of replacing their planning, search, context management, or provider-specific ca
 ```mermaid
 flowchart LR
   API[Fastify control API] --> RUN[RunService]
-  UI[Fluent UI dashboard] --> API
+  UI[Engineering Control Center] --> API
+  API --> READ[Control Center read models]
+  READ --> CORE[Domain policy]
   RUN --> CORE[Domain policy]
   RUN --> AGENT[AgentAdapter]
   RUN --> SANDBOX[SandboxProvider]
@@ -23,6 +25,18 @@ flowchart LR
   API --> STORE[RunStore]
   STORE --> PG[(PostgreSQL)]
 ```
+
+## Engineering Control Center
+
+Session 9 adds a derived human inspection surface. `/api/v1/control-center/*` read models project
+Project, Work, Mission, Execution, Candidate, Verification, Evidence, Trust, Context, Cost, and
+Delivery without exposing mutable domain objects or granting authority. Graph visualization is
+navigation: a Project Map edge has `trustAuthority: NONE`. Optional providers (OSV, OpenGrep, SCIP,
+OTLP, pricing catalog) report availability independently; their absence does not mark MAF unhealthy.
+Work items are a minimum PM seam (built-in today, replaceable later) and cannot write trust,
+verification, or promotion. Inspection depth defaults to SIMPLE. Why-explanations are recorded
+events only — never a post-hoc LLM narrative. Generated UI is not shipped; any future generated
+action must round-trip MAF command policy.
 
 ## Dependency rule
 
@@ -104,10 +118,77 @@ immediately.
 ## Project Brain
 
 `ProjectBrain` separates `FACT`, `INFERENCE`, `EVIDENCE`, and `DECISION`. A fact without evidence is
-rejected. Records from a different source revision become `STALE`.
+rejected, every record carries producer/source/digest provenance, and every read is page-bounded.
+When `DATABASE_URL` is configured, `PostgresProjectBrain` uses the existing application pool and
+the canonical `project_knowledge` table from migration 011; otherwise `InMemoryProjectBrain` keeps
+local operation dependency-free. Deterministic record identity makes repeat observations
+idempotent. Database errors propagate from the adapter and are emitted as explicit run events;
+knowledge unavailability never changes verifier evidence, candidate trust, or merge eligibility.
+
+Session 5's production write rule is intentionally narrow: only selected repository files carrying
+an exact SHA-256 digest from `RepositoryIndex.indexScope()` enter the brain. Each file becomes an
+`EVIDENCE` record, and each selected module gets a `FACT` referencing those evidence records. Raw
+agent/model text, prompts, tool output, inferences, and unverified candidate claims are not inputs.
+Records bind to the sandbox's resolved base commit, not a movable ref such as `HEAD`; records from a
+different resolved source revision conservatively become `STALE` unless Session 6 provenance proves
+their complete source independence. Project knowledge publication now uses one required atomic batch
+boundary. The PostgreSQL adapter executes the batch in one transaction; the in-memory adapter stages
+and validates the whole batch before swapping visible state. A failed batch publishes no partial
+authoritative record, and deterministic identity keeps retries idempotent.
+
+Session 6 adds a minimal deterministic compiled-knowledge base for module boundaries. Compiled facts
+carry a canonical subject, file-digest inputs, and a path-derived module-membership digest. Resolution
+rechecks those inputs against the live repository snapshot: changed inputs are `STALE`, unavailable
+inputs are `UNKNOWN`, and incompatible current claims for one compiled subject are `CONFLICTED` and
+withheld. Proven-independent records may remain current across an unrelated revision without being
+rewritten or gaining authority. Records without sufficient provenance retain revision-global,
+fail-closed behavior. Model summaries are not compiled or promoted by this phase.
+
 `OptionalCodebaseMemoryIndex` is an explicitly inactive optional port until a configured MCP/service
 transport exists; its status exposes the deterministic local fallback and never claims a hidden
 daemon connection.
+
+## Context budget and ledger
+
+`GuidedContextBuilder` remains the starting-context builder, but its goal, module, file, symbol,
+knowledge, evidence-reference, ledger-item, and total-character allowances are explicit in
+`DEFAULT_CONTEXT_BUDGET`. The existing character/4 token figure remains only a labelled heuristic
+(`CHARACTERS_DIVIDED_BY_4`), never an exact tokenizer result. `UNKNOWN` is used when a measurement is
+not available. Knowledge reads request one bounded page; evidence references are deduplicated and
+capped independently, with every partial result recorded rather than silently discarded.
+
+Every rendered context emits a factual `ContextLedgerRecorded` event containing run/mission,
+build stage, source revision, selected categories/items, inclusion reasons, exact character counts,
+labelled token estimates, freshness, and truncation reasons. The ledger is deterministic telemetry,
+not an agent-written explanation, and it carries no authority over assurance or trust state.
+
+Session 6 promotes that initial selection into a mission-owned Working Set. Canonical
+`ContextHandle`s reference bounded file, symbol, module, knowledge, evidence, or semantic-repository
+targets without embedding their payload or a provider-owned symbol identifier. A semantic-repository
+locator carries only the MAF source binding (project, revision, artifact digest/version, indexed time,
+languages, and completeness). A handle is a locator only: every page
+resolution rechecks project, revision, digest/membership freshness, scope, and availability.
+`ContextNavigationService` reuses `RepositoryIndex.indexScope()` and the same snapshot digest cache;
+it is not a second repository pager. Supported local pages are bounded file/symbol slices, observed
+module import relationships, source-revalidated knowledge records, and their evidence references.
+An optional `RepositoryIntelligenceProvider` may additionally resolve bounded symbol, definition,
+reference, and implementation navigation pages. Provider schemas terminate in infrastructure; each
+returned location is rebound to a canonical repository URI and exact current document digest before
+it can enter the Working Set. The complete source binding and every provider field are runtime
+validated; symbol anchors and returned files are independently re-digested, provider strings render
+only as labelled untrusted JSON locator data, and the SCIP adapter retains only deterministic
+bounded top-K results through a verified read-only file handle. Missing, stale, malformed,
+timed-out, unsupported, version-mismatched, and partial provider states remain explicit rather than
+becoming successful empty output.
+
+Page requests are bounded independently by total request count, successful resident page count,
+per-page characters/items, and total resident characters. Duplicate requests reuse the existing
+page without duplication. Rejection, stale resolution, duplicate reuse, success, and explicit
+budget exhaustion are factual Context Ledger events. Pages are always `CONTEXT_ONLY`; more context,
+memory, or page success cannot set trust state, close assurance obligations, or change merge
+eligibility. Token accounting now has an optional exact-counter seam; absent or unavailable exact
+measurement retains the labelled `CHARACTERS_DIVIDED_BY_4` estimate, never an unlabeled guess or
+fabricated zero.
 
 ## Project Graph: bounded incremental indexing
 
@@ -119,8 +200,11 @@ expensive part — parsing symbols and resolved local `IMPORTS` relations for ex
 files — and caches each file's parse by content digest so repeated calls during a run only do new
 work for files that changed or were never seen before.
 
-`RunService` selects an initial scope from the cheap snapshot (via `ContextBuilderPort`, using only
-module/path data), scope-indexes exactly that scope, and re-renders the context with real symbols.
+`RunService` calls `ContextBuilderPort.selectInitialScope()` on the cheap snapshot, scope-indexes
+exactly that selected page, and renders once with the same `ContextSelection` plus real symbols.
+This names and instruments the existing select-then-parse pager: scope-only calls do not read
+ProjectBrain or construct throwaway text, and the render does not rank the whole module map again.
+The same select-once/render-once sequence applies to a mode-driven context rebuild.
 As the agent touches new files (tool events, diffs), `RunService` incrementally scope-indexes any
 newly referenced files not yet parsed and grows the same snapshot instance; the enlarged snapshot
 is threaded into subsequent `RuntimeSignalCollector` observations, so dependency-expansion and
@@ -135,6 +219,14 @@ package forms a deeper architectural module (e.g. package `apps/web`, module
 Relationship kinds stay deterministic: `IMPORTS` requires both a real resolved local specifier and
 the target file to exist in the repository snapshot. Nothing derived from agent-claimed data is
 ever labeled deterministic.
+
+Session 8 keeps the deterministic local graph as the always-available correctness baseline and adds
+semantic repository intelligence only as an optional cold-state capability. A configured SCIP
+consumer reads an operator-generated, digest-pinned index plus a MAF-owned revision/document-digest
+manifest; MAF never installs or runs an indexer automatically. More semantic graph data creates no
+resident prompt material. One fixed repository locator may be present, and only an explicit bounded
+Context Page request materializes locations. These graph observations can guide navigation and impact
+exploration but cannot verify a candidate, satisfy an assurance obligation, or authorize merge.
 
 ## Recovery plane
 
@@ -177,7 +269,11 @@ is the source repository moving on while the run was paused. A mismatch refuses 
 
 `RunService.emergencyStop()` cancels every active run — preserving worktrees, evidence, and
 candidate lineage exactly as a normal cancellation does — and blocks new run creation until
-`resumeNewRuns()` is called. It is a pause, never a wipe.
+`resumeNewRuns()` is called. It is a pause, never a wipe. The decision is DURABLE: it is written to
+`harness_control_state` before the cancellation sweep begins and re-read before any run is created
+or resumed, so a process restart cannot revoke a stop nobody decided to lift. Resuming a paused run
+also restores the recovery and policy-restart counters the run had already consumed
+(`RecoveryCapsule.safetyCountersUsed`), so a per-run safety limit cannot be reset by repetition.
 
 Explicitly not implemented, stated rather than overclaimed: automatic reload/resume of `PAUSED`
 runs after a server process restart (capsules persist across a restart when using the PostgreSQL
@@ -305,8 +401,9 @@ lines of source files; net ≤ 0 passes, a small positive delta warns, and net �
 (`DETERMINISTIC`; net ≥ 2 `MEDIUM`, ≥ 5 `HIGH`), which is what makes the plan require `DEBT`.
 `ARCHITECTURE` (M7B) — `src/domain/architecture.ts` enforces the layering rule that `src/domain`,
 the innermost layer, must not add an import resolving outside itself; a violation is reported as
-`FAIL` on the Architecture quality dimension whether or not the plan required the check, though
-gating still follows the plan's decision. Both checkers analyze added lines only — a removed
+`FAIL` on the Architecture quality dimension whether or not the plan required the check, and since
+the pass-#4 trust kernel it also BLOCKS whether or not the plan required it (see "Trust kernel"
+below: any deterministic FAIL raises its own obligation). Both checkers analyze added lines only — a removed
 violation or a paid-down marker is improvement, not a new finding.
 
 `SECURITY` gained its checker at M8A: `src/domain/security.ts` scans the diff's added lines (all
@@ -377,7 +474,11 @@ malformed upstream response, rate limiting), consistency-critical write paths im
 request, concurrent completion paths imply out-of-order response, and a plan requiring
 `CONCURRENCY` forces the interleaving pair. Comments, filenames, and test/fixture/script paths are
 not evidence. When no scenario is relevant, the verdict is a deterministic PASS (the diff itself
-shows there is nothing to inject). When the plan requires Resilience and scenarios are relevant,
+shows there is nothing to inject) — but only when the relevance scan could actually read every
+changed file. The scan reads code files; it never opens a Compose file, Kubernetes manifest,
+Terraform plan, CI workflow or `.env`. When a candidate changes such an artefact, a relevance-empty
+(or even a fully-passing measured) result is reported `NOT_CHECKED`, because a scan of the CODE
+cannot discharge a concern the OPERATIONAL artefact raised. When the plan requires Resilience and scenarios are relevant,
 `CommandResilienceVerifier` runs one project-supplied trusted command once per scenario with
 `MAF_RESILIENCE_SCENARIO` set, optionally bringing up and tearing down a bounded Docker Compose
 environment (120s, no Kubernetes). The measurement is bound to the candidate id and diff digest;
@@ -387,8 +488,247 @@ specification or verifier, stale binding, an unexecuted relevant scenario, or a 
 scenario execution is resilience evidence, not production verification. `DURABLE_VERIFIED`
 additionally requires a MEASURED resilience PASS — the plan's relevant scenarios were actually
 executed against this candidate and passed; a heuristic relevance-empty PASS (the diff shows
-nothing to inject) caps the rung at `QUALITY_VERIFIED`. `CONCURRENCY` as a standalone check
-remains pending and honestly UNKNOWN when required without one of the above signals.
+nothing to inject) caps the rung at `QUALITY_VERIFIED`. `CONCURRENCY` has no capability of its own: when the plan requires it, the obligation resolves
+`NOT_CHECKED` and blocks promotion rather than being silently dropped.
+
+## Trust kernel: obligations, capabilities and coverage
+
+Promotion used to fold directly over the `QualityReport`'s dimensions, consulting the
+`AssurancePlan` only to decide whether a dimension gated, with one hand-maintained exception for
+Security. Three things fell through that fold, each reproduced from the live code:
+
+1. a check the plan **required** for which no capability exists (`INTEGRATION`, `CONCURRENCY`, or
+   any check added later) produced no report dimension, so nothing gated and the requirement was
+   silently dropped;
+2. a deterministic `FAIL` on a dimension the planner did not predict was reported and then ignored,
+   because gating was plan-bound;
+3. a capability's `PASS` discharged an obligation that capability does not address — a
+   credential-literal scan settling a sensitive-input concern, a code-content relevance scan
+   settling a deployment-artefact concern.
+
+`src/domain/assurance-obligation.ts` closes all three by changing what is folded over. An
+**obligation** names what must be established, why, which capability can establish it, what that
+capability actually managed to read, and how it resolved.
+
+- **Capability registry.** For each `AssuranceCheck`, the concrete checker that can settle it — or
+  `null`, stated explicitly, when this build has none. Each capability records what a `PASS` from
+  it *establishes* and what it explicitly *does not*. Capabilities are never aspirational: MAF
+  cannot tell whether a project's verification command is a unit-only run or a full suite, so
+  `CORRECTNESS` is not claimed to cover `INTEGRATION`.
+- **Obligations are enumerated from the PLAN**, not from the report. That is what makes a missing
+  report key and a missing capability impossible to skip: there is no report entry to iterate past.
+  A second pass adds an obligation for any deterministic `FAIL`, plan or no plan.
+- **Materiality.** Plan requirements carry a `requirementOrigin`: `CANDIDATE_EVIDENCE` (a risk
+  dimension reached its threshold on evidence about this candidate) or `QUALITY_PREFERENCE` (the
+  requester asked for depth; nothing about the candidate raised it). Evidence-raised obligations
+  are always material. A preference-raised obligation still gates on capabilities that exist, but
+  where none exists the gap is disclosed rather than turned into a demand no candidate could ever
+  discharge — a depth preference must not manufacture a permanently unmeetable bar.
+- **Coverage.** `AnalysisCoverage` (`FULL` / `PARTIAL` / `UNSUPPORTED` / `NOT_APPLICABLE`) records
+  how much of the relevant material a capability could actually read, separately from its verdict.
+  `no signal + UNSUPPORTED` and `no signal + FULL` are different facts and are never representable
+  identically. A `PASS` reached under `UNSUPPORTED` coverage does not resolve its obligation; the
+  obligation layer enforces this generically, so a capability added later cannot reintroduce the
+  hole by forgetting to downgrade its own verdict.
+
+**The fold.** Deterministic verification stays authoritative — nothing below `VERIFIED` climbs past
+`PROPOSED`. Beyond that, every **material** obligation must be resolved: `PASS`, or `NOT_REQUIRED`
+because nothing raised it. `FAIL`, `WARN`, `UNKNOWN`, `NOT_CHECKED` and `UNSUPPORTED` all leave an
+obligation open and cap the run at `CORRECTNESS_VERIFIED`. There is no gate list and no
+per-dimension exception table: a required check with no capability, a required check whose
+dimension is missing, a deterministic FAIL the planner did not predict, and a future check nobody
+has wired all fail closed because they all fail the same predicate.
+
+`NOT_REQUIRED` means "no source raised this obligation for this candidate" — never "raised and then
+waived". That is what keeps assurance progressive: a small change with no concern against it still
+reaches `MERGE_ELIGIBLE` without running every verifier.
+
+The obligation ledger is emitted on the `QualityAssessed` event alongside the report and the trust
+state, so "why MERGE_ELIGIBLE" is exactly as answerable as "why not".
+
+### Coverage of the security and resilience capabilities
+
+`src/domain/semantic-sensitivity.ts` models Python, the JavaScript/TypeScript family and POSIX
+shell: concealed-input calls, credential-named bindings, raise/log/print sinks. Languages whose
+sensitive-input idioms differ entirely (`.go`, `.rs`, `.java`, `.cs`, `.swift`, `.kt`, `.scala`,
+`.c`/`.cpp`, `.dart`, `.sql`, and similar) are read but not structurally understood, and are
+reported as `UNSUPPORTED` coverage. A single unreadable behavioural file makes the whole scan
+`UNSUPPORTED` rather than `PARTIAL`: one modelled file must not launder an unmodelled one.
+`PARTIAL` is reserved for languages where the generic binding/naming shapes transfer but the
+language's own concealed-input idioms do not (`.rb`, `.php`, `.ps1`, template languages).
+
+`src/domain/resilience.ts` declares the matching boundary for fault relevance: it reads code files,
+and names the deployment/operational artefacts in a candidate that it structurally cannot read.
+
+Adding more language patterns would move files between these lists. It would not remove the need
+for the distinction, which is why the correction is a coverage model rather than a larger catalogue.
+
+### Evidence completeness and claim direction
+
+Plan-required Security and Resilience checks are assurance questions, not permission for a broad
+`QualityReport` projection to settle every concern in that dimension. Evidence now says whether it
+is a `POSITIVE_FINDING` or a `NEGATIVE_ABSENCE` claim, and whether negative analysis is `COMPLETE`,
+`INCOMPLETE`, or not applicable. These are trust inputs, not prose: a negative `PASS` is eligible
+only when the producer is explicitly allowed to prove absence for that exact target, the bounded
+scope is complete, coverage is `FULL`/`NOT_APPLICABLE`, strength is adequate, and the evidence is
+bound to the current candidate and diff.
+
+Security concern discovery is positive-only. A concrete shape refines the plan question into typed
+concerns, but silence over arbitrary behavioural statements is `NOT_CHECKED` with claim-relative
+`PARTIAL`/`UNSUPPORTED` coverage. It cannot independently resolve plan Security. A separate
+`SECURITY.NON_BEHAVIORAL_CHANGE_CLASSIFIER` supplies the progressive negative path: it may prove
+absence only when exhaustive concern coverage and promotion-authorized bounded claims cover every
+relevant changed-local unit, or the executable scope is empty. A syntax class alone cannot emit
+that PASS. Candidate-evidence Security plans remain fail-closed when that proof is unavailable. A
+Security question requested only by quality preference records incomplete search without
+manufacturing a material candidate concern.
+
+Any discovered typed concern remains its own obligation. Producer selection is evidence-driven
+rather than registry-order-driven: every producer is checked for exact target, permitted claim
+direction, candidate/diff binding, producer and record coverage, completeness, and maximum evidence
+strength. Negative findings retain negative-first precedence. Broad Security or Resilience
+`PASS`, `WARN`, `UNKNOWN`, and `NOT_CHECKED` projections remain descriptive only; deterministic
+`FAIL` remains independently authoritative.
+
+The focused local analyzers keep deliberately bounded contracts:
+
+- Sensitive-flow negative evidence must enumerate a four-part completeness tuple: sensitive
+  origins identified, direct simple local bindings enumerated, every later binding/alias use
+  enumerated, and every use classified. Only length, comparison, and direct local boolean
+  observations are known-local. Inline origins, exports/stores, destructuring, nested source
+  expressions, computed keys, containers, mutation, interpolation, returns, calls, and unknown
+  syntax emit `NOT_CHECKED`; they never disappear into a vacuous PASS. The claim covers changed
+  local statements only, not unchanged code, functions, files, types, or whole-program flow.
+- Dynamic-command discovery remains useful positive detection: an invoked recognised boundary plus
+  dynamic data raises `SECURITY.SUBPROCESS_EXECUTION`; imports, references, fixed commands, and
+  unrelated `.run` methods stay light. Recognition is not claimed complete. Unknown wrappers,
+  unchanged provenance, and uncatalogued boundary names leave negative discovery incomplete rather
+  than producing FULL absence evidence for a material Security question.
+- Authorization discovery remains a positive shape detector. Novel ownership, group, tenant, ACL,
+  entitlement, or record-level representations need not be added to a vocabulary to fail safe:
+  when a candidate-evidence plan requires Security, detector silence over behavioural statements
+  remains an unresolved question.
+
+`RunService` supplies candidate id and diff digest to both the emitted obligation ledger and the
+trust fold. Both paths still derive from the same patch, but now apply identical binding semantics;
+an unbound recomputation cannot silently disagree with a bound explanation.
+
+### Discovery adequacy as an obligation source
+
+Risk and the assurance planner prioritize checks; they are not the only source of promotion
+obligations. Material-concern discovery can itself establish an epistemic fact about the current
+candidate. `DISCOVERY.ADEQUACY` is therefore derived whenever discovery ran for a candidate-bound
+diff, independently of whether the plan required Security:
+
+- `CONCERNS_FOUND` and discovery incompleteness are independent facts. A concern witness creates
+  the existing typed concern obligations, but resolves scope routing only when statement-level
+  accounting shows no unsupported or unclassified remainder anywhere else in the candidate. It
+  never resolves those typed concerns or replaces them with a generic Security bucket.
+- `ABSENCE_ESTABLISHED` resolves only when every relevant changed-local unit is exhaustively
+  covered by the typed concern analysis that touched it, or by a bounded syntax claim carrying
+  explicit promotion authority for that statement and change direction. Today that authority is
+  limited to newly added plain numeric constants, newly added unquoted local scalar observations,
+  explicitly erased/name-resolution-only imports, and empty executable scope. A broader syntax
+  label is metadata, not absence.
+- `INCOMPLETE` creates a material `DISCOVERY.ADEQUACY` obligation with `NOT_CHECKED` or
+  `UNSUPPORTED` status. The obligation exists even when Risk/Planner missed Security and even when
+  an incomplete plan Security question was preference-only and non-material.
+
+Discovery accounts for candidate-wide added and removed executable scope in statement-level units;
+uninspectable or path-filtered material receives a file-bound unsupported sentinel rather than
+collapsing into empty scope. A concern-attributed unit separately records whether the concern
+analysis covers the whole unit or only a region. Bounded syntax classification is also separate
+from promotion-grade absence authority. A unit is complete only when whole-unit concern coverage,
+promotion-authorized bounded coverage, or their conservative combination exhausts it; otherwise
+the residual is unclassified. `DISCOVERY.ADEQUACY` can PASS only when unsupported and residual
+counts are both zero. This makes within-statement, sibling-file, removal-only, and path-filter
+laundering structurally impossible.
+
+The discovery obligation uses the same claim-direction, completeness, claim-relative coverage,
+strength, producer-selection, and candidate/digest rules as other assurance questions. A positive
+concern witness cannot outrank an explicit remainder, regardless of evidence record order. A later
+applicable classifier record can resolve an earlier incomplete result only when it is bound to the
+same candidate/digest, supplies COMPLETE FULL/NOT_APPLICABLE evidence, and carries structured
+changed-unit coverage matching the candidate's unit total with every unit covered and zero residual.
+An unscoped caller assertion cannot become magical authority. Otherwise the honest state remains
+`CORRECTNESS_VERIFIED`. No provider-specific escalation router is wired by this pass.
+
+The bounded classifier establishes a changed-local syntax/material-boundary class, not product-level
+Security and not the behavior of unchanged consumers. `FIXED_DATA_DECLARATION` can describe
+exported collections, strings, booleans, or removed declarations without proving their consumers
+are harmless; `LOCAL_SCALAR_COMPUTATION` can describe string concatenation without proving the
+result is not command, query, route, regex, policy, or configuration data. Those labels therefore
+do not independently promote. The narrower authority policy preserves progression for newly added
+plain numeric constants, unquoted local scalar arithmetic/comparisons, explicitly erased TypeScript
+type imports, Rust name-resolution `use` declarations, and empty diffs. Removed data/computation is
+never absence-established from its old syntax alone. `FIXED_ARGUMENT_INVOCATION` proves only
+`argumentDynamism = FIXED`; arbitrary callee/action behavior remains discovery-incomplete. Runtime
+JavaScript/Python imports likewise remain incomplete because module initialization may have effects.
+
+Sensitive-flow use completeness and changed-unit scope completeness are independent facts. The
+flow analyzer may prove that every occurrence of a sensitive binding is a known-local observation,
+while discovery still records an opaque sibling call in the same statement as residual. Direct
+alias propagation is identical in both paths (`const q = p` only); an expression that merely
+mentions `p` is not promoted to an alias. A same-statement source is a direct origin only when the
+complete initializer is that one call—comma, boolean, assignment, or call siblings make both flow
+and scope evidence incomplete.
+
+Opaque candidate material is never erased by `vendor/`, `node_modules/`, a generated-looking or
+non-executable extension, or another convenience path filter. Plain inspectable documentation can
+remain outside executable scope; binary, gitlink, rename/copy-only, and other uninspectable changes
+remain explicit unsupported units even under an excluded-looking path.
+
+`MERGE_ELIGIBLE` consequently means trusted correctness passed, every raised material typed concern
+resolved, discovery adequacy resolved, every other material plan/evidence obligation resolved,
+required review approved, and no authoritative deterministic FAIL exists. MissionTree and Delivery
+continue to consume that centralized state without downstream discovery-specific bypasses.
+
+### Failure ownership
+
+`src/infrastructure/process-utils.ts` reports `timedOut`, `aborted` and the terminating `signal`
+structurally, and `CommandVerifier` records them on `VerifierExecutionEvidence.termination`
+alongside the existing `commandResolution`. `attributeVerificationFailure` consults that structured
+evidence before any output pattern: the harness's own timer is ground truth, and a suite that
+printed "3 tests failed" before hanging was still stopped by the timeout.
+
+Attribution now answers two independent questions. `candidateBound` — may model repair be spent?
+`environmentRetryUseful` — could re-running the same command unchanged plausibly differ? Conflating
+them is what made a verifier timeout spend a second full timeout before repair was considered.
+`EXECUTION_LIMIT_FAILURE` (timeout, signal, resource ceiling) is neither candidate-bound nor
+retry-useful, and repair stays available because a candidate can introduce a hang.
+
+Dangerously broad patterns were removed rather than extended: a bare `failed` (which made
+"Allocation failed" a candidate-bound test failure) and a bare `×` in the verification attributor;
+an unanchored `enotfound` (which matched inside `ModuleNotFoundError`) and a bare `network` in the
+session classifier. Text that no longer matches lands in `UNKNOWN_FAILURE`, which is not
+auto-retryable — the run pauses with a durable capsule instead of being retried on a guess.
+
+### Review independence
+
+`ReviewIndependence` in `src/domain/review.ts` records what an "independent review" actually is,
+derived from the identities in play rather than asserted by the name. `RunService` runs the reviewer
+on the same `AgentAdapter` as the author, so today this resolves to `CONTEXT_ONLY`: fresh context,
+same adapter/model/provider, correlated blind spots not ruled out. `SEPARATE_MODEL` and
+`SEPARATE_AUTHORITY` exist so a stronger arrangement can be represented honestly if one is wired.
+Nothing in the fold currently demands a level above `CONTEXT_ONLY`; the point is that no downstream
+consumer can read an approval as more than the evidence supports.
+
+### Downstream gates
+
+`DeliveryHandoff.candidateQuality` is `READY` only at `MERGE_ELIGIBLE`, and `autoMergeAllowed`
+remains `false` with merge authority external. `MissionNode` now carries an optional `trustState`:
+when present, promotion, merge and dependency satisfaction require `MERGE_ELIGIBLE`, not merely
+`VERIFIED`. A node without one keeps the historical correctness-only rule and `handoffBasis()`
+labels it `CORRECTNESS_ONLY`, so "tests passed" and "safe to hand on" never read the same.
+
+### Durable control state
+
+Emergency Stop is persisted (`harness_control_state`, migration `010`) and re-read before any run is
+created or resumed: a restart must not revoke an operator's explicit decision. `RecoveryCapsule`
+carries `safetyCountersUsed`, so resuming a paused run continues under the same bounded recovery and
+policy-restart allowance instead of being handed a fresh one. A capsule written before that field
+existed is read conservatively — the remaining automatic allowance is treated as spent, and the
+`ResumeSafetyCountersRestored` event says so.
 
 ## Codebase health ledger
 
@@ -534,6 +874,66 @@ operations. Dependency gates require `VERIFIED` state, regardless of an agent cl
 
 ## Replaceable upstream boundaries
 
-Bifrost, Nango, Agent Vault, Langfuse, codebase-memory-mcp, and future Unkey deployment stay behind
-ports or HTTP/protocol adapters. Controllers do not import vendor-specific modules. Exact audited
-versions, licenses, and update procedures are in [docs/UPSTREAMS.md](docs/UPSTREAMS.md).
+Bifrost, SCIP, LiteLLM pricing data, Nango, Agent Vault, Langfuse, codebase-memory-mcp, and future
+Unkey deployment stay behind ports or protocol/data adapters. Controllers do not import
+vendor-specific modules. Exact audited versions, licenses, decisions, and update procedures are in
+[docs/UPSTREAMS.md](docs/UPSTREAMS.md).
+
+## Execution intelligence above Context OS
+
+Session 7 separates user intent, execution instructions, and MAF authority without changing the
+trust kernel. `Task.prompt` remains compatibility input and objective text. Every newly created task
+also carries a deterministic `MissionContract`: explicit or unspecified scope, constraints,
+acceptance-criteria status, MAF-owned authority, budget/execution preferences, mandatory verifier
+expectations, and the fixed Context OS paging policy. `compileMissionContract` is deterministic and
+never calls a model. Prompt prose can request verification bypass, trust mutation, self-promotion,
+raw credentials, merge, or deployment; those requests remain objective/request evidence and the
+contract continues to deny the authority.
+
+`PromptCompiler` consumes only the current bounded `ContextWorkingSet`, its exact initial Context OS
+text, activated Skill instructions, and the Mission Contract. It validates resident-character/page
+accounting and rejects cross-project, stale, or non-`CONTEXT_ONLY` pages. Stable native instructions
+are separated from variable mission/context sections for future provider caching. Every execution
+attempt emits a content-free `PromptCompiled` identity binding template/policy versions, Mission
+digest, activated Skill package digests, Context Working Set digest, model identity, and independent
+section digests; timestamps do not participate in the identity.
+
+Agent Skills use the open `SKILL.md` package shape. Filesystem discovery exposes metadata only;
+activation reads the bounded Markdown instructions; `scripts/`, `references/`, and `assets/` remain
+on-demand resources. Package identity covers `SKILL.md` plus bounded resource digests. A changed
+resource falls back to `CANDIDATE` unless an external MAF binding certifies that exact digest.
+Package `allowed-tools` metadata and instruction text cannot grant authority: effective Skill
+authority is the intersection of its MAF binding and the Mission grant. The registry never executes
+scripts, refuses path/symlink escape, and production runs activate only `PRODUCTION` packages.
+
+`model-intelligence.ts` normalizes provider/model/profile/execution-interface identity and represents
+monetary cost as `EXACT`, `ESTIMATED`, `SUBSCRIPTION_INCLUDED`, or `UNKNOWN`; UNKNOWN always carries
+`amountUsd: null`, never zero. Canonical cost records retain token-measurement quality, latency,
+retry and orchestration component counts, known subtotal, and unknown component count. The gateway
+now returns this explicit cost value and accepts an optional pricing-catalog port; no configured
+catalog remains honestly UNKNOWN.
+
+Session 8 supplies a data-only LiteLLM pricing-catalog adapter, not the LiteLLM proxy/router. It reads
+only caller/operator-supplied JSON, retains exact bytes/object digest plus version/update/load times,
+maximum-age policy, and estimates only an unambiguous provider/model API identity with supported
+token components. A stale, malformed, ambiguous, missing, tier-modified, or modality-incomplete
+price remains reasoned `UNKNOWN`; missing/malformed provider token usage also cannot become an
+estimated zero.
+Native CLI/ACP execution remains outside API pricing, so subscription execution cannot become a fake
+zero-dollar API call. Pricing availability is not connected to production strategy activation.
+
+`execution-intelligence.ts` is an advisory decision/provenance foundation over the existing
+execution modes, not a second mode controller. Structured risk, coupling, breadth, uncertainty,
+context, budget, provider-health, and model-candidate signals retain their original provenance and
+evidence references. It can choose no MAF intervention for a simple local task, preserve a guided
+single-agent path for stronger coupling, represent advisor/worker decomposition as non-default, or
+block on budget/provider state. Model price is considered only after risk suitability and cannot
+reduce the copied assurance requirements.
+
+`evolution.ts` defines prompt, Skill, context-policy, model-route, strategy, and assurance-scheduling
+challengers; digest/version-bound baselines; frozen evaluation suites; and sparse evaluation metrics
+that remain null when unmeasured. Evaluators have `trustAuthority: NONE`. Promotion requires
+MAF-policy authority plus passing regression, frozen-holdout, and shadow records; a candidate or
+external evaluator cannot self-promote, and evaluation never projects a `TrustState`. Generic
+evaluation and pricing ports are the only Session 7 external seams; no optimization/evaluation
+vendor is a runtime or domain dependency.

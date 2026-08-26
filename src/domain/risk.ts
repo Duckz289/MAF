@@ -7,6 +7,7 @@
  */
 
 import { derivePerformanceSensitivity } from "./performance";
+import { deriveSemanticSensitivity } from "./semantic-sensitivity";
 
 export type RiskDimension =
   | "ReasoningDifficulty"
@@ -161,14 +162,65 @@ export const deriveRiskVector = (input: RiskEvidenceInput): RiskVector => {
               "one or more touched files have no module-ownership evidence, so this edge count cannot see their architectural impact",
             ],
     },
-    SecuritySensitivity: {
-      level: level(securityMatches, 1, 3),
-      provenance: securityMatches.length > 0 ? "DETERMINISTIC" : "HEURISTIC",
-      evidence:
-        securityMatches.length > 0
-          ? securityMatches.map((file) => `security-sensitive path: ${file}`)
-          : ["no security-sensitive path pattern matched among touched files"],
-    },
+    SecuritySensitivity: (() => {
+      const pathMatches = securityMatches.map((file) => `security-sensitive path: ${file}`);
+      // Post-pilot hardening (Finding C): path keywords are only ONE signal. When a diff exists,
+      // its added code is scanned for semantic sensitivity (hidden-input handling, credential
+      // flow, auth decisions, key material, sensitive-value exposure). Semantic evidence is
+      // DETERMINISTIC — it comes from the diff itself — and can raise SecuritySensitivity above
+      // the path-only estimate, so a sensitive change in a neutrally named file no longer stays
+      // LOW (Risk(t) rises as execution produces real code evidence).
+      const semantic = diffPatch !== undefined ? deriveSemanticSensitivity(diffPatch) : undefined;
+      // Part D (hardening pass #3): only STRUCTURAL evidence — a binding from a sensitive source,
+      // a concealment-configured call, a credential-named assignment, an exposure pairing — can
+      // raise SecuritySensitivity. LEXICAL hints (vocabulary matches with no code shape) are
+      // disclosed as evidence but do not escalate: "tokenizer" is not credential-token exposure,
+      // and a word like "encrypt" as an arbitrary name is not key handling.
+      const semanticStrong =
+        semantic !== undefined &&
+        (semantic.exposurePairs.length > 0 || semantic.structuralSignals.length >= 2);
+      const semanticPresent = semantic !== undefined && semantic.structuralSignals.length > 0;
+      if (semanticStrong) {
+        return {
+          level: "HIGH" as RiskLevel,
+          provenance: "DETERMINISTIC" as RiskProvenance,
+          evidence: [
+            ...pathMatches,
+            ...semantic.evidence,
+            "semantic sensitivity evidence from the diff's added code raises SecuritySensitivity",
+          ],
+        };
+      }
+      if (semanticPresent) {
+        return {
+          level: "MEDIUM" as RiskLevel,
+          provenance: "DETERMINISTIC" as RiskProvenance,
+          evidence: [
+            ...pathMatches,
+            ...semantic.evidence,
+            "semantic sensitivity evidence from the diff's added code raises SecuritySensitivity",
+          ],
+        };
+      }
+      return {
+        level: level(securityMatches, 1, 3),
+        provenance:
+          securityMatches.length > 0
+            ? ("DETERMINISTIC" as RiskProvenance)
+            : ("HEURISTIC" as RiskProvenance),
+        evidence:
+          securityMatches.length > 0
+            ? pathMatches
+            : [
+                "no security-sensitive path pattern matched among touched files",
+                ...(diffPatch === undefined
+                  ? []
+                  : [
+                      "no semantically sensitive construct found in the diff's added code (absence of signal, not evidence of absence)",
+                    ]),
+              ],
+      };
+    })(),
     DataConsistencyRisk: {
       level: level(dataMatches, 1, 2),
       provenance: dataMatches.length > 0 ? "DETERMINISTIC" : "HEURISTIC",

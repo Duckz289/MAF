@@ -13,6 +13,36 @@ export interface SecurityPostureResult {
   evidence: string[];
   /** One redacted description per finding. Never contains the matched value. */
   findings: string[];
+  /**
+   * True when the WARN state comes from findings in PRODUCTION files (e.g. a literal assigned to
+   * a credential-shaped name) as opposed to dummy credentials confined to test/fixture files.
+   * Consumers use it to decide whether the flag can be waived as fixture-normal (justified
+   * resolution) or must preserve uncertainty (hardening pass #3, Part B).
+   */
+  productionFlagged: boolean;
+  /** Producer-owned predicate/domain accounting for typed credential-literal evidence. */
+  credentialLiteralAnalysis: CredentialLiteralAnalysis;
+}
+
+export const CREDENTIAL_LITERAL_PREDICATE_ID = "SECURITY.CREDENTIAL_LITERAL_ASSIGNMENT.V1";
+
+export interface CredentialLiteralAtomDecision {
+  atomIdentity: string;
+  file: string;
+  decision: "FLAGGED_LITERAL" | "EXCLUDED_PLACEHOLDER" | "EXCLUDED_TEST_FIXTURE";
+}
+
+export interface CredentialLiteralUndecidedAtom {
+  atomIdentity: string;
+  file: string;
+  reason: "INTERPOLATION_CAPABLE_LITERAL";
+}
+
+export interface CredentialLiteralAnalysis {
+  predicateId: typeof CREDENTIAL_LITERAL_PREDICATE_ID;
+  analyzedAtoms: CredentialLiteralAtomDecision[];
+  undecidedAtoms: CredentialLiteralUndecidedAtom[];
+  completeness: "COMPLETE" | "INCOMPLETE";
 }
 
 interface StructuredPattern {
@@ -28,6 +58,7 @@ const privateKeyLabelPatternSource =
 const structuredPatterns: StructuredPattern[] = [
   { name: "AWS access key ID", pattern: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/u },
   { name: "GitHub token", pattern: /\bgh[pousr]_[A-Za-z0-9]{36,255}\b/u },
+  { name: "GitHub fine-grained token", pattern: /\bgithub_pat_[A-Za-z0-9_]{20,255}\b/u },
   { name: "Slack token", pattern: /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/u },
   {
     name: "private key block",
@@ -39,20 +70,20 @@ const structuredPatterns: StructuredPattern[] = [
 // snake/kebab/camel variants (`client_secret`, `clientSecret`, `refresh-token`) without accepting
 // arbitrary words that merely contain "token" (for example `tokenizer`). Weaker than a structural
 // match — `const token = "abc123def456"` may be a fixture dummy — so it never FAILs on its own.
-const credentialCorePatternSource = `(?:password|passwd|secret|token|api[_.-]?key|access[_.-]?key|auth(?:entication)?[_.-]?token|client[_.-]?secret|refresh[_.-]?token|id[_.-]?token|private[_.-]?key)`;
+const credentialCorePatternSource = `(?:password|passwd|pwd|passphrase|secret|token|credential|api[_.-]?key|access[_.-]?key|auth(?:entication)?[_.-]?token|session[_.-]?key|client[_.-]?secret|refresh[_.-]?token|id[_.-]?token|private[_.-]?key)`;
 // Environment and structured-config names commonly namespace credentials (`OPENAI_API_KEY`,
 // `DATABASE_PASSWORD`, `AWS_SECRET_ACCESS_KEY`). Prefixes must be separator-delimited so an
 // unrelated identifier such as `tokenizer` does not become credential-shaped. A small suffix set
 // covers the established SECRET_ACCESS_KEY family without accepting arbitrary trailing words.
 const credentialNamePatternSource = `(?:(?:[A-Za-z0-9]+[_.-]+)*${credentialCorePatternSource}(?:[_.-]+(?:access[_.-]+key|key|value|credential))?|[A-Za-z0-9]*${credentialCorePatternSource})`;
-const genericCredentialPatternSource = String.raw`\b${credentialNamePatternSource}\b["']?\s*(?::=|[:=])\s*["'\x60]([^"'\x60\r\n]{8,})["'\x60]`;
+const genericCredentialPatternSource = String.raw`\b${credentialNamePatternSource}\b["']?\s*(?::=|[:=])\s*(?:br|rb|fr|rf|r|u|b|f)?["'\x60]([^"'\x60\r\n]{1,})["'\x60]`;
 
 // The unquoted `key=value` / `key: value` form — the generic pattern's quoted form never matches
 // it, yet .env/yaml (the file types where literal credentials actually live) never quote. The
 // value charset excludes code punctuation so a source expression like `token = crypto.randomUUID()`
 // cannot match; placeholder/reference values are filtered by the caller.
 const envCredentialPattern = new RegExp(
-  String.raw`^[ \t]*(?:export[ \t]+|-[ \t]*)?${credentialNamePatternSource}[ \t]*[:=][ \t]*([^"'#\s(){}[\],;]{8,})[ \t]*(?:#.*)?$`,
+  String.raw`^[ \t]*(?:export[ \t]+|-[ \t]*)?${credentialNamePatternSource}[ \t]*[:=][ \t]*(?!//)([^"'#\s(){}[\],;]{8,})[ \t]*(?:#.*)?$`,
   "iu",
 );
 const yamlCredentialBlockHeaderPattern = new RegExp(
@@ -70,8 +101,50 @@ const redact = (value: string): string => `${value.slice(0, 3)}…(redacted)`;
 
 // Key/value shapes recognized by redactSensitiveData (the event-stream redactor, below) —
 // secret-shaped keys redact wholesale; bearer/secret prefixes inside strings redact in place.
-const secretKeyPattern = /(api[-_]?key|secret|token|authorization|password|credential)/iu;
-const secretValuePatternSource = String.raw`(Bearer\s+[A-Za-z0-9._~+/-]{8,}|\bsk-[A-Za-z0-9_-]{12,}|\bgh[pousr]_[A-Za-z0-9]{12,})`;
+const secretValuePatternSource = String.raw`(Bearer\s+[A-Za-z0-9._~+/-]{8,}|\bsk-[A-Za-z0-9_-]{12,}|\bgh[pousr]_[A-Za-z0-9]{12,}|\bgithub_pat_[A-Za-z0-9_]{20,})`;
+
+const secretShapedKey = (key: string): boolean => {
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/gu, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/u)
+    .filter(Boolean);
+  const joined = words.join(" ");
+  if (words.some((word) => ["password", "passwd", "pwd", "passphrase"].includes(word))) {
+    return true;
+  }
+  if (
+    words.some((word) =>
+      [
+        "secret",
+        "secrets",
+        "authorization",
+        "credential",
+        "credentials",
+        "cookie",
+        "cookies",
+      ].includes(word),
+    )
+  ) {
+    return true;
+  }
+  if (words.length === 1 && words[0] === "token") return true;
+  return [
+    "api key",
+    "access key",
+    "private key",
+    "client secret",
+    "auth token",
+    "authentication token",
+    "access token",
+    "refresh token",
+    "id token",
+    "session token",
+    "session key",
+    "github pat",
+    "personal access token",
+  ].some((shape) => joined.includes(shape));
+};
 
 const structuredSecretPatternSource = structuredPatterns
   .map(({ pattern }) => pattern.source)
@@ -126,6 +199,90 @@ interface CredentialAssignment {
   literal: string;
 }
 
+export const credentialLiteralAtomIdentity = (
+  file: string,
+  addedLineIndex: number,
+  filePatchIndex = 0,
+): string => `${file}::PATCH_${filePatchIndex}::RAW_ADDED::${addedLineIndex}`;
+
+export interface CredentialLiteralAssignment {
+  atomIdentity: string;
+  name: string;
+  literal: string;
+  interpolationCapable: boolean;
+  placeholder: boolean;
+}
+
+const credentialLiteralAssignmentPattern = new RegExp(
+  String.raw`\b(${credentialNamePatternSource})\b["']?\s*(?::=|[:=])\s*(br|rb|fr|rf|r|u|b|f)?(["'\x60])([^"'\x60\r\n]*)\3`,
+  "giu",
+);
+
+/** Exact predicate shared by concern creation and the producer that owns completeness. */
+export const credentialLiteralAssignments = (
+  line: string,
+  file: string,
+  addedLineIndex: number,
+  filePatchIndex = 0,
+): CredentialLiteralAssignment[] =>
+  [...line.matchAll(new RegExp(credentialLiteralAssignmentPattern.source, "giu"))].flatMap(
+    (match) => {
+      const name = match[1];
+      const prefix = match[2] ?? "";
+      const quote = match[3];
+      const literal = match[4];
+      if (name === undefined || quote === undefined || literal === undefined) return [];
+      return [
+        {
+          atomIdentity: credentialLiteralAtomIdentity(file, addedLineIndex, filePatchIndex),
+          name,
+          literal,
+          interpolationCapable: /f/iu.test(prefix) || (quote === "`" && literal.includes("${")),
+          placeholder: placeholderPattern.test(literal),
+        },
+      ];
+    },
+  );
+
+export const analyzeCredentialLiteralAssignments = (patch: string): CredentialLiteralAnalysis => {
+  const analyzedAtoms: CredentialLiteralAtomDecision[] = [];
+  const undecidedAtoms: CredentialLiteralUndecidedAtom[] = [];
+  for (const [filePatchIndex, entry] of parseFilePatches(patch).entries()) {
+    for (const [index, line] of entry.addedLines.entries()) {
+      for (const assignment of credentialLiteralAssignments(
+        line,
+        entry.file,
+        index,
+        filePatchIndex,
+      )) {
+        if (assignment.interpolationCapable) {
+          undecidedAtoms.push({
+            atomIdentity: assignment.atomIdentity,
+            file: entry.file,
+            reason: "INTERPOLATION_CAPABLE_LITERAL",
+          });
+        } else {
+          analyzedAtoms.push({
+            atomIdentity: assignment.atomIdentity,
+            file: entry.file,
+            decision: assignment.placeholder
+              ? "EXCLUDED_PLACEHOLDER"
+              : testFilePattern.test(entry.file)
+                ? "EXCLUDED_TEST_FIXTURE"
+                : "FLAGGED_LITERAL",
+          });
+        }
+      }
+    }
+  }
+  return {
+    predicateId: CREDENTIAL_LITERAL_PREDICATE_ID,
+    analyzedAtoms,
+    undecidedAtoms,
+    completeness: undecidedAtoms.length === 0 ? "COMPLETE" : "INCOMPLETE",
+  };
+};
+
 const credentialAssignments = (line: string): CredentialAssignment[] => {
   const quoted = [...line.matchAll(new RegExp(genericCredentialPatternSource, "giu"))].flatMap(
     (match) => (match[1] === undefined ? [] : [{ matched: match[0], literal: match[1] }]),
@@ -134,14 +291,21 @@ const credentialAssignments = (line: string): CredentialAssignment[] => {
   return env?.[1] === undefined ? quoted : [...quoted, { matched: env[0], literal: env[1] }];
 };
 
-const redactSensitiveString = (value: string): string =>
+const credentialReferencePattern = /^credential:\/\/[A-Za-z0-9._~/-]+$/u;
+
+const redactPotentialSecrets = (value: string): string =>
   redactCredentialAssignments(
     redactPrefixedSecrets(redactStructuredSecrets(redactPrivateKeyBlocks(value))),
   );
 
+const redactSensitiveString = (value: string): string =>
+  credentialReferencePattern.test(value) && redactPotentialSecrets(value) === value
+    ? value
+    : redactPotentialSecrets(value);
+
 /** Credential references are opaque locators, never an escape hatch for a raw key. */
 export const isSafeCredentialReference = (value: string): boolean =>
-  /^credential:\/\/[A-Za-z0-9._~/-]+$/u.test(value) && redactSensitiveString(value) === value;
+  credentialReferencePattern.test(value) && redactPotentialSecrets(value) === value;
 
 /** Sanitizes one untrusted string without applying metadata-key policy. */
 export const redactSensitiveText = (value: string): string => redactSensitiveString(value);
@@ -168,7 +332,7 @@ export const redactSensitiveData = (value: unknown, key = ""): unknown => {
     typeof value === "string" &&
     new Set(["REFERENCE_ONLY", "REDACTED", "PROXY_MEDIATED", "ISOLATED"]).has(value);
   if (
-    secretKeyPattern.test(key) &&
+    secretShapedKey(key) &&
     !safeReferenceValue &&
     !safeCapabilityValue &&
     typeof value !== "number" &&
@@ -326,6 +490,7 @@ export const redactPatchPreview = (patch: string): string => {
  */
 export const deriveSecurityPosture = (patch: string): SecurityPostureResult => {
   const parsed = parseFilePatches(patch);
+  const credentialLiteralAnalysis = analyzeCredentialLiteralAssignments(patch);
   const findings: string[] = [];
   let structuredInProduction = false;
   let structuredInTests = false;
@@ -376,7 +541,13 @@ export const deriveSecurityPosture = (patch: string): SecurityPostureResult => {
     evidence.push(
       `${findings.length} credential-pattern finding(s) in production files; structured secret formats are deterministic evidence of a leak`,
     );
-    return { state: "FAIL", evidence, findings };
+    return {
+      state: "FAIL",
+      evidence,
+      findings,
+      productionFlagged: true,
+      credentialLiteralAnalysis,
+    };
   }
   if (binaryFiles.length > 0) {
     evidence.push(
@@ -385,7 +556,13 @@ export const deriveSecurityPosture = (patch: string): SecurityPostureResult => {
     evidence.push(
       `${addedLinesScanned} textual added line(s) scanned; binary payloads remain NOT_CHECKED`,
     );
-    return { state: "NOT_CHECKED", evidence, findings };
+    return {
+      state: "NOT_CHECKED",
+      evidence,
+      findings,
+      productionFlagged: false,
+      credentialLiteralAnalysis,
+    };
   }
   if (otherUninspectable.length > 0) {
     evidence.push(
@@ -397,7 +574,13 @@ export const deriveSecurityPosture = (patch: string): SecurityPostureResult => {
     evidence.push(
       `${addedLinesScanned} textual added line(s) scanned; unexposed destination content remains NOT_CHECKED`,
     );
-    return { state: "NOT_CHECKED", evidence, findings };
+    return {
+      state: "NOT_CHECKED",
+      evidence,
+      findings,
+      productionFlagged: false,
+      credentialLiteralAnalysis,
+    };
   }
   if (structuredInTests || genericInProduction) {
     if (structuredInTests) {
@@ -411,7 +594,13 @@ export const deriveSecurityPosture = (patch: string): SecurityPostureResult => {
       );
     }
     evidence.push(`${findings.length} finding(s), none proving a leak`);
-    return { state: "WARN", evidence, findings };
+    return {
+      state: "WARN",
+      evidence,
+      findings,
+      productionFlagged: genericInProduction,
+      credentialLiteralAnalysis,
+    };
   }
   return {
     state: "PASS",
@@ -419,5 +608,7 @@ export const deriveSecurityPosture = (patch: string): SecurityPostureResult => {
       `no credential or secret patterns found in ${addedLinesScanned} added line(s) scanned${genericInTests ? ` (${findings.length} dummy credential(s) in test/fixture files, disclosed but not counted as findings)` : ""}`,
     ],
     findings: genericInTests ? findings : [],
+    productionFlagged: false,
+    credentialLiteralAnalysis,
   };
 };

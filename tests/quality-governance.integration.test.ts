@@ -55,6 +55,24 @@ const harness = (
   return { service, store, telemetry };
 };
 
+const passingResilienceVerifier: ResilienceVerifierPort = {
+  verify: async ({ candidateId, diffDigest, relevance }) => ({
+    state: "EXECUTED",
+    candidateId,
+    diffDigest,
+    scenarios: relevance.scenarios.map((scenario) => ({
+      scenario,
+      outcome: "PASSED",
+      exitCode: 0,
+      evidence: ["candidate-bound review fixture scenario passed"],
+    })),
+    evidence: ["all candidate-bound review fixture scenarios executed"],
+  }),
+};
+
+const reviewHarness = (sandboxRoot: string) =>
+  harness(sandboxRoot, undefined, passingResilienceVerifier);
+
 const createPerformanceFixtureRepository = async (): Promise<FixtureRepository> => {
   const fixture = await createFixtureRepository();
   const target = path.join(fixture.path, "src/server/database-query.ts");
@@ -88,11 +106,10 @@ const createResilienceFixtureRepository = async (): Promise<FixtureRepository> =
 const createHighSecurityFixtureRepository = async (): Promise<FixtureRepository> => {
   const fixture = await createFixtureRepository();
   const files: Record<string, string> = {
-    "src/domain/auth-service.ts":
-      "export const authenticate = (token: string): boolean => token.length > 0;\n",
-    "src/domain/auth-token.ts":
-      "export const issueToken = (user: string): string => 't:' + user;\n",
-    "src/domain/session-store.ts": "export const sessions = new Map<string, string>();\n",
+    "src/domain/auth-service.ts": "export const AUTH_SERVICE_VERSION = 1;\n",
+    "src/domain/auth-token.ts": "export const TOKEN_TTL_SECONDS = 3600;\n",
+    "src/domain/session-store.ts": "export const SESSION_LIMIT = 100;\n",
+    "src/domain/model.ts": "export const modelVersion = 0;\n",
   };
   for (const [file, source] of Object.entries(files)) {
     const target = path.join(fixture.path, file);
@@ -203,12 +220,14 @@ describe("quality governance (M6)", () => {
   it("requires an independent review for a HIGH-security CRITICAL task and promotes only on an approved, identity-bound verdict", async () => {
     const fixture = await createHighSecurityFixtureRepository();
     fixtures.push(fixture);
-    const { service, store } = harness(fixture.sandboxRoot);
+    const { service, store } = reviewHarness(fixture.sandboxRoot);
     const created = await service.create({
-      prompt: "Harden the auth token session handling. review verdict: approve",
+      prompt:
+        "Harden the auth token session handling. Exercise idempotent auth update. review verdict: approve",
       repositoryPath: fixture.path,
       verification: { expectedFile: "agent-output.md" },
       qualityPreference: "CRITICAL",
+      resilience: { command: "fixture-resilience" },
     });
     await service.waitForIdle(created.id);
 
@@ -239,23 +258,23 @@ describe("quality governance (M6)", () => {
   it("invalidates even a well-formed approved verdict when the reviewer tampered with the workspace", async () => {
     const fixture = await createHighSecurityFixtureRepository();
     fixtures.push(fixture);
-    const { service, store } = harness(fixture.sandboxRoot);
+    const { service, store } = reviewHarness(fixture.sandboxRoot);
     const created = await service.create({
-      prompt: "Harden the auth token session handling. review verdict: tamper",
+      prompt:
+        "Harden the auth token session handling. Exercise idempotent auth update. review verdict: tamper",
       repositoryPath: fixture.path,
       verification: { expectedFile: "agent-output.md" },
       qualityPreference: "CRITICAL",
+      resilience: { command: "fixture-resilience" },
     });
     await service.waitForIdle(created.id);
 
     const run = await store.getRun(created.id);
     expect(run?.verificationState).toBe("VERIFIED");
     // The reviewer approved, but it also modified a file after the candidate diff was captured:
-    // the verdict is INVALID and the candidate stays below MERGE_ELIGIBLE. The rung is
-    // QUALITY_VERIFIED: the CRITICAL plan requires RESILIENCE, but this diff has no fault-relevant
-    // signal, so the resilience PASS is heuristic/deterministic — not measured — and cannot
-    // support the DURABLE_VERIFIED claim that scenarios actually ran.
-    expect(run?.trustState).toBe("QUALITY_VERIFIED");
+    // the verdict is INVALID and the candidate stays below MERGE_ELIGIBLE. Candidate-bound
+    // resilience scenarios passed, so the durable rung remains justified.
+    expect(run?.trustState).toBe("DURABLE_VERIFIED");
 
     const data = await qualityEvent(service, created.id);
     expect(data.review?.status).toBe("INVALID");
@@ -273,12 +292,13 @@ describe("quality governance (M6)", () => {
     it(`withholds MERGE_ELIGIBLE when the reviewer verdict is ${expected} (${marker})`, async () => {
       const fixture = await createHighSecurityFixtureRepository();
       fixtures.push(fixture);
-      const { service, store } = harness(fixture.sandboxRoot);
+      const { service, store } = reviewHarness(fixture.sandboxRoot);
       const created = await service.create({
-        prompt: `Harden the auth token session handling. review verdict: ${marker}`,
+        prompt: `Harden the auth token session handling. Exercise idempotent auth update. review verdict: ${marker}`,
         repositoryPath: fixture.path,
         verification: { expectedFile: "agent-output.md" },
         qualityPreference: "CRITICAL",
+        resilience: { command: "fixture-resilience" },
       });
       await service.waitForIdle(created.id);
 
@@ -286,15 +306,13 @@ describe("quality governance (M6)", () => {
       expect(run?.state).toBe("COMPLETED");
       expect(run?.verificationState).toBe("VERIFIED");
       // Deterministic verification passed, so the run completes — but without an approved
-      // identity-bound review the candidate cannot become merge-eligible. The rung is
-      // QUALITY_VERIFIED: the CRITICAL plan requires RESILIENCE, but the plain fixture's diff
-      // has no fault-relevant signal, so the resilience PASS is deterministic rather than
-      // measured and does not reach DURABLE_VERIFIED.
-      expect(run?.trustState).toBe("QUALITY_VERIFIED");
+      // identity-bound review the candidate cannot become merge-eligible. The candidate-bound
+      // resilience evidence still earns the durable rung.
+      expect(run?.trustState).toBe("DURABLE_VERIFIED");
 
       const data = await qualityEvent(service, created.id);
       expect(data.review?.status).toBe(expected);
-      expect(data.trustState).toBe("QUALITY_VERIFIED");
+      expect(data.trustState).toBe("DURABLE_VERIFIED");
     });
   }
 
@@ -603,7 +621,7 @@ describe("quality governance (M6)", () => {
     );
   });
 
-  it("binds executed resilience scenarios to the candidate and promotes only when all pass (M10)", async () => {
+  it("binds executed resilience scenarios without letting them erase discovery incompleteness (M10)", async () => {
     const fixture = await createResilienceFixtureRepository();
     fixtures.push(fixture);
     const resilienceVerifier: ResilienceVerifierPort = {
@@ -656,11 +674,12 @@ describe("quality governance (M6)", () => {
 
     const run = await store.getRun(created.id);
     const data = await qualityEvent(service, created.id);
-    // CRITICAL preference requires both RESILIENCE and INDEPENDENT_REVIEW; the approved
-    // identity-bound review plus the passing scenario run reach MERGE_ELIGIBLE.
+    // The measured resilience obligation passes, but the added arbitrary fixed-argument fetch
+    // remains independently discovery-incomplete, so review spend that cannot promote is skipped.
     expect(data.report.Resilience.state).toBe("PASS");
     expect(data.report.Resilience.provenance).toBe("MEASURED");
-    expect(run?.trustState).toBe("MERGE_ELIGIBLE");
+    expect(data.review).toBeUndefined();
+    expect(run?.trustState).toBe("CORRECTNESS_VERIFIED");
 
     const events = await service.events(created.id);
     const resilience = events.find((event) => event.type === "ResilienceAssessed");
@@ -809,7 +828,7 @@ describe("quality governance (M6)", () => {
     expect(resilience?.data).toMatchObject({ measurementState: "NOT_CHECKED" });
   });
 
-  it("passes resilience deterministically when the plan requires it but no scenario is relevant (M10)", async () => {
+  it("keeps zero-scenario detector silence NOT_CHECKED without invoking the verifier (M10)", async () => {
     const fixture = await createFixtureRepository();
     fixtures.push(fixture);
     const resilienceVerifier: ResilienceVerifierPort = {
@@ -829,19 +848,15 @@ describe("quality governance (M6)", () => {
 
     const run = await store.getRun(created.id);
     const data = await qualityEvent(service, created.id);
-    expect(data.report.Resilience.state).toBe("PASS");
+    expect(data.report.Resilience.state).toBe("NOT_CHECKED");
     expect(data.report.Resilience.provenance).toBe("DETERMINISTIC");
-    // The plain fixture keeps SecuritySensitivity LOW, so CRITICAL forces RESILIENCE but not
-    // INDEPENDENT_REVIEW — with the deterministic relevance-empty PASS there is nothing left to
-    // await, and the run promotes. (The DURABLE_VERIFIED awaiting-review rung is covered by the
-    // review-verdict and tamper tests above.)
-    expect(run?.trustState).toBe("MERGE_ELIGIBLE");
+    expect(run?.trustState).toBe("CORRECTNESS_VERIFIED");
 
     const events = await service.events(created.id);
     const resilience = events.find((event) => event.type === "ResilienceAssessed");
     expect(resilience?.data).toMatchObject({
       relevantScenarios: [],
-      posture: { state: "PASS" },
+      posture: { state: "NOT_CHECKED" },
       measurementState: "NOT_CHECKED",
     });
   });

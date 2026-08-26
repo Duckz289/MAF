@@ -4,8 +4,8 @@ import {
   emptyCost,
   emptyUsage,
   type Run,
-  type RuntimeSignals,
   type RuntimeSignalSnapshot,
+  type RuntimeSignals,
   type RuntimeSignalValues,
 } from "../src/domain/types";
 

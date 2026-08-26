@@ -1,12 +1,12 @@
 import {
-  signalValues,
   type Event,
   type ExecutionMode,
   type ModeChangedData,
   type ModeEnforcementMethod,
   type Run,
-  type RuntimeSignals,
   type RuntimeSignalSnapshot,
+  type RuntimeSignals,
+  signalValues,
 } from "./types";
 
 export interface ModeDecision {

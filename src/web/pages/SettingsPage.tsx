@@ -3,17 +3,17 @@ import {
   Button,
   MessageBar,
   MessageBarBody,
+  makeStyles,
   Tab,
   TabList,
   Text,
   Title2,
-  makeStyles,
 } from "@fluentui/react-components";
 import { Code20Regular, Key20Regular, Settings20Regular } from "@fluentui/react-icons";
 import { useCallback, useEffect, useState } from "react";
+import { PageHeader } from "../components/PageHeader";
 import type { Agent, PlatformKey } from "../types";
 import { formatDate, readJson } from "../utils";
-import { PageHeader } from "../components/PageHeader";
 
 const useStyles = makeStyles({
   tabs: { marginBottom: "20px", borderBottom: "1px solid #252b31" },
