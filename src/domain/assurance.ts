@@ -38,6 +38,20 @@ export type AssuranceCheck =
   | "RESILIENCE"
   | "INDEPENDENT_REVIEW";
 
+/** Producer-owned predicate identity. A broad dimension name is never a substitute for this. */
+export type AssurancePredicateIdentity =
+  | "CORRECTNESS.TRUSTED_COMMAND"
+  | "INTEGRATION.CROSS_MODULE_BEHAVIOR"
+  | "ARCHITECTURE.LAYER_BOUNDARY"
+  | "ARCHITECTURE.COUPLING_IMPACT"
+  | "DEBT.DECLARED_MARKER_DELTA"
+  | "SECURITY.MATERIAL_CONCERN_DISCOVERY"
+  | "SECURITY.DEPENDENCY_VULNERABILITY"
+  | "PERFORMANCE.MEASURED_METRIC"
+  | "CONCURRENCY.INTERLEAVING_BEHAVIOR"
+  | "RESILIENCE.REQUIRED_SCENARIO_EXECUTION"
+  | "REVIEW.FRESH_CONTEXT_SESSION";
+
 /**
  * What made a check required. The distinction matters to the trust kernel, which treats these two
  * as different kinds of thing:
@@ -64,6 +78,8 @@ export interface AssurancePlan {
   reasons: Record<AssuranceCheck, string>;
   /** What raised each REQUIRED check. Additive; absent on plans built before this field existed. */
   requirementOrigin?: Partial<Record<AssuranceCheck, RequirementOrigin>>;
+  /** Exact claim(s) that made each required check necessary. */
+  requiredPredicates?: Partial<Record<AssuranceCheck, AssurancePredicateIdentity[]>>;
 }
 
 const atLeast = (level: RiskLevel, minimum: RiskLevel): boolean => {
@@ -197,5 +213,26 @@ export const buildAssurancePlan = (
     notRequired,
     reasons: reasons as Record<AssuranceCheck, string>,
     requirementOrigin: origins,
+    requiredPredicates: {
+      CORRECTNESS: ["CORRECTNESS.TRUSTED_COMMAND"],
+      ...(decisions.INTEGRATION ? { INTEGRATION: ["INTEGRATION.CROSS_MODULE_BEHAVIOR"] } : {}),
+      ...(decisions.ARCHITECTURE
+        ? {
+            ARCHITECTURE: [
+              atLeast(dimension(riskVector, "BlastRadius"), "MEDIUM")
+                ? "ARCHITECTURE.COUPLING_IMPACT"
+                : "ARCHITECTURE.LAYER_BOUNDARY",
+            ],
+          }
+        : {}),
+      ...(decisions.DEBT ? { DEBT: ["DEBT.DECLARED_MARKER_DELTA"] } : {}),
+      ...(decisions.SECURITY ? { SECURITY: ["SECURITY.MATERIAL_CONCERN_DISCOVERY"] } : {}),
+      ...(decisions.PERFORMANCE ? { PERFORMANCE: ["PERFORMANCE.MEASURED_METRIC"] } : {}),
+      ...(decisions.CONCURRENCY ? { CONCURRENCY: ["CONCURRENCY.INTERLEAVING_BEHAVIOR"] } : {}),
+      ...(decisions.RESILIENCE ? { RESILIENCE: ["RESILIENCE.REQUIRED_SCENARIO_EXECUTION"] } : {}),
+      ...(decisions.INDEPENDENT_REVIEW
+        ? { INDEPENDENT_REVIEW: ["REVIEW.FRESH_CONTEXT_SESSION"] }
+        : {}),
+    },
   };
 };

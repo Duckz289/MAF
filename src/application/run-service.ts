@@ -122,6 +122,7 @@ import {
   attributeVerificationFailure,
   type VerificationFailureKind,
 } from "../domain/verification-attribution";
+import { assessVerificationAuthority } from "../domain/verification-evidence";
 import { deriveRuntimeGraph } from "../domain/runtime-graph";
 import {
   isSafeCredentialReference,
@@ -160,6 +161,10 @@ import {
   type Verification,
   type VerificationSpec,
 } from "../domain/types";
+import {
+  normalizeVerificationSpecification,
+  verificationSpecificationForPersistence,
+} from "../domain/verification-spec";
 import { LocalWorktreeSandbox } from "../infrastructure/local-worktree";
 import { runProcess } from "../infrastructure/process-utils";
 import {
@@ -181,6 +186,7 @@ export interface CreateRunRequest {
   revision?: string | undefined;
   mode?: ExecutionMode | undefined;
   verification?: VerificationSpec | undefined;
+  missionBinding?: { missionId: string; nodeId: string } | undefined;
   performance?: PerformanceSpec | undefined;
   resilience?: ResilienceSpec | undefined;
   signals?: RuntimeSignals | undefined;
@@ -463,12 +469,18 @@ export class RunService {
     }
     const resolvedRepositoryPath = path.resolve(request.repositoryPath);
     const requestedRevision = request.revision ?? "HEAD";
+    const normalizedVerification = normalizeVerificationSpecification(request.verification);
+    if (normalizedVerification.status === "INVALID") {
+      throw new Error(
+        `Invalid verification specification: ${normalizedVerification.invalidReasons.join("; ")}`,
+      );
+    }
+    const verification = verificationSpecificationForPersistence(normalizedVerification);
     assertPersistenceSafeLocator("Repository path", resolvedRepositoryPath);
     assertPersistenceSafeLocator("Revision", requestedRevision);
-    assertPersistenceSafeLocator("Expected-file path", request.verification?.expectedFile);
+    assertPersistenceSafeLocator("Expected-file path", verification.expectedFile);
     assertCredentialReferences(request.credentialReferences ?? []);
     const now = new Date().toISOString();
-    const verification = request.verification ?? {};
     const missionContract = compileMissionContract({
       objective: redactSensitiveText(request.prompt),
       repositoryPath: resolvedRepositoryPath,
@@ -509,6 +521,10 @@ export class RunService {
       revision: requestedRevision,
       createdAt: now,
       verification,
+      verificationSpecIdentity: normalizedVerification.identity,
+      ...(request.missionBinding
+        ? { missionBinding: structuredClone(request.missionBinding) }
+        : {}),
       ...(request.performance ? { performance: request.performance } : {}),
       ...(request.resilience ? { resilience: request.resilience } : {}),
       ...(request.signals ? { signals: request.signals } : {}),
@@ -524,6 +540,10 @@ export class RunService {
       desiredMode: initialMode,
       effectiveMode: initialMode,
       verificationState: "PROPOSED",
+      verificationSpecIdentity: normalizedVerification.identity,
+      ...(request.missionBinding
+        ? { missionBinding: structuredClone(request.missionBinding) }
+        : {}),
       agent: redactSensitiveText(request.agent ?? this.dependencies.agent.name),
       model: redactSensitiveText(request.model ?? "native"),
       provider: redactSensitiveText(request.provider ?? "native"),
@@ -726,9 +746,20 @@ export class RunService {
   }
 
   async delivery(id: string): Promise<DeliveryDecision | undefined> {
-    await this.requireRun(id);
+    const run = await this.requireRun(id);
     const handoff = await this.dependencies.store.getDeliveryHandoff(id);
-    if (!handoff) return undefined;
+    // A durable handoff can outlive the in-process owner. It is historical evidence, not current
+    // authority: once restart/recovery resets the run, do not project the stale handoff as ready
+    // delivery or let it feed a later promotion decision.
+    if (
+      !handoff ||
+      run.state !== "COMPLETED" ||
+      run.verificationState !== "VERIFIED" ||
+      run.deliveryHandoffBinding?.handoffId !== handoff.id ||
+      run.deliveryHandoffBinding.candidateId !== handoff.candidateId ||
+      run.deliveryHandoffBinding.candidateDigest !== handoff.candidateDigest
+    )
+      return undefined;
     const ciEvidence = await this.dependencies.store.listCiEvidence(handoff.id);
     return deriveDeliveryDecision(handoff, ciEvidence);
   }
@@ -737,9 +768,17 @@ export class RunService {
     id: string,
     input: { provider: string; externalRunId: string },
   ): Promise<DeliveryDecision> {
-    await this.requireRun(id);
+    const run = await this.requireRun(id);
     const handoff = await this.dependencies.store.getDeliveryHandoff(id);
-    if (!handoff) throw new Error(`Run ${id} has no verified delivery handoff`);
+    if (
+      !handoff ||
+      run.state !== "COMPLETED" ||
+      run.verificationState !== "VERIFIED" ||
+      run.deliveryHandoffBinding?.handoffId !== handoff.id ||
+      run.deliveryHandoffBinding.candidateId !== handoff.candidateId ||
+      run.deliveryHandoffBinding.candidateDigest !== handoff.candidateDigest
+    )
+      throw new Error(`Run ${id} has no current verified delivery handoff`);
     const verifier = this.dependencies.ciEvidenceVerifier;
     if (!verifier) {
       const error = new Error("No trusted external CI evidence verifier is configured") as Error & {
@@ -811,6 +850,8 @@ export class RunService {
     await this.dependencies.verifier.cancel(id);
     run.state = "CANCELLED";
     run.verificationState = "CANCELLED";
+    delete run.trustState;
+    delete run.deliveryHandoffBinding;
     run.updatedAt = new Date().toISOString();
     run.completedAt = run.updatedAt;
     await this.dependencies.store.updateRun(run);
@@ -827,8 +868,12 @@ export class RunService {
     for (const run of interrupted) {
       const task = await this.dependencies.store.getTask(run.taskId);
       if (!task) {
+        const priorVerificationState = run.verificationState;
+        const priorTrustState = run.trustState;
         run.state = "PAUSED";
-        if (run.verificationState === "VERIFYING") run.verificationState = "NOT_CHECKED";
+        run.verificationState = "NOT_CHECKED";
+        delete run.trustState;
+        delete run.deliveryHandoffBinding;
         run.error =
           "Process restarted while this run was in flight; its task record is unavailable";
         run.updatedAt = new Date().toISOString();
@@ -836,7 +881,13 @@ export class RunService {
         await this.event(run.id, "RunReconciledAfterRestart", {
           transition: { from: "RUNNING_OR_QUEUED", to: "PAUSED" },
           reason: "process-restart",
-          evidence: ["no active in-process owner exists", "the persisted task record is missing"],
+          evidence: [
+            "no active in-process owner exists",
+            "the persisted task record is missing",
+            `verification authority reset from ${priorVerificationState} to NOT_CHECKED`,
+            ...(priorTrustState ? [`current trust authority cleared from ${priorTrustState}`] : []),
+            "historical trust remains available only in the recovery/event audit trail",
+          ],
           resumable: false,
         });
         reconciled += 1;
@@ -872,8 +923,12 @@ export class RunService {
       };
       await this.dependencies.store.saveRecoveryCapsule(capsule);
       const priorState = run.state;
+      const priorVerificationState = run.verificationState;
+      const priorTrustState = run.trustState;
       run.state = "PAUSED";
-      if (run.verificationState === "VERIFYING") run.verificationState = "NOT_CHECKED";
+      run.verificationState = "NOT_CHECKED";
+      delete run.trustState;
+      delete run.deliveryHandoffBinding;
       run.error = "Process restarted while this run was in flight; recovery evidence was captured";
       run.updatedAt = new Date().toISOString();
       await this.dependencies.store.updateRun(run);
@@ -884,6 +939,9 @@ export class RunService {
           "the durable run was RUNNING/QUEUED",
           "no active in-process owner exists",
           workspacePresent ? "the workspace path still exists" : "no workspace path is recoverable",
+          `verification authority reset from ${priorVerificationState} to NOT_CHECKED`,
+          ...(priorTrustState ? [`current trust authority cleared from ${priorTrustState}`] : []),
+          "historical trust remains available only in the recovery/event audit trail",
         ],
         resumable: false,
         workspacePreserved: workspacePresent,
@@ -1216,6 +1274,13 @@ export class RunService {
     resumeSandbox?: Sandbox,
   ): Promise<void> {
     const started = performance.now();
+    const normalizedVerification = normalizeVerificationSpecification(task.verification);
+    task = {
+      ...task,
+      verification: verificationSpecificationForPersistence(normalizedVerification),
+      verificationSpecIdentity: normalizedVerification.identity,
+    };
+    run.verificationSpecIdentity = normalizedVerification.identity;
     const initialMode = run.effectiveMode;
     const activeState = this.active.get(run.id);
     const transitionState = activeState?.transitionState ?? newTransitionState();
@@ -1453,11 +1518,17 @@ export class RunService {
           sandbox,
           candidate.diff,
         );
+        const authorityCheckedResult = await this.enforceVerificationAuthorityBinding(
+          run,
+          task,
+          candidate,
+          rawVerifierResult,
+        );
         const verifierResult = await this.enforcePostVerificationCandidateFence(
           run,
           sandbox,
           candidate,
-          rawVerifierResult,
+          authorityCheckedResult,
         );
         verification = {
           ...verifierResult,
@@ -1484,13 +1555,13 @@ export class RunService {
           output: verification.output,
         });
         if (verification.state === "VERIFIED") break;
-        if (rawVerifierResult.state === "VERIFIED" && verification.state === "QUARANTINED") {
+        if (rawVerifierResult.state === "VERIFIED") {
           await this.event(run.id, "VerificationRepairStopped", {
-            reason: "candidate-identity-fence-failed",
+            reason: "verification-authority-binding-failed",
             evidence: [
               "the verifier reported success",
-              "the post-verification literal workspace digest did not match the captured candidate",
-              "mutated verifier workspace bytes are not eligible to become a repair candidate",
+              "candidate, normalized specification, environment, or post-verification binding was insufficient",
+              "unsupported success is not eligible to become a repair candidate or trust evidence",
             ],
             verificationAttempts,
             repairAttempts,
@@ -1500,8 +1571,7 @@ export class RunService {
         }
         if (
           verification.state === "NOT_CHECKED" &&
-          !task.verification.command &&
-          !task.verification.expectedFile
+          normalizedVerification.status !== "CONFIGURED"
         ) {
           await this.event(run.id, "VerificationRepairStopped", {
             reason: "verification-not-configured",
@@ -1561,11 +1631,17 @@ export class RunService {
             sandbox,
             candidate.diff,
           );
+          const authorityCheckedRetry = await this.enforceVerificationAuthorityBinding(
+            run,
+            task,
+            candidate,
+            rawRetriedResult,
+          );
           const retriedResult = await this.enforcePostVerificationCandidateFence(
             run,
             sandbox,
             candidate,
-            rawRetriedResult,
+            authorityCheckedRetry,
           );
           verificationAttempts += 1;
           verification = {
@@ -1593,12 +1669,12 @@ export class RunService {
             exitCode: verification.exitCode,
           });
           if (verification.state === "VERIFIED") break;
-          if (rawRetriedResult.state === "VERIFIED" && verification.state === "QUARANTINED") {
+          if (rawRetriedResult.state === "VERIFIED") {
             await this.event(run.id, "VerificationRepairStopped", {
-              reason: "candidate-identity-fence-failed",
+              reason: "verification-authority-binding-failed",
               evidence: [
                 "the retried verifier reported success",
-                "the post-verification literal workspace digest did not match the captured candidate",
+                "candidate, normalized specification, environment, or post-verification binding was insufficient",
               ],
               verificationAttempts,
               repairAttempts,
@@ -1786,22 +1862,36 @@ export class RunService {
         run.strategyObservationBinding = strategyObservationBinding(strategyObservation);
       }
       if (candidate && qualityReport && verification.state === "VERIFIED") {
-        deliveryHandoff = buildDeliveryHandoff({
-          id: crypto.randomUUID(),
-          projectId: projectIdentity(task.repositoryPath),
-          run,
-          task,
-          candidate: candidate.artifact,
-          verification,
-          qualityReport,
-          riskVector: candidate.assessment.riskVector,
-        });
-        run.deliveryHandoffBinding = {
-          handoffId: deliveryHandoff.id,
-          candidateId: deliveryHandoff.candidateId,
-          candidateDigest: deliveryHandoff.candidateDigest,
-          payloadDigest: deliveryHandoffDigest(deliveryHandoff),
-        };
+        const canonicalVerificationAuthority = verification.authority?.authorized === true;
+        if (run.trustState === "MERGE_ELIGIBLE" && !canonicalVerificationAuthority) {
+          // A legacy/injected verifier may remain useful as diagnostic correctness evidence for
+          // compatibility, but it cannot create a trust-bearing delivery handoff without the
+          // candidate/spec/environment binding. Keep the run terminal and expose the reason; do
+          // not let an otherwise merge-shaped label become external promotion authority.
+          await this.event(run.id, "DeliveryHandoffSkipped", {
+            reason: "verification-authority-binding-missing",
+            candidateId: candidate.id,
+            verificationId: verification.id,
+            trustState: run.trustState,
+          });
+        } else {
+          deliveryHandoff = buildDeliveryHandoff({
+            id: crypto.randomUUID(),
+            projectId: projectIdentity(task.repositoryPath),
+            run,
+            task,
+            candidate: candidate.artifact,
+            verification,
+            qualityReport,
+            riskVector: candidate.assessment.riskVector,
+          });
+          run.deliveryHandoffBinding = {
+            handoffId: deliveryHandoff.id,
+            candidateId: deliveryHandoff.candidateId,
+            candidateDigest: deliveryHandoff.candidateDigest,
+            payloadDigest: deliveryHandoffDigest(deliveryHandoff),
+          };
+        }
       }
       await this.dependencies.store.updateRun(run);
       await this.event(run.id, "RunCompleted", {
@@ -1843,6 +1933,10 @@ export class RunService {
           filesChanged: run.changedFiles.length,
           verificationType: "command",
           verificationState: run.verificationState,
+          verificationSpecIdentity: normalizedVerification.identity,
+          ...(verification.environment
+            ? { verificationEnvironmentIdentity: verification.environment.identity }
+            : {}),
           modeTransitions: transitionState.count,
           strictReexpansions: transitionState.strictReexpansions,
           signalSnapshots: (await this.dependencies.store.listSignalSnapshots(run.id)).length,
@@ -1943,6 +2037,11 @@ export class RunService {
     } catch (error) {
       const latest = await this.dependencies.store.getRun(run.id);
       if (latest?.state !== "CANCELLED") {
+        // Trust and delivery are current-run authority, not durable success labels. Any exception
+        // after quality assessment (including handoff persistence) invalidates both before a
+        // recovery capsule is written.
+        delete run.trustState;
+        delete run.deliveryHandoffBinding;
         run.verificationState = run.verificationState === "VERIFYING" ? "QUARANTINED" : "FAILED";
         const rawErrorDetail = error instanceof Error ? error.message : String(error);
         const classification = classifyFailure(error, {
@@ -2811,6 +2910,55 @@ export class RunService {
   }
 
   /**
+   * A verifier's exit code is not self-authenticating. Before a successful result can reach the
+   * trust fold, require one record binding the exact captured candidate, canonical verification
+   * specification, and an honestly bounded environment identity.
+   */
+  private async enforceVerificationAuthorityBinding(
+    run: Run,
+    task: Task,
+    candidate: Candidate,
+    verification: Verification,
+  ): Promise<Verification> {
+    if (verification.state !== "VERIFIED") return verification;
+    const candidateDigest = candidate.artifact.digest;
+    if (!candidateDigest) {
+      return { ...verification, state: "NOT_CHECKED", exitCode: 1 };
+    }
+    const assessment = assessVerificationAuthority({
+      verification,
+      specification: task.verification,
+      candidateDigest,
+    });
+    if (assessment.authorized) {
+      return { ...verification, authority: { authorized: true, reasons: [] } };
+    }
+    await this.event(run.id, "VerificationAuthorityRejected", {
+      verificationId: verification.id,
+      candidateId: candidate.id,
+      candidateDigest,
+      verificationSpecIdentity: verification.verificationSpecIdentity ?? null,
+      verificationEnvironmentIdentity: verification.environment?.identity ?? null,
+      reasons: assessment.reasons,
+    });
+    // Injected VerifierPort implementations from earlier API versions may still return the
+    // legacy `command` type without structured binding fields. Preserve their diagnostic state for
+    // compatibility; the server-side mission promotion boundary separately rejects any evidence
+    // that cannot be assessed as a canonical candidate/specification/environment binding. The
+    // canonical CommandVerifier uses `normalized-local` and fails closed here.
+    if (verification.type !== "normalized-local") {
+      return verification;
+    }
+    return {
+      ...verification,
+      state: "NOT_CHECKED",
+      exitCode: 1,
+      authority: { authorized: false, reasons: assessment.reasons },
+      output: `${verification.output}\nVerification success lacked sufficient candidate/specification/environment binding and was discarded`,
+    };
+  }
+
+  /**
    * Computes a risk vector + assurance plan from the best currently-available estimate of touched
    * files and emits both as inspectable evidence, never a hidden internal value. Called from two
    * points: context-built scope (pre-execution estimate, before any diff exists) and the actual
@@ -2999,8 +3147,13 @@ export class RunService {
     candidate: Candidate,
   ): Promise<CapabilityConcernProjection> {
     const registry = this.dependencies.capabilities;
+    const projectionContext = {
+      changedFiles: candidate.diff.changedFiles,
+      candidateId: candidate.id,
+      diffDigest: candidate.artifact.digest ?? "",
+    };
     if (!registry || registry.capabilityIds().length === 0) {
-      return { concerns: [], concernEvidence: [] };
+      return projectCapabilityConcerns([], projectionContext);
     }
     const diffDigest = candidate.artifact.digest;
     const capturedBaseRevision = candidate.artifact.metadata.baseRevision;
@@ -3052,7 +3205,7 @@ export class RunService {
       throw new Error("Active candidate changed during capability execution");
     }
 
-    const projection = projectCapabilityConcerns(results);
+    const projection = projectCapabilityConcerns(results, projectionContext);
     await this.event(run.id, "CapabilityEvidenceProduced", {
       candidateId: candidate.id,
       diffDigest,

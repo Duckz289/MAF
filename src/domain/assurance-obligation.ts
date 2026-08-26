@@ -1,6 +1,7 @@
 import type {
   AnalysisCoverage,
   AssuranceCheck,
+  AssurancePredicateIdentity,
   AssurancePlan,
   QualityPreference,
   RequirementOrigin,
@@ -100,6 +101,34 @@ export interface VerifierCapability {
   /** What a PASS from this capability explicitly does NOT establish. */
   doesNotEstablish: string;
 }
+
+/**
+ * Legacy plans used capability ids as their claim identity. New plans carry an explicit
+ * predicate, but retaining this narrow mapping keeps old persisted plans readable without
+ * treating every capability in a broad dimension as interchangeable.
+ */
+const predicateIdentityForCapability = (
+  capability: CapabilityId,
+): AssurancePredicateIdentity | undefined => {
+  switch (capability) {
+    case "CORRECTNESS.TRUSTED_COMMAND":
+    case "ARCHITECTURE.LAYER_BOUNDARY":
+    case "DEBT.DECLARED_MARKER_DELTA":
+    case "PERFORMANCE.MEASURED_METRIC":
+      return capability;
+    case "RESILIENCE.FAULT_SCENARIO_EXECUTION":
+      return "RESILIENCE.REQUIRED_SCENARIO_EXECUTION";
+    case "REVIEW.FRESH_CONTEXT_SESSION":
+      return capability;
+    case "SECURITY.CREDENTIAL_AND_SEMANTIC_SCAN":
+    case "SECURITY.CREDENTIAL_LITERAL_SCAN":
+    case "SECURITY.CONCERN_DISCOVERY":
+    case "SECURITY.NON_BEHAVIORAL_CHANGE_CLASSIFIER":
+      return "SECURITY.MATERIAL_CONCERN_DISCOVERY";
+    default:
+      return undefined;
+  }
+};
 
 /**
  * The capability registry: for each assurance check, the capability that can settle it — or
@@ -209,6 +238,8 @@ export interface AssuranceObligation {
   diffDigest: string | null;
   /** The capability that can settle it, or null when this build has none. */
   requiredCapability: CapabilityId | null;
+  /** Exact predicate the raising source requires. Broad check equality is not sufficient. */
+  requiredPredicate?: AssurancePredicateIdentity | undefined;
   /** The capability that actually produced the evidence, or null when nothing did. */
   producedBy: CapabilityId | null;
   status: ObligationStatus;
@@ -956,7 +987,21 @@ export const deriveAssuranceObligations = (
       );
       continue;
     }
-    const capability = capabilityForCheck(check);
+    const broadCapability = capabilityForCheck(check);
+    const declaredPredicates = plan.requiredPredicates?.[check];
+    // Plans produced before predicate identities existed retain their former exact-capability
+    // interpretation. New plans name the claim explicitly and fail closed if this build has only
+    // a checker in the same broad family that establishes a different fact.
+    const inferredPredicate = broadCapability
+      ? predicateIdentityForCapability(broadCapability.id)
+      : undefined;
+    const requiredPredicate = declaredPredicates?.[0];
+    const capability =
+      broadCapability &&
+      (declaredPredicates === undefined ||
+        (inferredPredicate !== undefined && declaredPredicates.includes(inferredPredicate)))
+        ? broadCapability
+        : null;
     if (!capability) {
       // Trust invariant B. A required check with no capability in this build — INTEGRATION,
       // CONCURRENCY, or a check added later and not yet wired — is unresolved, not absent. This
@@ -971,17 +1016,20 @@ export const deriveAssuranceObligations = (
         candidateId,
         diffDigest,
         requiredCapability: null,
+        ...(requiredPredicate ? { requiredPredicate } : {}),
         producedBy: null,
         status: "NOT_CHECKED",
         coverage: "NOT_APPLICABLE",
         evidence: [
           reason,
-          `no capability in this build can produce evidence for ${check}; the requirement is recorded as unresolved rather than dropped`,
+          broadCapability && requiredPredicate
+            ? `${broadCapability.id} exists in the ${check} family, but it establishes a different predicate than ${requiredPredicate}; category equality grants no substitution authority`
+            : `no capability in this build can produce evidence for ${requiredPredicate ?? check}; the requirement is recorded as unresolved rather than dropped`,
           material
             ? `${check} was raised by evidence about this candidate, so the unresolved obligation blocks promotion`
             : `${check} was raised by the quality preference rather than by evidence about this candidate; the capability gap is disclosed and does not by itself block promotion, because a depth preference cannot manufacture a concern that no candidate could ever discharge`,
         ],
-        justification: `${check} was required and no capability exists to establish it`,
+        justification: `${requiredPredicate ?? check} was required and no exact-predicate capability exists to establish it`,
       });
       continue;
     }
@@ -999,6 +1047,7 @@ export const deriveAssuranceObligations = (
         candidateId,
         diffDigest,
         requiredCapability: capability.id,
+        ...(requiredPredicate ? { requiredPredicate } : {}),
         producedBy: null,
         status: "NOT_CHECKED",
         coverage: "NOT_APPLICABLE",
@@ -1012,6 +1061,15 @@ export const deriveAssuranceObligations = (
     }
     const status = statusFromQuality(result);
     const coverage = result.coverage ?? "NOT_APPLICABLE";
+    const predicateMatches =
+      declaredPredicates === undefined ||
+      requiredPredicate === undefined ||
+      result.predicateIdentity === requiredPredicate ||
+      // Persisted pre-predicate quality records have no identity. Keep those records readable for
+      // legacy correctness/debt/performance checks; coupling impact is never allowed to inherit
+      // authority from an identity-less layer checker.
+      (result.predicateIdentity === undefined &&
+        requiredPredicate !== "ARCHITECTURE.COUPLING_IMPACT");
     // Trust invariant C, applied generically: a PASS only resolves what the producing capability
     // actually managed to read.
     //
@@ -1043,8 +1101,9 @@ export const deriveAssuranceObligations = (
       raisedBy === "CANDIDATE_EVIDENCE" &&
       depthShortfallBites(check, input.concerns) &&
       !meetsStrength(actualStrength, requiredStrength);
-    const covered =
-      status === "PASS" && coverage === "UNSUPPORTED"
+    const covered = !predicateMatches
+      ? "NOT_CHECKED"
+      : status === "PASS" && coverage === "UNSUPPORTED"
         ? "UNSUPPORTED"
         : partialUnderMaterial || strengthShortfall
           ? "UNKNOWN"
@@ -1057,11 +1116,17 @@ export const deriveAssuranceObligations = (
       candidateId,
       diffDigest,
       requiredCapability: capability.id,
-      producedBy: capability.id,
+      ...(requiredPredicate ? { requiredPredicate } : {}),
+      producedBy: predicateMatches ? capability.id : null,
       status: covered,
       coverage,
       evidence: [
         ...result.evidence,
+        ...(!predicateMatches
+          ? [
+              `${capability.id} produced ${result.predicateIdentity ?? "no predicate identity"}; the obligation requires ${requiredPredicate}. Evidence for one predicate cannot satisfy another predicate in the same ${check} category.`,
+            ]
+          : []),
         ...(partialUnderMaterial
           ? [
               `${capability.id} ran and found no signal, but only PARTIAL coverage of this material — its generic shapes transfer while the language's own idioms are not modelled. A no-signal result under partial coverage is preserved as evidence and is NOT a resolution of a material obligation.`,
@@ -1073,8 +1138,9 @@ export const deriveAssuranceObligations = (
             ]
           : []),
       ],
-      justification:
-        covered === "PASS"
+      justification: !predicateMatches
+        ? `${requiredPredicate} was required, but the available ${check} evidence established ${result.predicateIdentity ?? "no exact predicate"}`
+        : covered === "PASS"
           ? `${capability.id} established: ${capability.establishes}`
           : covered === "UNSUPPORTED"
             ? `${capability.id} could not read the material this obligation is about (coverage ${coverage}); it does not establish ${capability.doesNotEstablish}`

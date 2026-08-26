@@ -417,6 +417,13 @@ export class LocalWorktreeSandbox implements SandboxProvider {
       patch: patchParts.join(""),
       changedFiles,
       identityDigest: identity.digest("hex"),
+      candidateManifest: [...workspace.entries()]
+        .toSorted(([left], [right]) => left.localeCompare(right))
+        .map(([file, entry]) => ({
+          path: file,
+          mode: entry.mode as "100644" | "100755" | "120000",
+          digest: entry.digest,
+        })),
     };
   }
 

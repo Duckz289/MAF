@@ -19,6 +19,8 @@ import type { ProjectBrain, RunStore } from "../domain/ports";
 import { projectIdentity } from "../domain/project-identity";
 import type { RepositoryIntelligenceProvider } from "../domain/repository-intelligence";
 import { redactSensitiveData } from "../domain/security";
+import { assessVerificationAuthority } from "../domain/verification-evidence";
+import { normalizeVerificationSpecification } from "../domain/verification-spec";
 import { assertWorkItemCannotMutateTrust } from "../domain/work";
 import { FileSystemAgentSkillRegistry } from "../infrastructure/agent-skill-registry";
 import { AntigravityCliAdapter } from "../infrastructure/antigravity-cli-adapter";
@@ -76,6 +78,16 @@ const createRunSchema = z.object({
       expectedFile: z.string().max(1_000).optional(),
       timeoutMs: z.number().int().positive().max(600_000).optional(),
     })
+    .superRefine((value, context) => {
+      const normalized = normalizeVerificationSpecification(value);
+      for (const reason of normalized.invalidReasons) {
+        context.addIssue({ code: "custom", message: reason });
+      }
+    })
+    .optional(),
+  missionBinding: z
+    .object({ missionId: z.string().min(1).max(200), nodeId: z.string().min(1).max(200) })
+    .strict()
     .optional(),
   performance: z
     .object({
@@ -553,7 +565,19 @@ export const createApp = async (): Promise<AppRuntime> => {
   }));
   app.post("/api/v1/runs", async (request, reply) => {
     const body = createRunSchema.parse(request.body);
+    if (body.missionBinding) {
+      // Resolve before creating durable work so a typo cannot mint an unbound mission claim.
+      missions.node(body.missionBinding.missionId, body.missionBinding.nodeId);
+    }
     const run = await runs.create(body);
+    if (body.missionBinding) {
+      missions.bindExecution(
+        body.missionBinding.missionId,
+        body.missionBinding.nodeId,
+        run.taskId,
+        run.id,
+      );
+    }
     return reply.code(202).send(run);
   });
   app.get("/api/v1/runs", async () => runs.listSummaries());
@@ -670,7 +694,7 @@ export const createApp = async (): Promise<AppRuntime> => {
           type: "RECOVERY",
           runId: run.id,
           task: run.task,
-          repositoryPath: run.repositoryPath,
+          projectId: projectIdentity(run.repositoryPath),
           updatedAt: run.updatedAt,
           recoveryReason: capsule?.recoveryReason ?? "UNKNOWN_FAILURE",
           recoveryDetail: capsule?.recoveryDetail,
@@ -684,7 +708,7 @@ export const createApp = async (): Promise<AppRuntime> => {
           type: "ASSURANCE_BLOCKED",
           runId: run.id,
           task: run.task,
-          repositoryPath: run.repositoryPath,
+          projectId: projectIdentity(run.repositoryPath),
           updatedAt: run.updatedAt,
         });
         continue;
@@ -696,7 +720,7 @@ export const createApp = async (): Promise<AppRuntime> => {
             type: "DELIVERY",
             runId: run.id,
             task: run.task,
-            repositoryPath: run.repositoryPath,
+            projectId: projectIdentity(run.repositoryPath),
             updatedAt: run.updatedAt,
             mergeEligibility: delivery.mergeEligibility,
             knownWarnings: delivery.handoff.knownWarnings,
@@ -706,7 +730,7 @@ export const createApp = async (): Promise<AppRuntime> => {
             type: "AWAITING_REVIEW",
             runId: run.id,
             task: run.task,
-            repositoryPath: run.repositoryPath,
+            projectId: projectIdentity(run.repositoryPath),
             updatedAt: run.updatedAt,
           });
         }
@@ -1048,8 +1072,11 @@ export const createApp = async (): Promise<AppRuntime> => {
       store.listArtifacts(body.runId),
       store.listVerifications(body.runId),
     ]);
+    const task = run ? await store.getTask(run.taskId) : undefined;
+    const missionNode = missions.node(request.params.id, body.nodeId);
     if (
       !run ||
+      !task ||
       !handoff ||
       run.state !== "COMPLETED" ||
       run.verificationState !== "VERIFIED" ||
@@ -1057,6 +1084,21 @@ export const createApp = async (): Promise<AppRuntime> => {
       handoff.trustState !== "MERGE_ELIGIBLE"
     ) {
       throw new Error("Mission promotion requires a canonical merge-eligible run handoff");
+    }
+    const executionBinding = missionNode.executionBinding;
+    if (
+      executionBinding?.missionId !== request.params.id ||
+      executionBinding.nodeId !== body.nodeId ||
+      executionBinding.runId !== run.id ||
+      executionBinding.taskId !== task.id ||
+      task.missionBinding?.missionId !== request.params.id ||
+      task.missionBinding.nodeId !== body.nodeId ||
+      run.missionBinding?.missionId !== request.params.id ||
+      run.missionBinding.nodeId !== body.nodeId
+    ) {
+      throw new Error(
+        "Mission promotion requires the run that was bound to this exact mission node",
+      );
     }
     const artifact = artifacts.find(
       (item) =>
@@ -1072,6 +1114,16 @@ export const createApp = async (): Promise<AppRuntime> => {
     );
     if (!artifact?.digest || !verification) {
       throw new Error("Mission promotion evidence binding is incomplete or inconsistent");
+    }
+    const authority = assessVerificationAuthority({
+      verification,
+      specification: task.verification,
+      candidateDigest: artifact.digest,
+    });
+    if (!authority.authorized) {
+      throw new Error(
+        `Mission promotion verification authority is insufficient: ${authority.reasons.join("; ")}`,
+      );
     }
     missions.bindVerification(
       request.params.id,

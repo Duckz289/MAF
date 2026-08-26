@@ -85,6 +85,12 @@ export interface CapabilityConcernProjection {
   concernEvidence: ConcernEvidence[];
 }
 
+export interface CapabilityProjectionContext {
+  changedFiles: string[];
+  candidateId: string;
+  diffDigest: string;
+}
+
 interface ExecuteCapabilityOptions {
   registry: CapabilityRegistry;
   input: CapabilityInput;
@@ -386,6 +392,7 @@ const findingSeverityRank: Record<CapabilityFinding["severity"], number> = {
  */
 export const projectCapabilityConcerns = (
   results: NormalizedCapabilityEvidence[],
+  context?: CapabilityProjectionContext,
 ): CapabilityConcernProjection => {
   const concerns: DiscoveredConcern[] = [];
   const concernEvidence: ConcernEvidence[] = [];
@@ -447,6 +454,62 @@ export const projectCapabilityConcerns = (
         diffDigest: result.diffDigest,
       });
     }
+  }
+
+  // A changed dependency inventory raises a question even when an optional scanner is absent or
+  // silent. The configured advisory scanner currently has positive-finding authority only: its database/ruleset and
+  // inventory coverage are not attested strongly enough for silence to establish clean absence.
+  // Keeping this as a typed residual obligation prevents provider availability from deciding
+  // whether dependency risk exists at all.
+  const dependencyInventoryPattern =
+    /(^|\/)(?:package\.json|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.ya?ml|yarn\.lock|bun\.lockb?|requirements(?:\.[^/]+)?\.txt|poetry\.lock|Pipfile\.lock|uv\.lock|Cargo\.lock|go\.sum|composer\.lock|Gemfile\.lock)$/iu;
+  for (const file of (context?.changedFiles ?? [])
+    .map((item) => item.replace(/\\/gu, "/"))
+    .filter((item) => dependencyInventoryPattern.test(item))
+    .toSorted()) {
+    concerns.push({
+      concern: "SECURITY.DEPENDENCY_VULNERABILITY",
+      file,
+      languageClass: languageClassOf(file),
+      evidence:
+        "dependency inventory changed; bounded known-vulnerability absence has not been established",
+      obligationAtomIdentities: [`dependency-inventory:${file}`],
+    });
+
+    const scanner = orderedResults.find(
+      (result) =>
+        result.capabilityId === "SECURITY.DEPENDENCY_VULNERABILITY_SCAN" &&
+        result.candidateId === context?.candidateId &&
+        result.diffDigest === context?.diffDigest,
+    );
+    if (!scanner) continue;
+    const inventoryAnalyzed = scanner.analyzedFiles
+      .map((item) => item.replace(/\\/gu, "/"))
+      .includes(file);
+    concernEvidence.push({
+      concern: "SECURITY.DEPENDENCY_VULNERABILITY",
+      producedBy: "SECURITY.DEPENDENCY_VULNERABILITY_SCAN",
+      outcome: "NOT_CHECKED",
+      claim: "NEGATIVE_ABSENCE",
+      completeness:
+        scanner.binding === "MATCHED" && scanner.outcome === "COMPLETED" && inventoryAnalyzed
+          ? "COMPLETE"
+          : "INCOMPLETE",
+      coverage: scanner.coverage,
+      strength: "STRUCTURAL",
+      analysisScope: inventoryAnalyzed
+        ? `the changed dependency inventory ${file}`
+        : `no complete scan of the changed dependency inventory ${file}`,
+      evidence: [
+        scanner.justification,
+        scanner.rulesetDigest
+          ? `provider ruleset identity: ${scanner.rulesetDigest}`
+          : "provider did not supply a promotion-authoritative advisory database/ruleset identity",
+        "this capability may report concrete advisory matches but is not authorized to claim vulnerability absence",
+      ],
+      candidateId: context?.candidateId,
+      diffDigest: context?.diffDigest,
+    });
   }
   return { concerns, concernEvidence };
 };

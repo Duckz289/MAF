@@ -170,6 +170,12 @@ export interface SandboxDiff {
   changedFiles: string[];
   /** SHA-256 of the literal verification-workspace manifest, independent of Git presentation. */
   identityDigest?: string;
+  /**
+   * Content-free manifest captured in the same transaction as identityDigest. Infrastructure may
+   * use it to prove that a fresh verification materialization contains the exact candidate bytes;
+   * it carries digests and modes, never file contents or host paths.
+   */
+  candidateManifest?: Array<{ path: string; mode: "100644" | "100755" | "120000"; digest: string }>;
 }
 
 export interface SandboxProvider {
@@ -592,6 +598,8 @@ export interface TelemetryRecord {
   filesChanged: number;
   verificationType: string;
   verificationState: string;
+  verificationSpecIdentity?: string;
+  verificationEnvironmentIdentity?: string;
   modeTransitions: number;
   strictReexpansions: number;
   signalSnapshots: number;

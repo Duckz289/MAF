@@ -79,6 +79,7 @@ export interface MissionContract {
     deterministicVerification: "REQUIRED";
     specificationStatus: "EXPLICIT" | "UNSPECIFIED";
     specification: VerificationSpec;
+    specificationIdentity: string;
     expectedEvidence: string[];
   };
   contextPolicy: {

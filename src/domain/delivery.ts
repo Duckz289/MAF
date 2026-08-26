@@ -107,6 +107,12 @@ export const buildDeliveryHandoff = (input: BuildDeliveryHandoffInput): Delivery
     input.run.verificationState !== "VERIFIED" ||
     input.verification.state !== "VERIFIED" ||
     input.verification.candidateId !== input.candidate.id ||
+    // An explicit negative authority decision is terminal for delivery. Canonical normalized-local
+    // evidence also needs the full environment binding; legacy adapter records may still be
+    // retained as blocked delivery evidence, but they cannot pass the mission promotion boundary.
+    input.verification.authority?.authorized === false ||
+    (input.verification.type === "normalized-local" &&
+      (!input.verification.environment || input.verification.authority?.authorized !== true)) ||
     !digest ||
     typeof baseRevision !== "string" ||
     !input.run.trustState

@@ -8,6 +8,7 @@ import {
 import type {
   AnalysisCoverage,
   AssuranceCheck,
+  AssurancePredicateIdentity,
   AssurancePlan,
   QualityPreference,
 } from "./assurance";
@@ -23,6 +24,7 @@ import { deriveAssuranceQuestionEvidence } from "./assurance-question-evidence";
 import { deriveDiscoveryAdequacyEvidence } from "./discovery-adequacy";
 import { deriveSecurityPosture } from "./security";
 import type { TrustState, VerificationState } from "./types";
+import { normalizeVerificationSpecification } from "./verification-spec";
 
 /**
  * Quality Gate: separate from the Correctness Gate (the existing trusted-verifier pass/fail).
@@ -72,6 +74,8 @@ export interface QualityCheckResult {
    * reads everything it needs or reports NOT_CHECKED).
    */
   coverage?: AnalysisCoverage;
+  /** Exact predicate this result establishes; dimension equality alone grants no authority. */
+  predicateIdentity?: AssurancePredicateIdentity;
 }
 
 export type QualityReport = Record<QualityDimension, QualityCheckResult>;
@@ -112,11 +116,13 @@ const deterministic = (
   state: QualityCheckState,
   evidence: string[],
   coverage?: AnalysisCoverage,
+  predicateIdentity?: AssurancePredicateIdentity,
 ): QualityCheckResult => ({
   state,
   evidence,
   provenance: "DETERMINISTIC",
   ...(coverage ? { coverage } : {}),
+  ...(predicateIdentity ? { predicateIdentity } : {}),
 });
 
 const notRequiredResult = (plan: AssurancePlan, check: AssuranceCheck): QualityCheckResult =>
@@ -131,17 +137,30 @@ const deriveCorrectness = (
   exitCode: number | null | undefined,
 ): QualityCheckResult => {
   if (!command && !expectedFile) {
-    return deterministic("NOT_CHECKED", [
-      "no verification command or expected-file assertion was configured",
-    ]);
+    return deterministic(
+      "NOT_CHECKED",
+      ["no verification command or expected-file assertion was configured"],
+      undefined,
+      "CORRECTNESS.TRUSTED_COMMAND",
+    );
   }
   return verificationState === "VERIFIED"
-    ? deterministic("PASS", [
-        command
-          ? `verification command exited ${exitCode ?? 0}`
-          : "expected-file verification succeeded",
-      ])
-    : deterministic("FAIL", [`trusted verification state is ${verificationState}, not VERIFIED`]);
+    ? deterministic(
+        "PASS",
+        [
+          command
+            ? `verification command exited ${exitCode ?? 0}`
+            : "expected-file verification succeeded",
+        ],
+        undefined,
+        "CORRECTNESS.TRUSTED_COMMAND",
+      )
+    : deterministic(
+        "FAIL",
+        [`trusted verification state is ${verificationState}, not VERIFIED`],
+        undefined,
+        "CORRECTNESS.TRUSTED_COMMAND",
+      );
 };
 
 /**
@@ -189,10 +208,16 @@ const deriveArchitecture = (
           : []),
       ],
       coverage,
+      "ARCHITECTURE.LAYER_BOUNDARY",
     );
   }
   if (!requiredCheck(plan, "ARCHITECTURE")) {
-    return deterministic("NOT_REQUIRED", [plan.reasons.ARCHITECTURE, governanceEvidence], coverage);
+    return deterministic(
+      "NOT_REQUIRED",
+      [plan.reasons.ARCHITECTURE, governanceEvidence],
+      coverage,
+      "ARCHITECTURE.LAYER_BOUNDARY",
+    );
   }
   if (coverage === "PARTIAL" || coverage === "UNSUPPORTED") {
     return deterministic(
@@ -202,6 +227,7 @@ const deriveArchitecture = (
         `${coverage} architecture coverage: the changed domain scope includes material the TypeScript/JavaScript layering checker cannot inspect`,
       ],
       coverage,
+      "ARCHITECTURE.LAYER_BOUNDARY",
     );
   }
   return deterministic(
@@ -211,6 +237,7 @@ const deriveArchitecture = (
       "architecture is derived only from the captured candidate; context-window width is not evidence about candidate quality",
     ],
     coverage,
+    "ARCHITECTURE.LAYER_BOUNDARY",
   );
 };
 
@@ -491,6 +518,27 @@ export const deriveQualityReport = (input: QualityReportInput): QualityReport =>
     performancePosture,
     resiliencePosture,
   } = input;
+  // Quality is another consumer of verification authority. Normalize here as well as at the
+  // API/verifier boundary so a direct domain caller cannot turn whitespace or an invalid
+  // expected-file path into a correctness PASS by supplying a truthy raw string.
+  const verificationSpecification = normalizeVerificationSpecification({
+    ...(verificationCommand !== null && verificationCommand !== undefined
+      ? { command: verificationCommand }
+      : {}),
+    ...(verificationExpectedFile !== null && verificationExpectedFile !== undefined
+      ? { expectedFile: verificationExpectedFile }
+      : {}),
+  });
+  const normalizedVerificationCommand =
+    verificationSpecification.status === "CONFIGURED"
+      ? (verificationSpecification.command ?? null)
+      : null;
+  const normalizedVerificationExpectedFile =
+    verificationSpecification.status === "CONFIGURED"
+      ? (verificationSpecification.expectedFile ?? null)
+      : null;
+  const normalizedVerificationState: VerificationState =
+    verificationSpecification.status === "CONFIGURED" ? verificationState : "NOT_CHECKED";
   const debt = deriveDebtDelta(diffPatch);
   const debtEntries = parseFilePatches(diffPatch).filter((entry) =>
     /\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|kt|rb|php|cs|swift|scala|sh|ps1)$/u.test(entry.file),
@@ -512,9 +560,9 @@ export const deriveQualityReport = (input: QualityReportInput): QualityReport =>
 
   return {
     Correctness: deriveCorrectness(
-      verificationState,
-      verificationCommand,
-      verificationExpectedFile,
+      normalizedVerificationState,
+      normalizedVerificationCommand,
+      normalizedVerificationExpectedFile,
       verificationExitCode,
     ),
     Architecture: deriveArchitecture(assurancePlan, preExecutionRisk, diffRisk, diffPatch),
@@ -527,10 +575,16 @@ export const deriveQualityReport = (input: QualityReportInput): QualityReport =>
             state: performancePosture.state,
             evidence: performancePosture.evidence,
             provenance: performancePosture.state === "NOT_CHECKED" ? "DETERMINISTIC" : "MEASURED",
+            predicateIdentity: "PERFORMANCE.MEASURED_METRIC",
           }
-        : deterministic("NOT_CHECKED", [
-            "required by the assurance plan; no candidate-bound performance measurement was produced",
-          ]),
+        : deterministic(
+            "NOT_CHECKED",
+            [
+              "required by the assurance plan; no candidate-bound performance measurement was produced",
+            ],
+            undefined,
+            "PERFORMANCE.MEASURED_METRIC",
+          ),
     Resilience: !requiredCheck(assurancePlan, "RESILIENCE")
       ? notRequiredResult(assurancePlan, "RESILIENCE")
       : resiliencePosture
@@ -575,6 +629,7 @@ export const deriveQualityReport = (input: QualityReportInput): QualityReport =>
       ],
       provenance: "DETERMINISTIC",
       coverage: debtCoverage,
+      predicateIdentity: "DEBT.DECLARED_MARKER_DELTA",
     },
   };
 };

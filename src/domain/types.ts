@@ -75,6 +75,10 @@ export interface Task {
   revision: string;
   createdAt: string;
   verification: VerificationSpec;
+  /** Identity of the canonical normalized verification specification persisted with this task. */
+  verificationSpecIdentity?: string;
+  /** Explicit registry mission/node scope this task was created to execute. */
+  missionBinding?: { missionId: string; nodeId: string };
   /** Optional trusted baseline/candidate command used only when the assurance plan requires it. */
   performance?: PerformanceSpec;
   /** Optional trusted fault-injection command used only when the assurance plan requires it. */
@@ -148,6 +152,10 @@ export interface Run {
   /** The mode actually enforced on the current/next agent session, backed by evidence. */
   effectiveMode: ExecutionMode;
   verificationState: VerificationState;
+  /** Canonical verification-spec identity used by this run. */
+  verificationSpecIdentity?: string;
+  /** Mirror of the task's explicit mission/node scope; never inferred from a later handoff. */
+  missionBinding?: { missionId: string; nodeId: string };
   /** Derived (M6) from verification + quality report + any required independent review. */
   trustState?: TrustState;
   agent: string;
@@ -252,6 +260,14 @@ export interface Verification {
   completedAt: string;
   attempt?: number;
   candidateId?: string;
+  /** Deterministic identity of the canonical, normalized verification specification. */
+  verificationSpecIdentity?: string;
+  /** Literal candidate-material digest the verifier started from. */
+  candidateDigest?: string;
+  /** Honest local environment binding; absent/insufficient evidence cannot authorize promotion. */
+  environment?: VerificationEnvironmentBinding;
+  /** Canonical-bound verifiers set this explicitly; legacy injected ports may be unbound. */
+  authority?: { authorized: boolean; reasons: string[] };
   /**
    * Structured execution evidence produced at the verifier boundary — the only place that knows
    * which shell ran and whether the verification command's NAME resolved inside it. Output-text
@@ -261,6 +277,25 @@ export interface Verification {
    * attribution ahead of any output regex.
    */
   execution?: VerifierExecutionEvidence;
+}
+
+export interface VerificationEnvironmentBinding {
+  /** Digest over the bounded fields below. This is not a claim that the whole host is sealed. */
+  identity: string;
+  identityQuality: "BOUNDED" | "UNKNOWN";
+  promotionAuthority: "BOUNDED_LOCAL" | "INSUFFICIENT";
+  materialization: "FRESH_CANDIDATE_MATERIALIZATION" | "UNAVAILABLE";
+  candidateContainment: "WORKSPACE_CONTAINED" | "INSUFFICIENT";
+  gitMetadata: "EXCLUDED" | "UNKNOWN";
+  filesystemIsolation: "FRESH_ROOT_WITH_STATIC_ESCAPE_GUARD" | "NOT_ESTABLISHED";
+  externalToolchain: "OPERATOR_PATH_ALLOWED" | "UNKNOWN";
+  temporaryArtifacts: "DEDICATED_EXTERNAL_TEMP_ALLOWED" | "UNKNOWN";
+  platform: string;
+  architecture: string;
+  harnessRuntime: string;
+  shell: string;
+  dependencyManifestDigests: Array<{ path: string; digest: string }>;
+  unknowns: string[];
 }
 
 export interface VerifierExecutionEvidence {

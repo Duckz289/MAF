@@ -207,8 +207,8 @@ export class PostgresRunStore implements RunStore {
     await this.pool.query(
       `INSERT INTO verifications(
          id, run_id, type, state, command, exit_code, output, started_at, completed_at,
-         attempt, candidate_id
-       ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+         attempt, candidate_id, verification_spec_identity, candidate_digest, environment, authority
+       ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
       [
         verification.id,
         verification.runId,
@@ -221,6 +221,10 @@ export class PostgresRunStore implements RunStore {
         verification.completedAt,
         verification.attempt ?? 1,
         verification.candidateId ?? null,
+        verification.verificationSpecIdentity ?? null,
+        verification.candidateDigest ?? null,
+        verification.environment ? JSON.stringify(verification.environment) : null,
+        verification.authority ? JSON.stringify(verification.authority) : null,
       ],
     );
   }
@@ -229,7 +233,9 @@ export class PostgresRunStore implements RunStore {
     const result = await this.pool.query<Verification>(
       `SELECT id, run_id AS "runId", type, state, command, exit_code AS "exitCode", output,
               started_at::text AS "startedAt", completed_at::text AS "completedAt",
-              attempt, candidate_id AS "candidateId"
+              attempt, candidate_id AS "candidateId",
+              verification_spec_identity AS "verificationSpecIdentity",
+              candidate_digest AS "candidateDigest", environment, authority
        FROM verifications WHERE run_id=$1 ORDER BY attempt, started_at`,
       [runId],
     );

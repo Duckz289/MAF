@@ -650,7 +650,14 @@ export class ControlCenterService {
           redactSensitiveData(verification.output),
           CONTROL_CENTER_PAGE.evidencePreviewChars,
         ),
-        authority: verification.state === "VERIFIED" ? "VERIFIED" : "UNKNOWN",
+        authority:
+          verification.state === "VERIFIED" &&
+          verification.environment &&
+          verification.authority?.authorized === true
+            ? "VERIFIED"
+            : verification.state === "VERIFIED"
+              ? "DETERMINISTIC"
+              : "UNKNOWN",
       });
     }
     for (const event of events) {
@@ -666,8 +673,9 @@ export class ControlCenterService {
           status,
           tone: checkOutcomeTone(status),
           summary: asString(row.justification) ?? asString(row.id) ?? "obligation",
-          authority:
-            status === "PASS" ? "VERIFIED" : status === "UNKNOWN" ? "UNKNOWN" : "DETERMINISTIC",
+          // A PASS is authority for this one obligation/check only, not verifier authority over
+          // the whole candidate.
+          authority: status === "UNKNOWN" ? "UNKNOWN" : "DETERMINISTIC",
         });
       }
     }
@@ -1008,7 +1016,14 @@ export class ControlCenterService {
         detail: verification
           ? `Verification ${verification.id} ${verification.state}`
           : "Verification was not executed",
-        authority: verification?.state === "VERIFIED" ? "VERIFIED" : "UNKNOWN",
+        authority:
+          verification?.state === "VERIFIED" &&
+          verification.environment &&
+          verification.authority?.authorized === true
+            ? "VERIFIED"
+            : verification?.state === "VERIFIED"
+              ? "DETERMINISTIC"
+              : "UNKNOWN",
       },
       {
         stage: "EVIDENCE",

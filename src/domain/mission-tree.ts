@@ -9,6 +9,13 @@ export interface MissionTrustBinding {
   verificationId: string;
 }
 
+export interface MissionExecutionBinding {
+  missionId: string;
+  nodeId: string;
+  taskId: string;
+  runId: string;
+}
+
 export interface MissionNode {
   id: string;
   parentId?: string | undefined;
@@ -21,6 +28,8 @@ export interface MissionNode {
   inputs: string[];
   outputs: string[];
   verificationState: VerificationState;
+  /** Server-owned declaration of which task/run actually executed this mission node. */
+  executionBinding?: MissionExecutionBinding | undefined;
   /**
    * The candidate's assurance verdict, when one was produced for this node.
    *
@@ -87,6 +96,14 @@ const handoffBlockedReason = (node: MissionNode): string | undefined => {
   if (node.trustState !== undefined && node.trustBinding === undefined) {
     return "the assurance verdict has no server-owned run/candidate/verification identity binding";
   }
+  if (
+    node.trustState !== undefined &&
+    node.trustBinding !== undefined &&
+    node.executionBinding !== undefined &&
+    node.trustBinding.runId !== node.executionBinding.runId
+  ) {
+    return "the assurance verdict comes from a different run than the mission node execution binding";
+  }
   if (node.trustState === undefined && node.legacyTrustBasis !== true) {
     // Finding H4: a current record with no verdict and no explicit legacy declaration. Falling
     // back to correctness-only here is what let a forgotten field buy the weaker rule, so the
@@ -151,6 +168,30 @@ export class MissionTree {
     this.refreshGates();
   }
 
+  bindExecution(
+    missionId: string,
+    id: string,
+    taskId: string,
+    runId: string,
+  ): MissionExecutionBinding {
+    const node = this.requireNode(id);
+    const binding = { missionId, nodeId: id, taskId, runId };
+    if (node.executionBinding !== undefined) {
+      const current = node.executionBinding;
+      if (
+        current.missionId !== binding.missionId ||
+        current.nodeId !== binding.nodeId ||
+        current.taskId !== binding.taskId ||
+        current.runId !== binding.runId
+      ) {
+        throw new Error(`Mission node ${id} is already bound to a different task/run`);
+      }
+      return structuredClone(current);
+    }
+    node.executionBinding = structuredClone(binding);
+    return binding;
+  }
+
   collapse(parentId: string): void {
     const parent = this.requireNode(parentId);
     for (const node of this.nodes.values()) {
@@ -177,6 +218,14 @@ export class MissionTree {
     trustBinding?: MissionTrustBinding,
   ): void {
     const node = this.requireNode(id);
+    if (trustState !== undefined) {
+      if (
+        node.executionBinding !== undefined &&
+        (trustBinding === undefined || trustBinding.runId !== node.executionBinding.runId)
+      ) {
+        throw new Error(`Mission node ${id} trust evidence is bound to a different run`);
+      }
+    }
     node.verificationState = state;
     if (trustState !== undefined) node.trustState = trustState;
     if (trustBinding !== undefined) node.trustBinding = structuredClone(trustBinding);

@@ -9,7 +9,7 @@ export type Tone = "success" | "danger" | "warning" | "informative" | "subtle";
 
 export const qualityStateLabel = (state: string | undefined): string =>
   ({
-    PASS: "Đã xác minh",
+    PASS: "Đạt",
     FAIL: "Không đạt",
     WARN: "Có cảnh báo",
     NOT_REQUIRED: "Không yêu cầu",

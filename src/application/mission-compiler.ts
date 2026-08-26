@@ -1,5 +1,9 @@
 import { deterministicDigest } from "../domain/deterministic-identity";
 import {
+  normalizeVerificationSpecification,
+  verificationSpecificationForPersistence,
+} from "../domain/verification-spec";
+import {
   type AuthorityCapability,
   defaultMissionAuthority,
   type MissionCompilationRequest,
@@ -34,6 +38,12 @@ export const compileMissionContract = (request: MissionCompilationRequest): Miss
   const expectedEvidence = boundedList("Mission expected evidence", request.expectedEvidence, 100);
   const skills = boundedList("Mission skills", request.skillIds, 32);
   const requestedAuthority = [...new Set(request.requestedAuthority ?? [])];
+  const verification = normalizeVerificationSpecification(request.verification);
+  if (verification.status === "INVALID") {
+    throw new Error(
+      `Invalid verification specification: ${verification.invalidReasons.join("; ")}`,
+    );
+  }
   // MAF owns the executable baseline. A user request is preserved for audit, but it can neither
   // add dangerous authority nor make the contract contradict the sandbox tools MAF will supply.
   const effectiveGranted = [...defaultMissionAuthority.granted];
@@ -99,11 +109,9 @@ export const compileMissionContract = (request: MissionCompilationRequest): Miss
     },
     verificationRequirements: {
       deterministicVerification: "REQUIRED",
-      specificationStatus:
-        request.verification.command || request.verification.expectedFile
-          ? "EXPLICIT"
-          : "UNSPECIFIED",
-      specification: structuredClone(request.verification),
+      specificationStatus: verification.status === "CONFIGURED" ? "EXPLICIT" : "UNSPECIFIED",
+      specification: verificationSpecificationForPersistence(verification),
+      specificationIdentity: verification.identity,
       expectedEvidence,
     },
     contextPolicy: {

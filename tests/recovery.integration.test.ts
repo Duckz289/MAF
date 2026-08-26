@@ -75,7 +75,13 @@ describe("recovery plane", () => {
       desiredMode: "GUIDED",
       effectiveMode: "GUIDED",
       verificationState: "VERIFYING",
-      trustState: "PROPOSED",
+      trustState: "MERGE_ELIGIBLE",
+      deliveryHandoffBinding: {
+        handoffId: "restart-handoff",
+        candidateId: "restart-candidate",
+        candidateDigest: "restart-digest",
+        payloadDigest: "restart-payload",
+      },
       agent: "fixture",
       model: "fixture",
       provider: "fixture",
@@ -90,10 +96,13 @@ describe("recovery plane", () => {
     await store.createRun(run);
 
     expect(await service.reconcileInterruptedRuns()).toBe(1);
-    await expect(service.get(run.id)).resolves.toMatchObject({
+    const reconciled = await service.get(run.id);
+    expect(reconciled).toMatchObject({
       state: "PAUSED",
       verificationState: "NOT_CHECKED",
     });
+    expect(reconciled?.trustState).toBeUndefined();
+    expect(reconciled?.deliveryHandoffBinding).toBeUndefined();
     await expect(service.recoveryCapsule(run.id)).resolves.toMatchObject({
       recoveryReason: "PROCESS_RESTART",
       safetyCountersUsed: { recoveryAttempts: 1 },
