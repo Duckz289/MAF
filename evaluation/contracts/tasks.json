@@ -169,35 +169,35 @@
   },
   {
     "phase": "phase-c",
-    "id": "b3-config-provider-boundary-trace",
+    "id": "notification-settings-regression",
     "category": "band3",
     "difficulty": "context",
     "band": "band3"
   },
   {
     "phase": "phase-c",
-    "id": "b3-dead-code-vs-live-discount-path",
+    "id": "discount-result-regression",
     "category": "band3",
     "difficulty": "context",
     "band": "band3"
   },
   {
     "phase": "phase-c",
-    "id": "b3-decoy-cache-source-of-truth",
+    "id": "subscription-price-mismatch",
     "category": "band3",
     "difficulty": "context",
     "band": "band3"
   },
   {
     "phase": "phase-c",
-    "id": "b3-duplicate-service-owner",
+    "id": "task-update-duplication",
     "category": "band3",
     "difficulty": "context",
     "band": "band3"
   },
   {
     "phase": "phase-c",
-    "id": "b3-event-handler-owner-trace",
+    "id": "completion-state-regression",
     "category": "band3",
     "difficulty": "context",
     "band": "band3"
