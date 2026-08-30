@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import type { Sandbox, SandboxDiff, VerifierPort } from "../domain/ports";
 import type {
@@ -20,6 +20,42 @@ const shellCommand = (): { command: string; prefix: string[] } =>
   process.platform === "win32"
     ? { command: "powershell", prefix: ["-NoProfile", "-NonInteractive", "-Command"] }
     : { command: "/bin/sh", prefix: ["-lc"] };
+
+const safeExpectedFile = async (root: string, expectedFile: string): Promise<string> => {
+  if (
+    expectedFile.length === 0 ||
+    expectedFile.includes("\0") ||
+    path.posix.isAbsolute(expectedFile) ||
+    path.win32.isAbsolute(expectedFile) ||
+    /^[a-z]:/iu.test(expectedFile)
+  ) {
+    throw new Error("Expected file must be a normal repository-relative path");
+  }
+  const resolvedRoot = await realpath(root);
+  const target = path.resolve(resolvedRoot, expectedFile);
+  const relative = path.relative(resolvedRoot, target);
+  if (relative === "" || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error("Expected file escapes the sandbox");
+  }
+  let canonicalTarget: string;
+  try {
+    canonicalTarget = await realpath(target);
+  } catch {
+    throw new Error("Expected file cannot be resolved");
+  }
+  const canonicalRelative = path.relative(resolvedRoot, canonicalTarget);
+  if (
+    canonicalRelative === "" ||
+    canonicalRelative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(canonicalRelative)
+  ) {
+    throw new Error("Expected file escapes the sandbox");
+  }
+  if (!(await stat(canonicalTarget)).isFile()) {
+    throw new Error("Expected path is not a regular file");
+  }
+  return canonicalTarget;
+};
 
 const commandResolutionFailed = (
   shellCommandName: string,
@@ -148,12 +184,13 @@ export class CommandVerifier implements VerifierPort {
     let execution: VerifierExecutionEvidence | undefined;
     try {
       if (specification.expectedFile) {
-        const target = path.resolve(materialization.rootPath, specification.expectedFile);
-        const exists = existsSync(target);
-        exitCode = exists ? 0 : 1;
-        output += exists
-          ? `Found ${specification.expectedFile}`
-          : `Missing ${specification.expectedFile}`;
+        try {
+          await safeExpectedFile(materialization.rootPath, specification.expectedFile);
+          output += `Found ${specification.expectedFile}`;
+        } catch (error) {
+          exitCode = 1;
+          output += `${output ? "\n" : ""}${error instanceof Error ? error.message : String(error)}`;
+        }
       }
 
       if (specification.command) {
