@@ -1,8 +1,11 @@
-# b3-config-provider-boundary-trace
+# notification-settings-regression
 
-This task is part of the NEWLY_AUTHORED_RECONSTRUCTION benchmark. Modify the public repository to satisfy the behavior demonstrated by its existing entrypoint and source seed. Preserve existing public API compatibility and keep unrelated behavior unchanged.
+Digest delivery ignores request-level settings. For example, five items requested with a batch
+size of two must produce three ordered deliveries, but the application behaves as though the
+default batch size were still active.
 
-## Acceptance
-
-The entrypoint must complete successfully for its documented scenario, and the implementation must generalize to equivalent valid inputs rather than hard-coding the displayed example.
-Public source files currently include: bin\demo.mjs, src\bootstrap.mjs, src\admin\admin-report.mjs, src\admin\admin-task-controller.mjs, src\analytics\event-logger.mjs, src\analytics\report-builder.mjs
+Restore request-level configuration precedence without changing the default configuration.
+`sendDigest(user, items, settings)` must preserve item order, use a positive integer
+`notificationDigestBatchSize`, and leave both the items and settings objects unchanged. Calls
+without a batch-size override must continue to use the default of ten. Preserve existing public
+APIs and unrelated configuration values.

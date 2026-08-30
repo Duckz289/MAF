@@ -28,11 +28,7 @@
   },
   "band3OrientationAudit": {
     "required": true,
-    "classifications": [
-      "CONTEXT_TEST_STRONG",
-      "CONTEXT_TEST_WEAK",
-      "NOT_A_CONTEXT_TEST"
-    ],
+    "classifications": ["CONTEXT_TEST_STRONG", "CONTEXT_TEST_WEAK", "NOT_A_CONTEXT_TEST"],
     "notAContextTestAction": "redesign before frontier use"
   },
   "validation": {
@@ -42,12 +38,5 @@
     "deterministic": true,
     "noLeakage": true,
     "frontierExecution": false
-  },
-  "band3MigrationMap": {
-    "notification-settings-regression": "b3-config-provider-boundary-trace",
-    "discount-result-regression": "b3-dead-code-vs-live-discount-path",
-    "subscription-price-mismatch": "b3-decoy-cache-source-of-truth",
-    "task-update-duplication": "b3-duplicate-service-owner",
-    "completion-state-regression": "b3-event-handler-owner-trace"
   }
 }

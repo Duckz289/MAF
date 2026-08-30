@@ -1,5 +1,4 @@
-// Old flat lookup-table discount scheme, superseded by services/discount-service.mjs's
-// kind-based (PERCENT/FLAT) model. Unused by any live command.
+// Promotion-code compatibility rules used by import and reporting integrations.
 const LEGACY_CODES = { SAVE10: 10, SAVE20: 20 };
 
 export function applyLegacyDiscount(basePrice, code) {

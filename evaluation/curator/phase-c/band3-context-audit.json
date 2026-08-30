@@ -1,0 +1,96 @@
+[
+  {
+    "id": "notification-settings-regression",
+    "classification": "CONTEXT_TEST_STRONG",
+    "entrypoint": "bin/demo.mjs",
+    "defectOwner": "src/config/config-provider.mjs",
+    "behaviorPath": [
+      "bin/demo.mjs",
+      "src/services/notification-service.mjs",
+      "src/config/config-provider.mjs",
+      "src/config/app-config.mjs"
+    ],
+    "decoys": [
+      "src/legacy/legacy-notification-format.mjs",
+      "src/notifications/channel-notifiers.mjs",
+      "src/repositories/notification-repository.mjs"
+    ]
+  },
+  {
+    "id": "discount-result-regression",
+    "classification": "CONTEXT_TEST_STRONG",
+    "entrypoint": "bin/demo.mjs",
+    "defectOwner": "src/domain/discount-calculator.mjs",
+    "behaviorPath": [
+      "bin/demo.mjs",
+      "src/commands/checkout-command.mjs",
+      "src/services/discount-service.mjs",
+      "src/domain/discount-calculator.mjs"
+    ],
+    "decoys": [
+      "src/legacy/legacy-discount-rules.mjs",
+      "src/api/billing-controller.mjs",
+      "src/config/feature-flags.mjs"
+    ]
+  },
+  {
+    "id": "subscription-price-mismatch",
+    "classification": "CONTEXT_TEST_STRONG",
+    "entrypoint": "bin/demo.mjs",
+    "defectOwner": "src/services/subscription-service.mjs",
+    "behaviorPath": [
+      "bin/demo.mjs",
+      "src/bootstrap.mjs",
+      "src/api/billing-controller.mjs",
+      "src/commands/subscribe-command.mjs",
+      "src/services/subscription-service.mjs",
+      "src/legacy/price-list-cache.mjs"
+    ],
+    "decoys": [
+      "src/services/pricing-service.mjs",
+      "src/domain/subscription-plan.mjs",
+      "src/repositories/subscription-repository.mjs"
+    ]
+  },
+  {
+    "id": "task-update-duplication",
+    "classification": "CONTEXT_TEST_STRONG",
+    "entrypoint": "bin/demo.mjs",
+    "defectOwner": "src/commands/assign-task-command.mjs",
+    "behaviorPath": [
+      "bin/demo.mjs",
+      "src/bootstrap.mjs",
+      "src/commands/assign-task-command.mjs",
+      "src/services/task-service.mjs",
+      "src/events/event-bus.mjs",
+      "src/handlers/task-assigned-handler.mjs",
+      "src/projections/task-summary-projection.mjs"
+    ],
+    "decoys": [
+      "src/handlers/legacy-task-completed-handler.mjs",
+      "src/projections/legacy-task-summary-projection.mjs",
+      "src/admin/admin-task-controller.mjs"
+    ]
+  },
+  {
+    "id": "completion-state-regression",
+    "classification": "CONTEXT_TEST_STRONG",
+    "entrypoint": "bin/demo.mjs",
+    "defectOwner": "src/services/task-service.mjs",
+    "behaviorPath": [
+      "bin/demo.mjs",
+      "src/bootstrap.mjs",
+      "src/commands/complete-task-command.mjs",
+      "src/services/task-service.mjs",
+      "src/repositories/task-repository.mjs",
+      "src/events/event-bus.mjs",
+      "src/handlers/task-completed-handler.mjs",
+      "src/projections/task-summary-projection.mjs"
+    ],
+    "decoys": [
+      "src/handlers/legacy-task-completed-handler.mjs",
+      "src/projections/legacy-task-summary-projection.mjs",
+      "src/admin/admin-task-controller.mjs"
+    ]
+  }
+]

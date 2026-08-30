@@ -1,5 +1,7 @@
-import { registerAllHandlers } from "./events/register-handlers.mjs";
+import { handleSubscribe } from "./api/billing-controller.mjs";
+import { setCurrentPrice } from "./services/pricing-service.mjs";
 
-export function initApp() {
-  registerAllHandlers();
+export function openSubscriptionAtPrice(userId, planId, price) {
+  setCurrentPrice(planId, price);
+  return handleSubscribe(userId, planId);
 }

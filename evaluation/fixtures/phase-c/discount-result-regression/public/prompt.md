@@ -1,8 +1,10 @@
-# b3-dead-code-vs-live-discount-path
+# discount-result-regression
 
-This task is part of the NEWLY_AUTHORED_RECONSTRUCTION benchmark. Modify the public repository to satisfy the behavior demonstrated by its existing entrypoint and source seed. Preserve existing public API compatibility and keep unrelated behavior unchanged.
+Checkout totals are wrong for percentage discounts. The checkout contract applies the discount
+to the base price first, then applies tax to the discounted subtotal. `PERCENT` values are a
+percentage of the base price; `FLAT` values are currency amounts. A discount may reduce the
+subtotal to zero but never below it, and the final total is rounded to two decimal places.
 
-## Acceptance
-
-The entrypoint must complete successfully for its documented scenario, and the implementation must generalize to equivalent valid inputs rather than hard-coding the displayed example.
-Public source files currently include: bin\demo.mjs, src\bootstrap.mjs, src\admin\admin-report.mjs, src\admin\admin-task-controller.mjs, src\analytics\event-logger.mjs, src\analytics\report-builder.mjs
+Fix the behavior for arbitrary valid prices, discounts, and non-negative tax rates. Preserve the
+existing command and controller APIs and do not change the separate code-based promotion
+compatibility behavior.

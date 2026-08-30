@@ -1,8 +1,9 @@
-# b3-decoy-cache-source-of-truth
+# subscription-price-mismatch
 
-This task is part of the NEWLY_AUTHORED_RECONSTRUCTION benchmark. Modify the public repository to satisfy the behavior demonstrated by its existing entrypoint and source seed. Preserve existing public API compatibility and keep unrelated behavior unchanged.
+New subscriptions sometimes record an earlier plan price after the catalog has changed. A
+subscription opened after a price update must capture the current price for that plan in
+`priceAtSubscription`. Existing subscription records must remain unchanged when prices change
+later, and unknown plans must still be rejected.
 
-## Acceptance
-
-The entrypoint must complete successfully for its documented scenario, and the implementation must generalize to equivalent valid inputs rather than hard-coding the displayed example.
-Public source files currently include: src\bootstrap.mjs, src\admin\admin-report.mjs, src\admin\admin-task-controller.mjs, src\analytics\event-logger.mjs, src\analytics\report-builder.mjs, src\analytics\usage-tracker.mjs
+Fix the behavior for every plan and for repeated price changes. Preserve the billing-controller
+API, the stored subscription shape, and unrelated reporting behavior.

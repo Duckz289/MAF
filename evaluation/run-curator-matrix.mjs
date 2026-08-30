@@ -23,7 +23,7 @@ const matrix = [];
 for (const phaseName of phases) {
   const taskIds = await loadTaskIds(phaseName, band);
   const curatorRoot = path.join(evaluationRoot, "curator", phaseName);
-  const overlays = JSON.parse(await readFile(path.join(curatorRoot, "overlays.json"), "utf8"));
+  const overlays = await loadOverlays(curatorRoot, phaseName);
   for (const taskId of taskIds) {
     for (const candidate of requestedCandidates) {
       const overlayData = candidate === "pristine" ? undefined : overlays[candidate]?.[taskId];
@@ -67,6 +67,19 @@ console.log(
   JSON.stringify({ repetitions, cases: matrix.length, failures: failures.length, matrix }, null, 2),
 );
 if (failures.length > 0) process.exitCode = 1;
+
+async function loadOverlays(curatorRoot, phaseName) {
+  const files = ["overlays.json"];
+  if (phaseName === "phase-c") files.push("overlays-band3.json");
+  const merged = {};
+  for (const file of files) {
+    const document = JSON.parse(await readFile(path.join(curatorRoot, file), "utf8"));
+    for (const [candidate, tasks] of Object.entries(document)) {
+      merged[candidate] = { ...merged[candidate], ...tasks };
+    }
+  }
+  return merged;
+}
 
 async function loadTaskIds(phaseName, selectedBand) {
   const manifest = JSON.parse(

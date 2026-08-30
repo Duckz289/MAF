@@ -1,8 +1,9 @@
-# b3-event-handler-owner-trace
+# completion-state-regression
 
-This task is part of the NEWLY_AUTHORED_RECONSTRUCTION benchmark. Modify the public repository to satisfy the behavior demonstrated by its existing entrypoint and source seed. Preserve existing public API compatibility and keep unrelated behavior unchanged.
+Completing a task returns a completed-looking object, but a subsequent read still reports the
+task as open. A successful completion must atomically persist `status: "COMPLETED"` and a
+non-null `completedAt`, return the persisted state, and publish exactly one completion update.
+Completing a missing task must still reject without publishing an update.
 
-## Acceptance
-
-The entrypoint must complete successfully for its documented scenario, and the implementation must generalize to equivalent valid inputs rather than hard-coding the displayed example.
-Public source files currently include: src\bootstrap.mjs, src\admin\admin-report.mjs, src\admin\admin-task-controller.mjs, src\analytics\event-logger.mjs, src\analytics\report-builder.mjs, src\analytics\usage-tracker.mjs
+Fix the behavior for arbitrary task IDs while preserving the command API, event payload shape,
+and unrelated assignment behavior.

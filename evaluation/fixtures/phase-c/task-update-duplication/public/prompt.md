@@ -1,8 +1,9 @@
-# b3-duplicate-service-owner
+# task-update-duplication
 
-This task is part of the NEWLY_AUTHORED_RECONSTRUCTION benchmark. Modify the public repository to satisfy the behavior demonstrated by its existing entrypoint and source seed. Preserve existing public API compatibility and keep unrelated behavior unchanged.
+Each assignment command currently produces two assignment updates for one state transition.
+Calling `assignTaskCommand(taskId, userId)` must persist the assignee and publish exactly one
+observable assignment update. A later reassignment is a distinct transition and must add exactly
+one more update, including the new user.
 
-## Acceptance
-
-The entrypoint must complete successfully for its documented scenario, and the implementation must generalize to equivalent valid inputs rather than hard-coding the displayed example.
-Public source files currently include: src\bootstrap.mjs, src\admin\admin-report.mjs, src\admin\admin-task-controller.mjs, src\analytics\event-logger.mjs, src\analytics\report-builder.mjs, src\analytics\usage-tracker.mjs
+Remove the duplicate effect without suppressing valid later assignments. Preserve the command
+API, task storage behavior, event payload shape, and unrelated task-completion behavior.

@@ -1,5 +1,4 @@
-// Old plaintext notification formatter, superseded by notifications/channel-notifiers.mjs.
-// Unused by any live command.
+// Plaintext formatting retained for clients that request the compatibility representation.
 export function formatLegacyNotification(message) {
   return `[NOTICE] ${message}`;
 }
