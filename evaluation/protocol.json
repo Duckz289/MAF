@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "protocolVersion": "2.0.0-reconstructed",
+  "status": "PRE_REGISTERED_LOCAL_ONLY",
+  "purpose": "Paired Native versus MAF evaluation of durable verified software-engineering outcomes",
+  "conditions": ["NATIVE", "MAF"],
+  "matching": ["task", "startingRepositorySeed", "frontierModel", "budgetPolicy", "environment", "hiddenGrader", "timeoutPolicy"],
+  "dvs": {
+    "definition": "hiddenGrader=PASS AND regression=PASS AND candidateIntegrity=VALID AND runValidity=VALID",
+    "agentDoneIsSufficient": false,
+    "mafInternalTrustIsSufficient": false
+  },
+  "falseSafe": {
+    "definition": "valid run claims DONE or TRUSTED while independent correctness evidence fails",
+    "infrastructureFailuresExcludedUnlessSuccessClaimed": true
+  },
+  "runValidity": ["VALID", "INVALID"],
+  "candidateIntegrity": ["VALID", "INVALID", "MISSING", "UNKNOWN"],
+  "invalidRuns": {"countAsDvs": false, "countAsFalseSafeByDefault": false, "reportedSeparately": true},
+  "cost": {"missingUsage": "UNKNOWN", "unknownIsZero": false, "invalidRunsImproveCostPerDvs": false},
+  "metrics": ["DVS_RATE", "FALSE_SAFE_RATE", "COST_PER_DVS", "TIME_TO_SAFE", "BOTH_PASS", "MAF_ONLY_PASS", "NATIVE_ONLY_PASS", "BOTH_FAIL", "INVALID_MAF", "INVALID_NATIVE"],
+  "execution": {"frontierRunsPermitted": false, "timeoutMs": 120000, "repetitions": 3, "randomization": "counterbalanced task-condition order", "stoppingRule": "stop local validation on any leakage, nondeterminism, or integrity failure"},
+  "fairness": {"sameSeed": true, "samePrompt": true, "sameModel": true, "sameBudget": true, "sameEnvironment": true, "sameGrader": true, "sameTimeout": true},
+  "leakageIsolation": {"hiddenGraderUnavailableToConditions": true, "referenceUnavailableToConditions": true, "shortcutUnavailableToConditions": true, "curatorNotesUnavailableToConditions": true},
+  "analysis": {"pairedByTask": true, "invalidRunsSeparate": true, "historicalResultsAreEvidenceOnly": true},
+  "historicalEvidence": {"status": "HISTORICAL_LOST_IMPLEMENTATION_EVIDENCE", "usedForTuning": false}
+}
