@@ -3,7 +3,7 @@
   "phase": "C",
   "bands": {
     "band1": ["b1-extend-exhaustive-union","b1-mirror-pure-utility-fn","b1-mirror-sibling-guard-clause","b1-rename-exported-symbol","b1-string-pad-length-bug"],
-    "band2": ["b2-bulk-op-tenant-bypass","b2-concurrent-seat-lost-update","b2-order-refund-terminal-leak","b2-record-shape-migration-loss"],
+    "band2": ["b2-bulk-op-tenant-bypass","b2-concurrent-seat-lost-update","b2-order-refund-terminal-leak","b2-record-shape-migration-loss","b2-partial-validation-mutation","b2-derived-aggregate-consistency","b2-pending-write-visibility"],
     "band3": ["b3-config-provider-boundary-trace","b3-dead-code-vs-live-discount-path","b3-decoy-cache-source-of-truth","b3-duplicate-service-owner","b3-event-handler-owner-trace"]
   },
   "band3OrientationAudit": {"required": true, "classifications": ["CONTEXT_TEST_STRONG","CONTEXT_TEST_WEAK","NOT_A_CONTEXT_TEST"], "notAContextTestAction": "redesign before frontier use"},
