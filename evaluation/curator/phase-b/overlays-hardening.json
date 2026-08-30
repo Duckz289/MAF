@@ -1,0 +1,78 @@
+{
+  "attack": {
+    "clamp-number-util": {
+      "src/number-utils.mjs": "export function roundTo(value,decimals=0){const factor=10**decimals;return Math.round(value*factor)/factor;}export function isInRange(value,min,max){return value>=min&&value<=max;}export function clampNumber(value,min,max){const numeric=parseFloat(value),lower=parseFloat(min),upper=parseFloat(max);if(![numeric,lower,upper].every(Number.isFinite))throw new TypeError(\"finite numbers required\");if(lower>upper)throw new RangeError(\"bounds\");return Math.max(lower,Math.min(upper,numeric));}\n"
+    },
+    "duration-carry-fix": {
+      "src/duration.mjs": "export function addDuration(start,duration){const date=new Date(start);date.setMinutes(date.getMinutes()+Number(duration));return date;}\n"
+    },
+    "csv-export-feature": {
+      "src/formatters/csv-formatter.mjs": "const cell=(value)=>{const text=value==null?\"\":String(value);return text.includes(\",\")?`\"${text}\"`:text;};export function formatCsv(report){return[report.columns,...report.rows].map((row)=>row.map(cell).join(\",\")).join(\"\\n\");}\n"
+    },
+    "pagination-cursor-feature": {
+      "src/item-service.mjs": "import{addItem,listItems}from\"./item-store.mjs\";export{addItem};export function listItemsPage(cursor,limit){if(!Number.isInteger(limit)||limit<1)throw new RangeError(\"limit\");const offset=cursor==null?0:Number(cursor);const all=listItems(0,Number.MAX_SAFE_INTEGER);const items=all.slice(offset,offset+limit);return{items,nextCursor:offset+items.length<all.length?String(offset+items.length):null};}\n"
+    },
+    "stale-cache-invalidation-bug": {
+      "src/user-profile-service.mjs": "import{getCache,invalidateCache,setCache}from\"./ttl-cache.mjs\";import{userProfileCacheKey}from\"./cache-keys.mjs\";const profiles=new Map([[1,{id:1,email:\"alice@example.com\",name:\"Alice\"}],[2,{id:2,email:\"bob@example.com\",name:\"Bob\"}]]);export function getUserProfile(id){const key=userProfileCacheKey(id);const value=getCache(key)??profiles.get(id);if(value)setCache(key,{...value},60000);return value?{...value}:null;}export function updateUserProfile(id,patch){const value={...profiles.get(id),...patch,id};profiles.set(id,value);if(\"email\"in patch)invalidateCache(userProfileCacheKey(id));return{...value};}\n"
+    },
+    "event-emitter-listener-leak": {
+      "src/event-bus.mjs": "export function createEventBus(){const groups=new Map();return{on(name,fn){const group=groups.get(name)??new Set();group.add(fn);groups.set(name,group);return()=>group.clear();},off(name,fn){groups.get(name)?.delete(fn);},emit(name,value){for(const fn of groups.get(name)??[])fn(value);}};}\n"
+    },
+    "inventory-orientation-task": {
+      "src/operations/restock-item.mjs": "import{getItem,saveItem}from\"../inventory-store.mjs\";export function restockItem(sku,delta){const item=getItem(sku);if(!item)throw new Error(\"not found\");if(!Number.isInteger(delta))throw new TypeError(\"integer required\");if(delta<0)throw new RangeError(\"negative adjustment\");return saveItem({...item,quantity:item.quantity+delta});}\n"
+    },
+    "backward-compat-date-regression": {
+      "src/date-range.mjs": "export function overlapDays(aStart,aEnd,bStart,bEnd){if(![aStart,aEnd,bStart,bEnd].every(Number.isInteger))throw new TypeError(\"integer\");if(aStart>aEnd||bStart>bEnd)throw new RangeError(\"reversed\");const difference=Math.max(0,Math.min(aEnd,bEnd)-Math.max(aStart,bStart));return difference+(aEnd===bStart||bEnd===aStart||aStart===aEnd&&bStart===bEnd?1:0);}\n"
+    },
+    "past-due-reminder-handling": {
+      "src/reminder-scheduler.mjs": "const scheduled=[];export function scheduleReminder(taskId,remindAt,now=Date.now()){if(typeof taskId!==\"string\"||!taskId||!Number.isFinite(remindAt))throw new TypeError(\"invalid\");const entry={taskId,remindAt};if(remindAt<=now)scheduled.push(entry);return{...entry};}export function listScheduled(){return scheduled.map((entry)=>({...entry}));}export function dueReminders(now=Date.now()){return scheduled.filter((entry)=>entry.remindAt<=now).map((entry)=>({...entry}));}\n"
+    },
+    "report-output-path-boundary": {
+      "src/report-writer.mjs": "import fs from\"node:fs\";import path from\"node:path\";export function writeReportFile(outDir,requestedPath,content){const root=path.resolve(outDir);const target=path.resolve(root,requestedPath);if(!target.startsWith(root))throw new RangeError(\"outside\");fs.mkdirSync(path.dirname(target),{recursive:true});fs.writeFileSync(target,content,\"utf8\");return target;}\n"
+    },
+    "idempotency-key-race": {
+      "src/idempotency-store.mjs": "import{hasRecord}from\"./audit-log.mjs\";export{markRecorded}from\"./audit-log.mjs\";let locked=false;export async function reserveKey(key){if(locked)return false;locked=true;if(await hasRecord(key)){locked=false;return false;}return true;}export function releaseKey(){locked=false;}\n"
+    },
+    "webhook-retry-terminal-state": {
+      "src/webhook-delivery.mjs": "export async function deliverWebhook(job,sendFn){for(let attempt=1;attempt<=5;attempt++){const{status}=await sendFn(job);if(status>=200&&status<300)return{status:\"DELIVERED\",attempts:attempt};if(status===400)return{status:\"REJECTED\",attempts:attempt};}return{status:\"RETRY_EXHAUSTED\",attempts:5};}\n"
+    }
+  },
+  "probe": {
+    "clamp-number-util": {
+      "src/number-utils.mjs": "export const roundTo=(value,decimals=0)=>Math.round(value*10**decimals)/10**decimals;export const isInRange=(value,min,max)=>!(value<min||value>max);export function clampNumber(value,min,max){const values={value:Number(value),min:Number(min),max:Number(max)};if(Object.values(values).some((item)=>!Number.isFinite(item)))throw new TypeError(\"finite\");if(values.min>values.max)throw new RangeError(\"bounds\");if(values.value<values.min)return values.min;if(values.value>values.max)return values.max;return values.value;}\n"
+    },
+    "duration-carry-fix": {
+      "src/duration.mjs": "export function addDuration(start,duration){const minutes=Number(duration);if(!Number.isInteger(minutes)||minutes<0)throw new TypeError(\"duration\");const timestamp=Date.parse(start);if(Number.isNaN(timestamp))throw new RangeError(\"start\");const result=new Date(timestamp);result.setUTCSeconds(result.getUTCSeconds()+minutes*60);return result;}\n"
+    },
+    "csv-export-feature": {
+      "src/formatters/csv-formatter.mjs": "function quote(value){const text=value===null||value===undefined?\"\":String(value);const escaped=text.replaceAll('\"','\"\"');return /[\",\\r\\n]/.test(text)?'\"'+escaped+'\"':escaped;}export function formatCsv({columns,rows}){const lines=[];for(const row of[columns,...rows])lines.push(row.map(quote).join(\",\"));return lines.join(\"\\n\");}\n"
+    },
+    "pagination-cursor-feature": {
+      "src/item-service.mjs": "import{addItem,listItems}from\"./item-store.mjs\";export{addItem};const encode=(id)=>Buffer.from(JSON.stringify({after:id})).toString(\"base64url\");const decode=(cursor)=>{try{return JSON.parse(Buffer.from(cursor,\"base64url\").toString()).after;}catch{throw new RangeError(\"cursor\");}};export function listItemsPage(cursor,limit){if(!Number.isInteger(limit)||limit<1||limit>100)throw new RangeError(\"limit\");const all=listItems(0,Number.MAX_SAFE_INTEGER);let start=0;if(cursor!==null){if(typeof cursor!==\"string\")throw new RangeError(\"cursor\");const id=decode(cursor);const index=all.findIndex((item)=>item.id===id);if(index<0)throw new RangeError(\"cursor\");start=index+1;}const items=all.slice(start,start+limit);return{items,nextCursor:start+items.length<all.length?encode(items.at(-1).id):null};}\n"
+    },
+    "stale-cache-invalidation-bug": {
+      "src/user-profile-service.mjs": "import{getCache,setCache}from\"./ttl-cache.mjs\";import{userProfileCacheKey}from\"./cache-keys.mjs\";const profiles=new Map([[1,{id:1,email:\"alice@example.com\",name:\"Alice\"}],[2,{id:2,email:\"bob@example.com\",name:\"Bob\"}]]);const copy=(value)=>value&&({...value});export function getUserProfile(id){const key=userProfileCacheKey(id);let value=getCache(key);if(value===undefined){value=profiles.get(id);if(value)setCache(key,copy(value),60000);}return copy(value)??null;}export function updateUserProfile(id,patch){if(!profiles.has(id))throw new Error(\"profile not found\");const value=Object.assign({},profiles.get(id),patch,{id});profiles.set(id,value);setCache(userProfileCacheKey(id),copy(value),60000);return copy(value);}\n"
+    },
+    "event-emitter-listener-leak": {
+      "src/event-bus.mjs": "export function createEventBus(){const listeners=new Map();const off=(name,fn)=>{const values=listeners.get(name)??[];listeners.set(name,values.filter((value)=>value!==fn));};return{on(name,fn){listeners.set(name,[...(listeners.get(name)??[]),fn]);let active=true;return()=>{if(active){active=false;off(name,fn);}};},off,emit(name,payload){for(const fn of[...(listeners.get(name)??[])])fn(payload);}};}\n"
+    },
+    "inventory-orientation-task": {
+      "src/operations/restock-item.mjs": "import{getItem,saveItem}from\"../inventory-store.mjs\";export function restockItem(sku,change){if(!Number.isInteger(change))throw new TypeError(\"integer change required\");const item=getItem(sku);if(item===null)throw new Error(`Item ${sku} not found`);const updated=Object.assign({},item,{quantity:item.quantity+change});if(updated.quantity<0)throw new RangeError(\"quantity below zero\");return saveItem(updated);}\n"
+    },
+    "backward-compat-date-regression": {
+      "src/date-range.mjs": "export function overlapDays(aStart,aEnd,bStart,bEnd){const points=[aStart,aEnd,bStart,bEnd];if(points.some((point)=>!Number.isInteger(point)))throw new TypeError(\"integer endpoints\");if(aStart>aEnd||bStart>bEnd)throw new RangeError(\"reversed\");let days=0;for(let day=Math.max(aStart,bStart);day<=Math.min(aEnd,bEnd);day+=1)days+=1;return days;}\n"
+    },
+    "past-due-reminder-handling": {
+      "src/reminder-scheduler.mjs": "const scheduled=[];const clone=(entry)=>({taskId:entry.taskId,remindAt:entry.remindAt});export function scheduleReminder(taskId,remindAt,now=Date.now()){if(typeof taskId!==\"string\"||taskId.trim()===\"\"||!Number.isFinite(remindAt)||!Number.isFinite(now))throw new TypeError(\"invalid reminder\");const entry=Object.freeze({taskId,remindAt});scheduled.push(entry);return clone(entry);}export function listScheduled(){return scheduled.map(clone);}export function dueReminders(now=Date.now()){if(!Number.isFinite(now))throw new TypeError(\"invalid now\");return scheduled.reduce((due,entry)=>entry.remindAt<=now?[...due,clone(entry)]:due,[]);}\n"
+    },
+    "report-output-path-boundary": {
+      "src/report-writer.mjs": "import fs from\"node:fs\";import path from\"node:path\";export function writeReportFile(outDir,requestedPath,content){const root=path.resolve(outDir);const target=path.resolve(root,requestedPath);const boundary=root.endsWith(path.sep)?root:`${root}${path.sep}`;if(target!==root&&!target.startsWith(boundary))throw new RangeError(\"outside output directory\");fs.mkdirSync(path.dirname(target),{recursive:true});fs.writeFileSync(target,String(content),{encoding:\"utf8\"});return target;}\n"
+    },
+    "idempotency-key-race": {
+      "src/idempotency-store.mjs": "import{hasRecord}from\"./audit-log.mjs\";export{markRecorded}from\"./audit-log.mjs\";const reservations=new Map();export async function reserveKey(key){if(typeof key!==\"string\"||key===\"\")throw new TypeError(\"key\");if(reservations.has(key))return false;const marker=Symbol(key);reservations.set(key,marker);if(await hasRecord(key)){if(reservations.get(key)===marker)reservations.delete(key);return false;}return reservations.get(key)===marker;}export function releaseKey(key){reservations.delete(key);}\n"
+    },
+    "webhook-retry-terminal-state": {
+      "src/webhook-delivery.mjs": "const retryable=(status)=>status===408||status===425||status===429||status>=500&&status<600;export async function deliverWebhook(job,sendFn){async function attempt(number){const response=await sendFn(job);if(response.status>=200&&response.status<300)return{status:\"DELIVERED\",attempts:number};if(!retryable(response.status))return{status:\"REJECTED\",attempts:number};if(number===5)return{status:\"RETRY_EXHAUSTED\",attempts:number};return attempt(number+1);}return attempt(1);}\n"
+    }
+  }
+}

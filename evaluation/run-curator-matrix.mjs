@@ -7,6 +7,7 @@ const evaluationRoot = path.dirname(fileURLToPath(import.meta.url));
 const phase = argument("--phase", "all");
 const band = argument("--band", "all");
 const repetitions = Number(argument("--repetitions", "1"));
+const skipMissing = argument("--skip-missing", "false") === "true";
 const requestedCandidates = argument("--candidates", "pristine,reference,wrong,alternative").split(
   ",",
 );
@@ -17,6 +18,7 @@ const expectedStatus = {
   wrong: "FAIL",
   alternative: "PASS",
   attack: "FAIL",
+  probe: "PASS",
 };
 const matrix = [];
 
@@ -27,6 +29,7 @@ for (const phaseName of phases) {
   for (const taskId of taskIds) {
     for (const candidate of requestedCandidates) {
       const overlayData = candidate === "pristine" ? undefined : overlays[candidate]?.[taskId];
+      if (skipMissing && candidate !== "pristine" && overlayData === undefined) continue;
       const result = await runRepeatedCase(
         {
           taskId,
@@ -71,6 +74,7 @@ if (failures.length > 0) process.exitCode = 1;
 async function loadOverlays(curatorRoot, phaseName) {
   const files = ["overlays.json"];
   if (phaseName === "phase-c") files.push("overlays-band3.json");
+  files.push("overlays-hardening.json");
   const merged = {};
   for (const file of files) {
     const document = JSON.parse(await readFile(path.join(curatorRoot, file), "utf8"));

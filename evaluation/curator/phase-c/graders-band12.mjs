@@ -2,6 +2,7 @@ export const phaseCBand12Graders = {
   "b1-extend-exhaustive-union": async ({ importModule, equal, throws }) => {
     const { computeArea } = await importModule("src/shape-area.mjs");
     equal("triangle area", computeArea({ kind: "triangle", base: 7, height: 4 }), 14);
+    equal("triangle formula generalizes", computeArea({ kind: "triangle", base: 3, height: 6 }), 9);
     equal("square unchanged", computeArea({ kind: "square", side: 5 }), 25);
     equal("rectangle unchanged", computeArea({ kind: "rectangle", width: 3, height: 6 }), 18);
     equal("circle unchanged", computeArea({ kind: "circle", radius: 2 }), Math.PI * 4);
@@ -109,10 +110,30 @@ export const phaseCBand12Graders = {
       Error,
     );
     equal("ledger failure leaves order paid", store.getOrder("ledger-fail").status, "PAID");
+    store.createOrder("ledger-fail-other", 80);
+    await throws(
+      "ledger failure generalizes across orders",
+      () =>
+        processRefund("ledger-fail-other", 4, async () => {
+          throw new Error("ledger unavailable");
+        }),
+      Error,
+    );
+    equal(
+      "second ledger failure leaves order paid",
+      store.getOrder("ledger-fail-other").status,
+      "PAID",
+    );
     store.createOrder("valid", 100);
     equal(
       "successful refund becomes terminal",
       (await processRefund("valid", 10)).status,
+      "REFUNDED",
+    );
+    store.createOrder("valid-other", 60);
+    equal(
+      "successful refund generalizes across orders",
+      (await processRefund("valid-other", 7)).status,
       "REFUNDED",
     );
   },
