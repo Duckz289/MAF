@@ -1,0 +1,105 @@
+{
+  "contract": "NEWLY_AUTHORED_RECONSTRUCTION",
+  "matrix": [
+    {
+      "taskId": "clamp-number-util",
+      "candidate": "pristine",
+      "statuses": [
+        "PASS",
+        "PASS"
+      ],
+      "expected": "PASS",
+      "deterministic": true,
+      "materialization": true,
+      "hiddenIsolated": true
+    },
+    {
+      "taskId": "clamp-number-util",
+      "candidate": "reference",
+      "statuses": [
+        "PASS",
+        "PASS"
+      ],
+      "expected": "PASS",
+      "deterministic": true,
+      "materialization": true,
+      "hiddenIsolated": true
+    },
+    {
+      "taskId": "clamp-number-util",
+      "candidate": "wrong",
+      "statuses": [
+        "FAIL",
+        "FAIL"
+      ],
+      "expected": "FAIL",
+      "deterministic": true,
+      "materialization": true,
+      "hiddenIsolated": true
+    },
+    {
+      "taskId": "clamp-number-util",
+      "candidate": "alternative",
+      "statuses": [
+        "PASS",
+        "PASS"
+      ],
+      "expected": "PASS",
+      "deterministic": true,
+      "materialization": true,
+      "hiddenIsolated": true
+    },
+    {
+      "taskId": "b2-partial-validation-mutation",
+      "candidate": "pristine",
+      "statuses": [
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "expected": "PASS",
+      "deterministic": true,
+      "materialization": true,
+      "hiddenIsolated": true
+    },
+    {
+      "taskId": "b2-partial-validation-mutation",
+      "candidate": "reference",
+      "statuses": [
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "expected": "PASS",
+      "deterministic": true,
+      "materialization": true,
+      "hiddenIsolated": true
+    },
+    {
+      "taskId": "b2-partial-validation-mutation",
+      "candidate": "wrong",
+      "statuses": [
+        "FAIL",
+        "FAIL",
+        "FAIL"
+      ],
+      "expected": "FAIL",
+      "deterministic": true,
+      "materialization": true,
+      "hiddenIsolated": true
+    },
+    {
+      "taskId": "b2-partial-validation-mutation",
+      "candidate": "alternative",
+      "statuses": [
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "expected": "PASS",
+      "deterministic": true,
+      "materialization": true,
+      "hiddenIsolated": true
+    }
+  ]
+}
