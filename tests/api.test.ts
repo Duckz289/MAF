@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { createApp, type AppRuntime } from "../src/server/app";
+import { type AppRuntime, createApp } from "../src/server/app";
 import {
   createAdaptiveFixtureRepository,
   createFixtureRepository,
@@ -19,7 +19,11 @@ describe("control API", () => {
     runtime = await createApp();
     const health = await runtime.app.inject({ method: "GET", url: "/health" });
     expect(health.statusCode).toBe(200);
-    expect(health.json()).toMatchObject({ status: "ok", store: "memory" });
+    expect(health.json()).toMatchObject({
+      status: "ok",
+      store: "memory",
+      projectBrain: "memory",
+    });
 
     const runs = await runtime.app.inject({ method: "GET", url: "/api/v1/runs" });
     expect(runs.json()).toEqual([]);
@@ -30,14 +34,11 @@ describe("control API", () => {
       payload: {
         id: "mission-root",
         dependencyIds: [],
-        state: "READY",
         executionMode: "GUIDED",
         agent: "native-cli",
         model: "native",
         budget: 1,
         inputs: [],
-        outputs: [],
-        verificationState: "PROPOSED",
       },
     });
     expect(mission.statusCode).toBe(201);
@@ -67,6 +68,36 @@ describe("control API", () => {
         reasons: ["no trusted production feedback has been observed"],
       },
     });
+
+    // The decisions inbox is a projection over run state that genuinely needs user authority —
+    // with no runs at all, it must report an honest empty list, not a fabricated item.
+    const decisions = await runtime.app.inject({ method: "GET", url: "/api/v1/decisions" });
+    expect(decisions.statusCode).toBe(200);
+    expect(decisions.json()).toEqual([]);
+  });
+
+  it("rejects client-supplied mission verification and trust authority", async () => {
+    runtime = await createApp();
+    const response = await runtime.app.inject({
+      method: "POST",
+      url: "/api/v1/missions",
+      payload: {
+        id: "spoofed-mission",
+        dependencyIds: [],
+        state: "DONE",
+        executionMode: "GUIDED",
+        agent: "client",
+        model: "client",
+        budget: 0,
+        inputs: [],
+        outputs: ["untrusted-output"],
+        verificationState: "VERIFIED",
+        trustState: "MERGE_ELIGIBLE",
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.stringify(response.json())).toMatch(/verificationState|trustState|authority/iu);
   });
 
   it("explains runtime-derived mode transitions through versioned resources", async () => {
@@ -217,16 +248,60 @@ describe("control API", () => {
     expect(projectsAfter.json().projects).toMatchObject([{ name: "Harness" }]);
 
     const connections = await runtime.app.inject({ method: "GET", url: "/api/v1/connections" });
-    expect(connections.json()).toMatchObject([
-      { id: "claude-code", method: "NATIVE_SESSION", status: "UNKNOWN" },
-      {
-        id: "openai-api",
-        method: "CREDENTIAL_REFERENCE",
-        credentialReference: "credential://user/openai/default",
-      },
-      { id: "development-auth", capability: "Chỉ dùng cho môi trường phát triển local" },
-    ]);
-    expect(JSON.stringify(connections.json())).not.toMatch(/api[_-]?key|clientSecret|token/i);
+    expect(connections.json()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "codex-cli",
+          method: "NATIVE_SESSION",
+          category: "ACCOUNT_AGENT",
+          authCapabilities: expect.objectContaining({ supportsNativeLogin: true }),
+        }),
+        expect.objectContaining({
+          id: "claude-code",
+          category: "ACCOUNT_AGENT",
+          method: "NATIVE_SESSION",
+          authCapabilities: expect.objectContaining({ requiresCli: true }),
+        }),
+        expect.objectContaining({
+          id: "antigravity-cli",
+          category: "ACCOUNT_AGENT",
+          method: "NATIVE_SESSION",
+          authCapabilities: expect.objectContaining({ requiresCli: true }),
+        }),
+        expect.objectContaining({ id: "openai-api", method: "API_KEY", status: "NOT_CONFIGURED" }),
+        expect.objectContaining({ id: "anthropic-api", method: "API_KEY" }),
+        expect.objectContaining({ id: "gemini-api", category: "AI_PROVIDER" }),
+        expect.objectContaining({ id: "xai-api", method: "API_KEY" }),
+        expect.objectContaining({ id: "zai-api", method: "API_KEY" }),
+        expect.objectContaining({
+          id: "development-auth",
+          capability: "Chỉ dùng cho môi trường phát triển local",
+        }),
+      ]),
+    );
+    expect(JSON.stringify(connections.json())).not.toContain("sk-test-secret-that-must-not-leak");
+
+    process.env.MAF_TEST_OPENAI_KEY = "sk-test-secret-that-must-not-leak";
+    const configured = await runtime.app.inject({
+      method: "POST",
+      url: "/api/v1/connections/openai-api/configure",
+      payload: { source: "ENVIRONMENT", environmentVariable: "MAF_TEST_OPENAI_KEY" },
+    });
+    expect(configured.statusCode).toBe(200);
+    expect(configured.json()).toMatchObject({
+      id: "openai-api",
+      status: "CONFIGURED",
+      credentialReference: "credential://environment/maf_test_openai_key",
+    });
+    const providerTest = await runtime.app.inject({
+      method: "POST",
+      url: "/api/v1/connections/openai-api/test",
+    });
+    expect(providerTest.json()).toMatchObject({ status: "CONFIGURED" });
+    expect(`${configured.body}\n${providerTest.body}`).not.toContain(
+      "sk-test-secret-that-must-not-leak",
+    );
+    delete process.env.MAF_TEST_OPENAI_KEY;
 
     const agents = await runtime.app.inject({ method: "GET", url: "/api/v1/agents" });
     expect(agents.json()).toEqual(
@@ -269,6 +344,104 @@ describe("control API", () => {
       active: [],
       attention: [],
       usage: { hasKnownCost: false },
+    });
+  });
+
+  it("selects Codex CLI only through its native ChatGPT-owned session", async () => {
+    const priorAgent = process.env.MAF_NATIVE_AGENT;
+    process.env.MAF_NATIVE_AGENT = "codex";
+    try {
+      runtime = await createApp();
+      const agents = await runtime.app.inject({ method: "GET", url: "/api/v1/agents" });
+      expect(agents.json()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "codex-cli",
+            active: true,
+            authMethod: "NATIVE_SESSION",
+          }),
+        ]),
+      );
+      const connections = await runtime.app.inject({ method: "GET", url: "/api/v1/connections" });
+      for (const connection of connections.json() as unknown[]) {
+        expect(JSON.stringify(connection)).not.toMatch(/refresh.?token/iu);
+        expect(JSON.stringify(connection)).not.toMatch(/chatgpt.*cookie/iu);
+      }
+    } finally {
+      if (priorAgent === undefined) delete process.env.MAF_NATIVE_AGENT;
+      else process.env.MAF_NATIVE_AGENT = priorAgent;
+    }
+  });
+
+  it("selects Antigravity CLI through its Google IDE-owned session", async () => {
+    const priorAgent = process.env.MAF_NATIVE_AGENT;
+    process.env.MAF_NATIVE_AGENT = "antigravity";
+    try {
+      runtime = await createApp();
+      const agents = await runtime.app.inject({ method: "GET", url: "/api/v1/agents" });
+      expect(agents.json()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "antigravity-cli",
+            active: true,
+            authMethod: "NATIVE_SESSION",
+          }),
+        ]),
+      );
+    } finally {
+      if (priorAgent === undefined) delete process.env.MAF_NATIVE_AGENT;
+      else process.env.MAF_NATIVE_AGENT = priorAgent;
+    }
+  });
+
+  it("browses real local directories, detects a real project, and updates project preferences", async () => {
+    const fixture = await createFixtureRepository();
+    fixtures.push(fixture);
+    runtime = await createApp();
+
+    const roots = await runtime.app.inject({ method: "GET", url: "/api/v1/filesystem/roots" });
+    expect(roots.statusCode).toBe(200);
+    expect(roots.json().roots.length).toBeGreaterThan(0);
+
+    const browse = await runtime.app.inject({
+      method: "GET",
+      url: `/api/v1/filesystem/browse?path=${encodeURIComponent(fixture.path)}`,
+    });
+    expect(browse.statusCode).toBe(200);
+    expect(browse.json()).toMatchObject({ path: fixture.path, unreadable: false });
+
+    const detect = await runtime.app.inject({
+      method: "POST",
+      url: "/api/v1/filesystem/detect",
+      payload: { repositoryPath: fixture.path },
+    });
+    expect(detect.statusCode).toBe(200);
+    expect(detect.json()).toMatchObject({ exists: true, git: { present: true } });
+
+    const created = await runtime.app.inject({
+      method: "POST",
+      url: "/api/v1/projects",
+      payload: { name: "Detected project", repositoryPath: fixture.path },
+    });
+    expect(created.statusCode).toBe(201);
+    const projectId = created.json().id as string;
+
+    const missingUpdate = await runtime.app.inject({
+      method: "PATCH",
+      url: "/api/v1/projects/does-not-exist",
+      payload: { qualityPreference: "HIGH" },
+    });
+    expect(missingUpdate.statusCode).toBe(404);
+
+    const updated = await runtime.app.inject({
+      method: "PATCH",
+      url: `/api/v1/projects/${projectId}`,
+      payload: { qualityPreference: "HIGH", budgetLimitUsd: 5, budgetMode: "HARD" },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json()).toMatchObject({
+      id: projectId,
+      preferences: { qualityPreference: "HIGH", budgetLimitUsd: 5, budgetMode: "HARD" },
     });
   });
 });

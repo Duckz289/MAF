@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   authorizeSpend,
+  type BudgetCategory,
   computeAllocation,
   defaultBudgetReservationPolicy,
   estimateFromHistory,
   maxPlausibleSingleEventCostUsd,
   sanitizeReportedCost,
-  type BudgetCategory,
 } from "../src/domain/budget";
 
 describe("sanitizeReportedCost", () => {

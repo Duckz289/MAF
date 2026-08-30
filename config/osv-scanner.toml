@@ -1,0 +1,2 @@
+# Intentionally comment-only. Passing this MAF-owned file overrides candidate-local OSV-Scanner
+# configuration, so a candidate cannot suppress packages or vulnerability IDs during assurance.

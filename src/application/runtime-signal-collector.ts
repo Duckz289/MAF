@@ -1,5 +1,4 @@
 import path from "node:path";
-import { extractFileCandidates, findRepositoryFile, normalizeFile } from "./file-candidates";
 import { repositoryModuleOwner } from "../domain/module-ownership";
 import type {
   RepositorySnapshot,
@@ -11,11 +10,12 @@ import type {
   RuntimeSignalName,
   RuntimeSignalProvenance,
   RuntimeSignalReliability,
-  RuntimeSignals,
   RuntimeSignalSnapshot,
+  RuntimeSignals,
   RuntimeSignalValue,
   RuntimeSignalValues,
 } from "../domain/types";
+import { extractFileCandidates, findRepositoryFile, normalizeFile } from "./file-candidates";
 
 export interface RuntimeSignalPolicy {
   stabilizationWindow: number;

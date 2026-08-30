@@ -21,6 +21,19 @@ All routes are versioned under `/api/v1`.
 | `POST` | `/system/emergency-stop` | Cancel all active runs and block new run creation; preserves all evidence |
 | `POST` | `/system/resume-new-runs` | Lift an emergency stop |
 | `GET` | `/system/status` | Whether an emergency stop is currently active |
+| `GET` | `/control-center/overview` | Engineering Control Center summary: projects, missions, cost, optional providers |
+| `GET` | `/control-center/providers` | Optional provider availability, version, scope, and coverage limits; absence never means MAF is unhealthy |
+| `GET` | `/control-center/evolution` | Inspection-only evolution lineage; no production-policy optimizer |
+| `GET` | `/control-center/projects/:id` | Project summary read model |
+| `GET` | `/control-center/projects/:id/map` | Bounded Project Map page (`limit`, `cursor`, `search`, `focus`, `neighborhood`) |
+| `GET` | `/control-center/projects/:id/knowledge` | Bounded knowledge inspection including withheld STALE/CONFLICTED/UNKNOWN locators |
+| `GET` | `/control-center/runs/:id` | Mission Control read model; `depth=SIMPLE\|ADVANCED\|INSPECT` (default SIMPLE) |
+| `GET` | `/control-center/runs/:id/events` | Bounded reverse-chronological event page |
+| `GET` | `/control-center/runs/:id/evidence` | Bounded evidence/obligation page |
+| `GET` | `/control-center/runs/:id/trust` | Candidate → verification → obligations → trust derivation |
+| `GET` | `/control-center/runs/:id/context` | Context OS working-set/budget/expansion inspection |
+| `GET` | `/control-center/runs/:id/why` | Recorded decision provenance; never a post-hoc LLM explanation |
+| `GET/POST` | `/control-center/work-items` | Minimum PM work items. POST is strict and cannot set trust, verification, or promotion |
 | `GET/POST` | `/missions` | List or create mission trees |
 | `POST` | `/missions/:id/split` | Split independent workstreams |
 | `POST` | `/missions/:id/merge` | Merge verified branches |
@@ -28,7 +41,14 @@ All routes are versioned under `/api/v1`.
 | `POST` | `/missions/:id/collapse` | Collapse children into a solo-native parent |
 | `GET` | `/auth/session` | Inspect the local user session |
 | `GET` | `/auth/config` | Inspect reference-only Better Auth configuration |
-| `POST` | `/connections/authorize` | Start external OAuth connection flow |
+| `GET` | `/connections` | List account/native agents and API-provider presets without secrets |
+| `POST` | `/connections/:id/configure` | Bind an API provider to an environment variable or configured local encrypted vault |
+| `POST` | `/connections/custom` | Create a custom OpenAI-compatible or Anthropic-compatible endpoint connection |
+| `POST` | `/connections/:id/test` | Check account/native status or API credential availability without billing a provider request |
+| `POST` | `/connections/:id/login` | Start a supported official native CLI login (`codex-cli` or `claude-code`); Antigravity uses its IDE session |
+| `GET` | `/connections/:id/login/:attemptId` | Poll the bounded native-login state without CLI output |
+| `DELETE` | `/connections/:id/login/:attemptId` | Cancel a pending native-login process |
+| `POST` | `/connections/:id/disconnect` | Remove MAF-owned credential material or disconnect MAF from a native CLI; never logs out the provider CLI |
 | `POST` | `/platform-keys` | Issue a product API key through the configured provider |
 | `GET` | `/telemetry/cost-per-verified-success` | Read the primary optimization metric |
 | `GET` | `/health-ledger` | Read the latest project-scoped health window, candidate/operational trend evidence, and maintenance recommendation; accepts optional opaque `projectId`; structural observations remain directionally `UNKNOWN` until revision ancestry is proven |

@@ -16,7 +16,14 @@ export interface Run {
   updatedAt: string;
   changedFiles: string[];
   error?: string;
-  cost: { total: number };
+  cost: {
+    total: number;
+    model?: number;
+    sandbox?: number;
+    verification?: number;
+    retry?: number;
+    recovery?: number;
+  };
   task: string;
   currentPhase: string;
   desiredMode: "STRICT" | "GUIDED" | "SOLO_NATIVE";
@@ -37,6 +44,17 @@ export interface Run {
     }>;
   };
   operationalStatus: string;
+  strategyObservationBinding?: {
+    verifiedSuccess: boolean;
+    costUsd: number | null;
+    latencyMs: number;
+    retries: number;
+    qualityOutcome: "PASS" | "FAIL" | "UNKNOWN";
+    security: "PASS" | "FAIL" | "NOT_CHECKED" | "NOT_REQUIRED";
+    performance: "PASS" | "FAIL" | "NOT_CHECKED" | "NOT_REQUIRED";
+    resilience: "PASS" | "FAIL" | "NOT_CHECKED" | "NOT_REQUIRED";
+    healthEffect: "STABLE" | "DEGRADING" | "UNKNOWN";
+  };
 }
 
 export interface Project {
@@ -50,18 +68,89 @@ export interface Project {
     qualityPreference?: string;
     budgetPreference?: string;
     providerPreference?: string;
+    executionModePreference?: "AUTO" | "STRICT" | "GUIDED" | "SOLO_NATIVE";
+    budgetLimitUsd?: number;
+    budgetMode?: "ADVISORY" | "HARD";
   };
+}
+
+export interface DirectoryEntry {
+  name: string;
+  path: string;
+  looksLikeGitRepo: boolean;
+}
+
+export interface DirectoryListing {
+  path: string;
+  parent: string | null;
+  entries: DirectoryEntry[];
+  unreadable: boolean;
+}
+
+export interface ProjectDetection {
+  repositoryPath: string;
+  exists: boolean;
+  git: { present: boolean; branch?: string; revision?: string; dirty?: boolean };
+  languages: string[];
+  frameworks: string[];
+  packageManager?: string;
+  verificationCommands: Array<{ label: string; command: string }>;
+  moduleRoots: string[];
+  trackedFileCount?: number;
+  trackedFileCountTruncated?: boolean;
+  monorepo: boolean;
+  unknowns: string[];
 }
 
 export interface Connection {
   id: string;
-  category: "AI_PROVIDER" | "MAF_ACCOUNT";
+  category: "ACCOUNT_AGENT" | "AI_PROVIDER" | "MAF_ACCOUNT";
   provider: string;
   method: string;
   status: string;
+  authentication?: string;
   capability: string;
   credentialReference?: string;
+  connectionReference?: string;
+  protocol?: "OPENAI_COMPATIBLE" | "ANTHROPIC_COMPATIBLE";
+  baseUrl?: string;
+  defaultModel?: string;
   detail: string;
+  account?: { email: string; planType?: string };
+  credentialSources?: Array<{
+    id: "ENVIRONMENT" | "LOCAL_ENCRYPTED_VAULT" | "OAUTH_PKCE";
+    label: string;
+    available: boolean;
+    detail: string;
+  }>;
+  authCapabilities?: {
+    supportsNativeLogin: boolean;
+    supportsOAuth: boolean;
+    supportsDeviceFlow: boolean;
+    requiresCli: boolean;
+    cliAvailable: boolean;
+    loginMethod: "NATIVE_CLI_BROWSER" | "ANTIGRAVITY_IDE_SESSION";
+    installUrl: string;
+  };
+}
+
+export interface AgentCapabilities {
+  repoSearch: boolean;
+  fileRead: boolean;
+  fileWrite: boolean;
+  shell: boolean;
+  browser: boolean;
+  mcp: boolean;
+  nativePlanning: boolean;
+  nativeSubagents: boolean;
+  contextManagement: boolean;
+  streaming: boolean;
+  resumeSession: boolean;
+  livePolicyUpdate: boolean;
+  safeSessionRestart: boolean;
+  oauthAuth: boolean;
+  apiKeyAuth: boolean;
+  extensions: Record<string, boolean>;
 }
 
 export interface Agent {
@@ -71,6 +160,7 @@ export interface Agent {
   active: boolean;
   authMethod: string;
   detail: string;
+  capabilities?: AgentCapabilities | null;
 }
 
 export interface HomeData {
@@ -93,3 +183,117 @@ export interface ConnectionTestResult {
   message?: string;
   lastCheckedAt?: string;
 }
+
+export interface QualityCheckResult {
+  state: "PASS" | "WARN" | "FAIL" | "UNKNOWN" | "NOT_CHECKED" | "NOT_REQUIRED";
+  evidence: string[];
+  provenance: "DETERMINISTIC" | "MEASURED" | "PENDING_CHECKER";
+}
+
+export type QualityReport = Record<string, QualityCheckResult>;
+
+export interface RiskValue {
+  level: "LOW" | "MEDIUM" | "HIGH";
+  provenance: "DETERMINISTIC" | "HEURISTIC" | "INSUFFICIENT_EVIDENCE";
+  evidence: string[];
+}
+
+export type RiskVector = Record<string, RiskValue>;
+
+export interface AssurancePlan {
+  required: string[];
+  notRequired: string[];
+  reasons: Record<string, string>;
+}
+
+export interface RecoveryCapsule {
+  runId: string;
+  goal: string;
+  repositoryPath: string;
+  agent: string;
+  model: string;
+  provider: string;
+  desiredMode: string;
+  effectiveMode: string;
+  costSpent: { total: number };
+  remainingBudget: number | null;
+  strongestCandidateId?: string;
+  verifiedFacts: string[];
+  decisions: string[];
+  recoveryReason: string;
+  recoveryDetail: string;
+  createdAt: string;
+}
+
+export interface DeliveryDecision {
+  handoff: {
+    candidateQuality: "READY" | "BLOCKED";
+    knownWarnings: Array<{ dimension: string; state: string }>;
+    budget: { mode: "ADVISORY" | "HARD"; limitUsd: number | null; recordedCostUsd: number };
+    changedFiles: string[];
+  };
+  candidateQuality: "READY" | "BLOCKED";
+  ciStatus: string;
+  ciHeadRevision: string | null;
+  mergeEligibility: "ELIGIBLE" | "PENDING" | "BLOCKED";
+  mergeAuthority: "EXTERNAL_APPROVAL_REQUIRED";
+  autoMergeAllowed: false;
+  reasons: string[];
+}
+
+export interface HealthTrendMetric {
+  metric: string;
+  group: "structural" | "change" | "operational";
+  previous: number | null;
+  current: number | null;
+  direction: "IMPROVING" | "DEGRADING" | "FLAT" | "UNKNOWN";
+  note?: string;
+}
+
+export interface HealthLedger {
+  samples: Array<{ timestamp: string; runId: string }>;
+  trend?: { incomplete: boolean; metrics: HealthTrendMetric[] };
+  maintenance?: { needed: boolean; reasons: string[]; escalationCorrelationNote?: string };
+  productionImpact: {
+    state: "UNKNOWN" | "STABLE" | "DEGRADING";
+    strategyDemotionRequired: boolean;
+    maintenanceRecommended: boolean;
+    reasons: string[];
+  };
+}
+
+export type DecisionItem =
+  | {
+      type: "RECOVERY";
+      runId: string;
+      task: string;
+      repositoryPath: string;
+      updatedAt: string;
+      recoveryReason: string;
+      recoveryDetail?: string;
+      remainingBudget: number | null;
+      costSpent: number;
+    }
+  | {
+      type: "ASSURANCE_BLOCKED";
+      runId: string;
+      task: string;
+      repositoryPath: string;
+      updatedAt: string;
+    }
+  | {
+      type: "AWAITING_REVIEW";
+      runId: string;
+      task: string;
+      repositoryPath: string;
+      updatedAt: string;
+    }
+  | {
+      type: "DELIVERY";
+      runId: string;
+      task: string;
+      repositoryPath: string;
+      updatedAt: string;
+      mergeEligibility: "ELIGIBLE" | "BLOCKED";
+      knownWarnings: Array<{ dimension: string; state: string }>;
+    };

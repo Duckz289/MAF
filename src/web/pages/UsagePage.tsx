@@ -1,9 +1,10 @@
-import { Text, Title2, makeStyles } from "@fluentui/react-components";
+import { makeStyles, Text, Title2 } from "@fluentui/react-components";
 import { DataUsage20Regular } from "@fluentui/react-icons";
-import type { Project, Run } from "../types";
-import { formatCost, formatRelativeTime } from "../utils";
+import { useEffect, useState } from "react";
 import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
+import type { Project, Run } from "../types";
+import { formatCost, formatRelativeTime, readJson } from "../utils";
 
 const useStyles = makeStyles({
   summary: {
@@ -57,9 +58,24 @@ const useStyles = makeStyles({
 
 const sumKnownCost = (runs: Run[]) => runs.reduce((sum, run) => sum + run.cost.total, 0);
 const hasKnownCost = (runs: Run[]) => runs.some((run) => run.cost.total > 0);
+const costCategories = [
+  { key: "model" as const, label: "Model" },
+  { key: "verification" as const, label: "Xác minh" },
+  { key: "sandbox" as const, label: "Sandbox" },
+  { key: "retry" as const, label: "Thử lại" },
+  { key: "recovery" as const, label: "Khôi phục" },
+];
+const sumCategory = (runs: Run[], key: keyof Run["cost"]) =>
+  runs.reduce((sum, run) => sum + (run.cost[key] ?? 0), 0);
 
 export function UsagePage({ projects, runs }: { projects: Project[]; runs: Run[] }) {
   const styles = useStyles();
+  const [costPerVerifiedSuccess, setCostPerVerifiedSuccess] = useState<number | null>();
+  useEffect(() => {
+    void readJson<{ value: number | null }>("/api/v1/telemetry/cost-per-verified-success")
+      .then((result) => setCostPerVerifiedSuccess(result.value))
+      .catch(() => setCostPerVerifiedSuccess(undefined));
+  }, []);
   const now = new Date();
   const today = runs.filter((run) => new Date(run.updatedAt).toDateString() === now.toDateString());
   const weekStart = new Date(now);
@@ -111,52 +127,89 @@ export function UsagePage({ projects, runs }: { projects: Project[]; runs: Run[]
         </div>
       </section>
       {runs.length ? (
-        <div className={styles.grid}>
-          <section className={styles.section}>
-            <Title2 className={styles.title}>Theo agent</Title2>
-            <div className={styles.rows}>
-              {agents.map((agent) => {
-                const agentRuns = runs.filter((run) => run.agent === agent);
-                return (
-                  <div className={styles.row} key={agent}>
-                    <div className={styles.rowDetail}>
-                      <Text>{agent}</Text>
-                      <Text className={styles.muted} size={100}>
-                        {agentRuns.length} tác vụ
+        <>
+          <div className={styles.grid}>
+            <section className={styles.section}>
+              <Title2 className={styles.title}>Theo agent</Title2>
+              <div className={styles.rows}>
+                {agents.map((agent) => {
+                  const agentRuns = runs.filter((run) => run.agent === agent);
+                  return (
+                    <div className={styles.row} key={agent}>
+                      <div className={styles.rowDetail}>
+                        <Text>{agent}</Text>
+                        <Text className={styles.muted} size={100}>
+                          {agentRuns.length} tác vụ
+                        </Text>
+                      </div>
+                      <Text className={styles.amount}>
+                        {hasKnownCost(agentRuns)
+                          ? formatCost(sumKnownCost(agentRuns))
+                          : "Chi phí chưa khả dụng"}
                       </Text>
                     </div>
-                    <Text className={styles.amount}>
-                      {hasKnownCost(agentRuns)
-                        ? formatCost(sumKnownCost(agentRuns))
-                        : "Chi phí chưa khả dụng"}
-                    </Text>
+                  );
+                })}
+              </div>
+              {projects.length ? (
+                <Text className={styles.muted} size={200}>
+                  Tổng hợp chính xác theo dự án dùng đường dẫn kho mã của từng tác vụ.
+                </Text>
+              ) : null}
+            </section>
+            <section className={styles.section}>
+              <Title2 className={styles.title}>Sử dụng gần đây</Title2>
+              <div className={styles.rows}>
+                {runs.slice(0, 8).map((run) => (
+                  <div className={styles.row} key={run.id}>
+                    <div className={styles.rowDetail}>
+                      <Text>{run.task}</Text>
+                      <Text className={styles.muted} size={100}>
+                        {run.agent} | {formatRelativeTime(run.updatedAt)}
+                      </Text>
+                    </div>
+                    <Text className={styles.amount}>{formatCost(run.cost.total)}</Text>
                   </div>
-                );
+                ))}
+              </div>
+            </section>
+          </div>
+          <section className={styles.section}>
+            <Title2 className={styles.title}>Theo hạng mục chi phí</Title2>
+            <div className={styles.rows}>
+              {costCategories.map(({ key, label }) => {
+                const amount = sumCategory(runs, key);
+                return amount > 0 ? (
+                  <div className={styles.row} key={key}>
+                    <Text>{label}</Text>
+                    <Text className={styles.amount}>{formatCost(amount)}</Text>
+                  </div>
+                ) : null;
               })}
             </div>
-            {projects.length ? (
-              <Text className={styles.muted} size={200}>
-                Tổng hợp chính xác theo dự án dùng đường dẫn kho mã của từng tác vụ.
-              </Text>
-            ) : null}
+            <Text className={styles.muted} size={200}>
+              Chỉ tính trên các tác vụ đã có chi phí do provider báo cáo.
+            </Text>
           </section>
           <section className={styles.section}>
-            <Title2 className={styles.title}>Sử dụng gần đây</Title2>
-            <div className={styles.rows}>
-              {runs.slice(0, 8).map((run) => (
-                <div className={styles.row} key={run.id}>
-                  <div className={styles.rowDetail}>
-                    <Text>{run.task}</Text>
-                    <Text className={styles.muted} size={100}>
-                      {run.agent} | {formatRelativeTime(run.updatedAt)}
-                    </Text>
-                  </div>
-                  <Text className={styles.amount}>{formatCost(run.cost.total)}</Text>
-                </div>
-              ))}
+            <Title2 className={styles.title}>Hiệu quả xác minh</Title2>
+            <div className={styles.row}>
+              <div className={styles.rowDetail}>
+                <Text>Chi phí trung bình cho mỗi lần bàn giao đã xác minh</Text>
+                <Text className={styles.muted} size={100}>
+                  Bao gồm cả chi phí xác minh và các lần thử lại
+                </Text>
+              </div>
+              <Text className={styles.amount}>
+                {costPerVerifiedSuccess === undefined
+                  ? "Đang tải"
+                  : costPerVerifiedSuccess === null
+                    ? "Chưa đủ dữ liệu"
+                    : formatCost(costPerVerifiedSuccess)}
+              </Text>
             </div>
           </section>
-        </div>
+        </>
       ) : (
         <EmptyState
           description="Dữ liệu sử dụng sẽ xuất hiện sau khi tác vụ chạy và provider báo cáo chi phí."

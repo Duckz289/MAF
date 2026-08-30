@@ -5,6 +5,12 @@ import type {
   ModelResponse,
 } from "../domain/ports";
 import type { ModelHealth, TokenUsage } from "../domain/types";
+import {
+  type ModelPricingCatalog,
+  normalizeModelIdentity,
+  type MonetaryCost,
+  unknownMonetaryCost,
+} from "../domain/model-intelligence";
 
 interface BifrostConfig {
   baseUrl: string;
@@ -18,6 +24,7 @@ export class BifrostModelGateway implements ModelGateway {
   constructor(
     private readonly config: BifrostConfig,
     private readonly credentials: CredentialResolver,
+    private readonly pricing?: ModelPricingCatalog,
   ) {}
 
   async listModels(): Promise<string[]> {
@@ -49,16 +56,26 @@ export class BifrostModelGateway implements ModelGateway {
           choices?: Array<{ message?: { content?: string } }>;
           usage?: { prompt_tokens?: number; completion_tokens?: number; cached_tokens?: number };
         };
+        const validTokenCount = (value: unknown): value is number =>
+          Number.isSafeInteger(value) && Number(value) >= 0;
+        const inputUsageValid = validTokenCount(body.usage?.prompt_tokens);
+        const outputUsageValid = validTokenCount(body.usage?.completion_tokens);
+        const cachedUsageValid =
+          body.usage?.cached_tokens === undefined || validTokenCount(body.usage.cached_tokens);
         const usage: TokenUsage = {
-          input: body.usage?.prompt_tokens ?? 0,
-          output: body.usage?.completion_tokens ?? 0,
-          cached: body.usage?.cached_tokens ?? 0,
+          input: inputUsageValid ? (body.usage?.prompt_tokens ?? 0) : 0,
+          output: outputUsageValid ? (body.usage?.completion_tokens ?? 0) : 0,
+          cached: cachedUsageValid ? (body.usage?.cached_tokens ?? 0) : 0,
         };
+        const cost =
+          inputUsageValid && outputUsageValid && cachedUsageValid
+            ? await this.estimateCost(request.provider, request.model, usage)
+            : unknownMonetaryCost("provider token usage is unavailable or malformed");
         this.health.set(request.provider, "HEALTHY");
         return {
           content: body.choices?.[0]?.message?.content ?? "",
           usage,
-          cost: await this.estimateCost(request.provider, request.model, usage),
+          cost,
           latencyMs: performance.now() - started,
           retryCount,
         };
@@ -74,12 +91,14 @@ export class BifrostModelGateway implements ModelGateway {
     throw lastError ?? new Error("Bifrost request failed");
   }
 
-  async estimateCost(
-    _provider: string,
-    _model: string,
-    _usage: TokenUsage,
-  ): Promise<number | null> {
-    return null;
+  async estimateCost(provider: string, model: string, usage: TokenUsage): Promise<MonetaryCost> {
+    if (!this.pricing) {
+      return unknownMonetaryCost("no model pricing catalog is configured");
+    }
+    return this.pricing.estimate(
+      normalizeModelIdentity({ provider, model, executionInterface: "API_GATEWAY" }),
+      usage,
+    );
   }
 
   async getProviderHealth(provider: string): Promise<ModelHealth> {
@@ -96,13 +115,13 @@ export class MockModelGateway implements ModelGateway {
     return {
       content,
       usage: { input: 8, output: 8, cached: 0 },
-      cost: null,
+      cost: unknownMonetaryCost("fixture gateway has no pricing catalog"),
       latencyMs: 1,
       retryCount: 0,
     };
   }
-  async estimateCost(): Promise<number | null> {
-    return null;
+  async estimateCost(): Promise<MonetaryCost> {
+    return unknownMonetaryCost("fixture gateway has no pricing catalog");
   }
   async getProviderHealth(): Promise<ModelHealth> {
     return "HEALTHY";

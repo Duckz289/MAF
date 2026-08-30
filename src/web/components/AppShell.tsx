@@ -3,9 +3,9 @@ import {
   Button,
   MessageBar,
   MessageBarBody,
-  Text,
   makeStyles,
   mergeClasses,
+  Text,
   tokens,
 } from "@fluentui/react-components";
 import {
@@ -15,14 +15,17 @@ import {
   DataUsage20Regular,
   Folder20Regular,
   Home20Regular,
+  Important20Regular,
   Person20Regular,
   PlugDisconnected20Regular,
+  ScaleFill20Regular,
   Settings20Regular,
+  TaskListSquareLtr20Regular,
   TasksApp20Regular,
 } from "@fluentui/react-icons";
 import type { ReactNode } from "react";
-import type { Navigate, Project } from "../types";
 import { isNavigationSelected } from "../presentation";
+import type { Navigate, Project } from "../types";
 
 const useStyles = makeStyles({
   shell: {
@@ -83,13 +86,27 @@ const useStyles = makeStyles({
   },
   nav: {
     display: "grid",
-    gap: "3px",
+    gap: "14px",
     "@media (max-width: 700px)": {
       display: "flex",
       overflowX: "auto",
       paddingBottom: "2px",
+      gap: "4px",
     },
   },
+  navGroup: {
+    display: "grid",
+    gap: "3px",
+    "@media (max-width: 700px)": { display: "flex", gap: "4px" },
+  },
+  navGroupLabel: {
+    padding: "0 10px",
+    marginBottom: "2px",
+    color: "#5c6670",
+    letterSpacing: ".04em",
+    "@media (max-width: 1040px)": { display: "none" },
+  },
+  navBadge: { marginLeft: "auto" },
   navButton: {
     minHeight: "38px",
     justifyContent: "flex-start",
@@ -166,23 +183,45 @@ const useStyles = makeStyles({
   error: { maxWidth: "760px", marginBottom: "20px" },
 });
 
-const primaryNavigation = [
-  { href: "/", label: "Trang chủ", icon: <Home20Regular /> },
-  { href: "/projects", label: "Dự án", icon: <Folder20Regular /> },
-  { href: "/runs", label: "Tác vụ", icon: <TasksApp20Regular /> },
-  { href: "/connections", label: "Kết nối", icon: <PlugDisconnected20Regular /> },
-  { href: "/usage", label: "Sử dụng", icon: <DataUsage20Regular /> },
+const navigationGroups = [
+  {
+    label: undefined,
+    items: [
+      { href: "/", label: "Control Center", icon: <Home20Regular /> },
+      { href: "/projects", label: "Projects", icon: <Folder20Regular /> },
+      { href: "/work", label: "Work", icon: <TaskListSquareLtr20Regular /> },
+      { href: "/runs", label: "Missions", icon: <TasksApp20Regular /> },
+      { href: "/decisions", label: "Decisions", icon: <Important20Regular /> },
+    ],
+  },
+  {
+    label: "Inspection",
+    items: [
+      { href: "/evolution", label: "Evolution", icon: <ScaleFill20Regular /> },
+      { href: "/evaluation", label: "Evaluation", icon: <ScaleFill20Regular /> },
+    ],
+  },
+  {
+    label: "System",
+    items: [
+      { href: "/providers", label: "Providers", icon: <PlugDisconnected20Regular /> },
+      { href: "/connections", label: "Connections", icon: <PlugDisconnected20Regular /> },
+      { href: "/usage", label: "Usage", icon: <DataUsage20Regular /> },
+    ],
+  },
 ] as const;
 
 export function AppShell({
   children,
   contextProject,
+  decisionCount = 0,
   navigate,
   path,
   technicalError,
 }: {
   children: ReactNode;
   contextProject?: Project | undefined;
+  decisionCount?: number;
   navigate: Navigate;
   path: string;
   technicalError?: string | undefined;
@@ -201,26 +240,45 @@ export function AppShell({
                 MAF
               </Text>
               <Text size={100} style={{ color: "#858f9a" }}>
-                Không gian kỹ thuật AI
+                Engineering Control Center
               </Text>
             </span>
           </div>
           <nav className={styles.nav}>
-            {primaryNavigation.map((item) => (
-              <Button
-                appearance="transparent"
-                aria-current={isNavigationSelected(path, item.href) ? "page" : undefined}
-                className={mergeClasses(
-                  styles.navButton,
-                  isNavigationSelected(path, item.href) && styles.navSelected,
-                )}
-                icon={item.icon}
-                key={item.href}
-                onClick={() => navigate(item.href)}
-                title={item.label}
-              >
-                {item.label}
-              </Button>
+            {navigationGroups.map((group) => (
+              <div className={styles.navGroup} key={group.label ?? "primary"}>
+                {group.label ? (
+                  <Text className={styles.navGroupLabel} size={100}>
+                    {group.label.toUpperCase()}
+                  </Text>
+                ) : null}
+                {group.items.map((item) => (
+                  <Button
+                    appearance="transparent"
+                    aria-current={isNavigationSelected(path, item.href) ? "page" : undefined}
+                    className={mergeClasses(
+                      styles.navButton,
+                      isNavigationSelected(path, item.href) && styles.navSelected,
+                    )}
+                    icon={item.icon}
+                    key={item.href}
+                    onClick={() => navigate(item.href)}
+                    title={item.label}
+                  >
+                    {item.label}
+                    {item.href === "/decisions" && decisionCount > 0 ? (
+                      <Badge
+                        appearance="filled"
+                        className={styles.navBadge}
+                        color="informative"
+                        size="small"
+                      >
+                        {decisionCount}
+                      </Badge>
+                    ) : null}
+                  </Button>
+                ))}
+              </div>
             ))}
           </nav>
           <div className={styles.sidebarBottom}>
@@ -260,7 +318,7 @@ export function AppShell({
           <header className={styles.topbar}>
             <div className={styles.context}>
               <Text className={styles.contextName} weight="semibold">
-                {contextProject?.name ?? "Tất cả dự án"}
+                {contextProject?.name ?? "All projects"}
               </Text>
               {contextProject ? (
                 <div className={styles.contextMeta}>
@@ -277,7 +335,7 @@ export function AppShell({
                   navigate(contextProject ? `/runs/new?project=${contextProject.id}` : "/runs/new")
                 }
               >
-                Tác vụ mới
+                New mission
               </Button>
             ) : null}
           </header>

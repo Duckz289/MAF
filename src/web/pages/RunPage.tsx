@@ -1,24 +1,44 @@
 import {
+  Badge,
   Button,
   MessageBar,
   MessageBarBody,
+  makeStyles,
   Text,
   Title2,
-  makeStyles,
 } from "@fluentui/react-components";
 import {
   ArrowLeft20Regular,
+  ArrowSync20Regular,
   CheckmarkCircle20Regular,
   Circle20Regular,
   Clock20Regular,
   Code20Regular,
   Dismiss20Regular,
+  PauseCircle20Regular,
+  ShieldError20Regular,
 } from "@fluentui/react-icons";
-import { useEffect, useState } from "react";
-import type { Navigate, Run } from "../types";
-import { formatCost, formatDate, friendlyMode, translatedValue } from "../utils";
+import { useEffect, useMemo, useState } from "react";
 import { EmptyState } from "../components/EmptyState";
 import { RunStatusBadge } from "../components/StatusBadge";
+import {
+  eventTypeLabel,
+  failureClassificationLabel,
+  mergeEligibilityLabel,
+  mergeEligibilityTone,
+  primaryQualityDimensions,
+  qualityDimensionLabel,
+  qualityStateLabel,
+  qualityStateTone,
+  riskDimensionLabel,
+  riskLevelLabel,
+  riskLevelTone,
+  riskProvenanceNote,
+  trustStateLabel,
+  trustStateTone,
+} from "../status";
+import type { DeliveryDecision, Navigate, RecoveryCapsule, Run } from "../types";
+import { formatCost, formatDate, friendlyMode, readJson, translatedValue } from "../utils";
 
 interface RunEvent {
   id: string;
@@ -39,14 +59,29 @@ interface CostEstimatedData {
 
 interface QualityAssessedData {
   report?: Record<string, { state: string; evidence: string[] }>;
+  trustState?: string;
+  review?: { status: string; reasons: string[] };
+  reviewSkipped?: string;
 }
 
-const qualityStateLabel = (state: string | undefined): string => {
-  if (state === "PASS") return "Đã xác minh";
-  if (state === "FAIL") return "Phát hiện hồi quy";
-  if (state === "NOT_REQUIRED") return "Không yêu cầu";
-  if (state === "WARN") return "Có cảnh báo";
-  return "Chưa kiểm tra";
+interface RiskProfiledData {
+  stage: "pre-execution" | "diff-captured";
+  riskVector?: Record<string, { level: string; provenance: string; evidence: string[] }>;
+}
+
+interface AssurancePlannedData {
+  stage: "pre-execution" | "diff-captured";
+  plan?: { required: string[]; notRequired: string[]; reasons: Record<string, string> };
+}
+
+/** AssuranceCheck -> QualityDimension it gates, per src/domain/quality.ts gatedDimensions. */
+const gatingCheckByDimension: Record<string, string> = {
+  Correctness: "CORRECTNESS",
+  Architecture: "ARCHITECTURE",
+  DebtDelta: "DEBT",
+  Security: "SECURITY",
+  Performance: "PERFORMANCE",
+  Resilience: "RESILIENCE",
 };
 
 const useStyles = makeStyles({
@@ -58,6 +93,7 @@ const useStyles = makeStyles({
     gap: "22px",
     marginBottom: "24px",
   },
+  headerActions: { display: "flex", gap: "8px" },
   headerCopy: { minWidth: 0, display: "grid", gap: "10px" },
   title: { fontSize: "30px", lineHeight: "38px", letterSpacing: "-.025em" },
   metadata: { display: "flex", gap: "9px 16px", flexWrap: "wrap", color: "#8d97a2" },
@@ -99,6 +135,12 @@ const useStyles = makeStyles({
     display: "grid",
     gap: "14px",
   },
+  sectionHead: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: "12px",
+  },
   sectionTitle: { fontSize: "19px", lineHeight: "26px" },
   summaryGrid: {
     display: "grid",
@@ -138,6 +180,19 @@ const useStyles = makeStyles({
     gap: "12px",
     padding: "7px 0",
   },
+  checkRow: {
+    display: "grid",
+    gridTemplateColumns: "minmax(0, 1fr) auto",
+    gap: "10px",
+    alignItems: "start",
+    padding: "8px 0",
+    borderBottom: "1px solid #1c2126",
+  },
+  checkEvidence: { color: "#7f8a96" },
+  toggle: { justifySelf: "start" },
+  riskRow: { display: "grid", gap: "3px", padding: "8px 0", borderBottom: "1px solid #1c2126" },
+  warningList: { display: "grid", gap: "6px" },
+  costGrid: { display: "grid", gap: "6px" },
 });
 
 const phaseIndex = (run: Run) => {
@@ -159,7 +214,13 @@ export function RunPage({
 }) {
   const styles = useStyles();
   const [cancelling, setCancelling] = useState(false);
+  const [resuming, setResuming] = useState(false);
+  const [showAllChecks, setShowAllChecks] = useState(false);
+  const [showAllRisk, setShowAllRisk] = useState(false);
   const [events, setEvents] = useState<RunEvent[]>([]);
+  const [capsule, setCapsule] = useState<RecoveryCapsule>();
+  const [delivery, setDelivery] = useState<DeliveryDecision>();
+
   useEffect(() => {
     if (!run) return;
     void fetch(`/api/v1/runs/${run.id}/events?follow=false`)
@@ -173,6 +234,27 @@ export function RunPage({
       })
       .catch(() => setEvents([]));
   }, [run]);
+
+  useEffect(() => {
+    if (!run || run.state !== "PAUSED") {
+      setCapsule(undefined);
+      return;
+    }
+    void readJson<RecoveryCapsule>(`/api/v1/runs/${run.id}/recovery-capsule`)
+      .then(setCapsule)
+      .catch(() => setCapsule(undefined));
+  }, [run]);
+
+  useEffect(() => {
+    if (!run || run.state !== "COMPLETED" || run.verificationState !== "VERIFIED") {
+      setDelivery(undefined);
+      return;
+    }
+    void readJson<DeliveryDecision>(`/api/v1/runs/${run.id}/delivery`)
+      .then(setDelivery)
+      .catch(() => setDelivery(undefined));
+  }, [run]);
+
   const budgetAllocated = events.find((event) => event.type === "BudgetAllocated")?.data as
     | BudgetAllocatedData
     | undefined;
@@ -182,6 +264,22 @@ export function RunPage({
   const quality = events.filter((event) => event.type === "QualityAssessed").at(-1)?.data as
     | QualityAssessedData
     | undefined;
+  const risk = useMemo(() => {
+    const riskEvents = events.filter((event) => event.type === "RiskProfiled");
+    const preferred =
+      riskEvents.findLast((event) => (event.data as RiskProfiledData)?.stage === "diff-captured") ??
+      riskEvents.at(-1);
+    return preferred?.data as RiskProfiledData | undefined;
+  }, [events]);
+  const assurancePlan = useMemo(() => {
+    const planEvents = events.filter((event) => event.type === "AssurancePlanned");
+    const preferred =
+      planEvents.findLast(
+        (event) => (event.data as AssurancePlannedData)?.stage === "diff-captured",
+      ) ?? planEvents.at(-1);
+    return (preferred?.data as AssurancePlannedData | undefined)?.plan;
+  }, [events]);
+
   if (!run)
     return (
       <EmptyState
@@ -191,6 +289,7 @@ export function RunPage({
         title="Không tìm thấy tác vụ"
       />
     );
+
   const cancel = async () => {
     setCancelling(true);
     try {
@@ -200,10 +299,66 @@ export function RunPage({
       setCancelling(false);
     }
   };
+  const resume = async () => {
+    setResuming(true);
+    try {
+      const response = await fetch(`/api/v1/runs/${run.id}/resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      if (response.ok) await refresh();
+    } finally {
+      setResuming(false);
+    }
+  };
+
   const currentIndex = phaseIndex(run);
   const phases = ["Hiểu kho mã", "Điều tra", "Triển khai", "Xác minh"];
   const needsAttention =
     run.state === "FAILED" || run.state === "PAUSED" || run.operationalStatus === "STUCK";
+  const reviewRequired = Boolean(assurancePlan?.required.includes("INDEPENDENT_REVIEW"));
+  const trustHeadline = trustStateLabel(run.trustState, reviewRequired);
+  const trustTone = trustStateTone(run.trustState);
+
+  const report = quality?.report ?? {};
+  const reportEntries = Object.entries(report);
+  const requiredDimensions = new Set(
+    reportEntries
+      .filter(([dimension]) => {
+        const check = gatingCheckByDimension[dimension];
+        return check !== undefined && assurancePlan?.required.includes(check);
+      })
+      .map(([dimension]) => dimension),
+  );
+  const visibleChecks = reportEntries.filter(
+    ([dimension, result]) =>
+      showAllChecks ||
+      primaryQualityDimensions.includes(dimension as (typeof primaryQualityDimensions)[number]) ||
+      requiredDimensions.has(dimension) ||
+      (result.state !== "PASS" && result.state !== "NOT_REQUIRED"),
+  );
+
+  const riskVector = risk?.riskVector ?? {};
+  const riskEntries = Object.entries(riskVector);
+  const aggregateRiskLevel = riskEntries.some(([, value]) => value.level === "HIGH")
+    ? "HIGH"
+    : riskEntries.some(([, value]) => value.level === "MEDIUM")
+      ? "MEDIUM"
+      : riskEntries.length
+        ? "LOW"
+        : undefined;
+  const notableRisk = riskEntries.filter(([, value]) => value.level !== "LOW");
+  const visibleRisk = showAllRisk ? riskEntries : notableRisk;
+
+  const costBreakdown = [
+    { label: "Model", value: run.cost.model },
+    { label: "Sandbox", value: run.cost.sandbox },
+    { label: "Xác minh", value: run.cost.verification },
+    { label: "Thử lại", value: run.cost.retry },
+    { label: "Khôi phục", value: run.cost.recovery },
+  ].filter((entry) => typeof entry.value === "number" && entry.value > 0);
+
   return (
     <>
       <Button
@@ -221,22 +376,37 @@ export function RunPage({
           </Text>
           <div className={styles.metadata}>
             <RunStatusBadge run={run} />
+            <Badge appearance="tint" color={trustTone}>
+              {trustHeadline}
+            </Badge>
             <Text>{run.agent}</Text>
             <Text>{friendlyMode(run.executionMode)}</Text>
             <Text>{run.revision}</Text>
             <Text>{formatCost(run.cost.total)}</Text>
           </div>
         </div>
-        {run.state === "RUNNING" || run.state === "QUEUED" ? (
-          <Button
-            appearance="secondary"
-            disabled={cancelling}
-            icon={<Dismiss20Regular />}
-            onClick={() => void cancel()}
-          >
-            {cancelling ? "Đang hủy" : "Hủy tác vụ"}
-          </Button>
-        ) : null}
+        <div className={styles.headerActions}>
+          {run.state === "PAUSED" ? (
+            <Button
+              appearance="primary"
+              disabled={resuming}
+              icon={<ArrowSync20Regular />}
+              onClick={() => void resume()}
+            >
+              {resuming ? "Đang tiếp tục" : "Tiếp tục tác vụ"}
+            </Button>
+          ) : null}
+          {run.state === "RUNNING" || run.state === "QUEUED" ? (
+            <Button
+              appearance="secondary"
+              disabled={cancelling}
+              icon={<Dismiss20Regular />}
+              onClick={() => void cancel()}
+            >
+              {cancelling ? "Đang hủy" : "Hủy tác vụ"}
+            </Button>
+          ) : null}
+        </div>
       </header>
       <section className={styles.progress} aria-label="Tiến độ tác vụ">
         {phases.map((label, index) => {
@@ -264,15 +434,53 @@ export function RunPage({
         <MessageBarBody>
           {needsAttention
             ? "Tác vụ cần bạn xem lại. Mở chi tiết lỗi bên dưới để xác định bước tiếp theo."
-            : run.verificationState === "VERIFIED" && run.trustState === "MERGE_ELIGIBLE"
-              ? "Tác vụ đã vượt qua các kiểm tra bắt buộc và sẵn sàng bàn giao."
-              : run.verificationState === "VERIFIED"
-                ? "Đã xác minh tính đúng đắn, nhưng bằng chứng đảm bảo bắt buộc chưa đủ để bàn giao."
-                : "Không cần thao tác lúc này. MAF sẽ chỉ bàn giao sau khi có kết quả xác minh."}
+            : trustHeadline}
         </MessageBarBody>
       </MessageBar>
       <div className={styles.layout}>
         <div className={styles.column}>
+          {run.state === "PAUSED" ? (
+            <section className={styles.section}>
+              <div className={styles.sectionHead}>
+                <Title2 className={styles.sectionTitle}>Khôi phục</Title2>
+                <PauseCircle20Regular />
+              </div>
+              <Text size={200}>
+                {failureClassificationLabel(capsule?.recoveryReason)}
+                {capsule?.recoveryDetail ? ` — ${capsule.recoveryDetail}` : ""}
+              </Text>
+              <div className={styles.summaryGrid}>
+                <div className={styles.fact}>
+                  <Text className={styles.quiet} size={200}>
+                    Công việc đã lưu
+                  </Text>
+                  <Text>Đã bảo toàn — có thể tiếp tục từ trạng thái này</Text>
+                </div>
+                <div className={styles.fact}>
+                  <Text className={styles.quiet} size={200}>
+                    Ngân sách còn lại
+                  </Text>
+                  <Text>
+                    {capsule?.remainingBudget === null || capsule?.remainingBudget === undefined
+                      ? "Chưa rõ"
+                      : formatCost(capsule.remainingBudget)}
+                  </Text>
+                </div>
+              </div>
+              {capsule?.verifiedFacts.length ? (
+                <div className={styles.fact}>
+                  <Text className={styles.quiet} size={200}>
+                    Đã xác minh trước khi dừng
+                  </Text>
+                  {capsule.verifiedFacts.map((fact) => (
+                    <Text block key={fact} size={200}>
+                      • {fact}
+                    </Text>
+                  ))}
+                </div>
+              ) : null}
+            </section>
+          ) : null}
           <section className={styles.section}>
             <Title2 className={styles.sectionTitle}>Tóm tắt</Title2>
             <div className={styles.summaryGrid}>
@@ -303,33 +511,53 @@ export function RunPage({
             </div>
           </section>
           <section className={styles.section}>
-            <Title2 className={styles.sectionTitle}>Thay đổi</Title2>
-            {run.changedFiles.length ? (
-              <div className={styles.fileList}>
-                {run.changedFiles.map((file) => (
-                  <Text className={styles.file} key={file}>
-                    {file}
-                  </Text>
-                ))}
-              </div>
-            ) : (
-              <Text className={styles.quiet}>Chưa ghi nhận tệp thay đổi.</Text>
-            )}
-          </section>
-          <section className={styles.section}>
-            <Title2 className={styles.sectionTitle}>Xác minh</Title2>
-            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-              {run.verificationState === "VERIFIED" ? (
-                <CheckmarkCircle20Regular color="#77ba91" />
-              ) : (
-                <Clock20Regular color="#75a9f2" />
-              )}
-              <Text>
-                {run.verificationState === "VERIFIED"
-                  ? "Đã xác minh trước khi bàn giao"
-                  : "Chưa có bàn giao đã xác minh"}
-              </Text>
+            <div className={styles.sectionHead}>
+              <Title2 className={styles.sectionTitle}>Xác minh</Title2>
+              {reportEntries.length ? (
+                <Button
+                  appearance="subtle"
+                  size="small"
+                  onClick={() => setShowAllChecks((value) => !value)}
+                >
+                  {showAllChecks
+                    ? "Chỉ hiện quan trọng"
+                    : `Xem tất cả ${reportEntries.length} khía cạnh`}
+                </Button>
+              ) : null}
             </div>
+            {reportEntries.length ? (
+              visibleChecks.map(([dimension, result]) => (
+                <div className={styles.checkRow} key={dimension}>
+                  <div>
+                    <Text>{qualityDimensionLabel(dimension)}</Text>
+                    {result.evidence[0] ? (
+                      <Text block className={styles.checkEvidence} size={100}>
+                        {result.evidence[0]}
+                      </Text>
+                    ) : null}
+                  </div>
+                  <Badge appearance="tint" color={qualityStateTone(result.state)}>
+                    {qualityStateLabel(result.state)}
+                  </Badge>
+                </div>
+              ))
+            ) : (
+              <Text className={styles.quiet}>
+                {run.verificationState === "VERIFIED"
+                  ? "Đã xác minh tính đúng đắn trước khi bàn giao."
+                  : "Chưa có bàn giao đã xác minh."}
+              </Text>
+            )}
+            {quality?.reviewSkipped ? (
+              <Text className={styles.quiet} size={200}>
+                Bỏ qua đánh giá độc lập: {quality.reviewSkipped}
+              </Text>
+            ) : quality?.review ? (
+              <Text size={200}>
+                Đánh giá độc lập:{" "}
+                {quality.review.status === "APPROVED" ? "Đã chấp thuận" : "Chưa chấp thuận"}
+              </Text>
+            ) : null}
             {run.error ? (
               <MessageBar intent={run.state === "PAUSED" ? "warning" : "error"}>
                 <MessageBarBody>
@@ -344,8 +572,112 @@ export function RunPage({
               </MessageBar>
             ) : null}
           </section>
+          {riskEntries.length ? (
+            <section className={styles.section}>
+              <div className={styles.sectionHead}>
+                <Title2 className={styles.sectionTitle}>Rủi ro</Title2>
+                <Badge appearance="tint" color={riskLevelTone(aggregateRiskLevel)}>
+                  {riskLevelLabel(aggregateRiskLevel)}
+                </Badge>
+              </div>
+              {notableRisk.length ? (
+                <Text className={styles.quiet} size={200}>
+                  MAF đã điều chỉnh mức xác minh dựa trên các yếu tố dưới đây.
+                </Text>
+              ) : (
+                <Text className={styles.quiet} size={200}>
+                  Không có yếu tố rủi ro đáng chú ý trong thay đổi này.
+                </Text>
+              )}
+              {visibleRisk.map(([dimension, value]) => (
+                <div className={styles.riskRow} key={dimension}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                    <Text size={200}>{riskDimensionLabel(dimension)}</Text>
+                    <Badge appearance="tint" color={riskLevelTone(value.level)} size="small">
+                      {riskLevelLabel(value.level)}
+                    </Badge>
+                  </div>
+                  <Text className={styles.quiet} size={100}>
+                    {riskProvenanceNote(value.provenance) ?? value.evidence[0]}
+                  </Text>
+                </div>
+              ))}
+              {riskEntries.length > notableRisk.length ? (
+                <Button
+                  appearance="subtle"
+                  className={styles.toggle}
+                  size="small"
+                  onClick={() => setShowAllRisk((value) => !value)}
+                >
+                  {showAllRisk
+                    ? "Chỉ hiện yếu tố đáng chú ý"
+                    : `Xem chi tiết cả ${riskEntries.length} yếu tố`}
+                </Button>
+              ) : null}
+            </section>
+          ) : null}
+          {delivery ? (
+            <section className={styles.section}>
+              <div className={styles.sectionHead}>
+                <Title2 className={styles.sectionTitle}>Bàn giao</Title2>
+                <Badge appearance="tint" color={mergeEligibilityTone(delivery.mergeEligibility)}>
+                  {mergeEligibilityLabel(delivery.mergeEligibility)}
+                </Badge>
+              </div>
+              <Text size={200}>
+                MAF không tự merge — bàn giao luôn cần phê duyệt bên ngoài (CI hoặc con người).
+              </Text>
+              {delivery.handoff.knownWarnings.length ? (
+                <div className={styles.warningList}>
+                  {delivery.handoff.knownWarnings.map((warning) => (
+                    <div className={styles.checkRow} key={warning.dimension}>
+                      <Text size={200}>{qualityDimensionLabel(warning.dimension)}</Text>
+                      <Badge appearance="tint" color={qualityStateTone(warning.state)} size="small">
+                        {qualityStateLabel(warning.state)}
+                      </Badge>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </section>
+          ) : null}
+          <section className={styles.section}>
+            <Title2 className={styles.sectionTitle}>Thay đổi</Title2>
+            {run.changedFiles.length ? (
+              <div className={styles.fileList}>
+                {run.changedFiles.map((file) => (
+                  <Text className={styles.file} key={file}>
+                    {file}
+                  </Text>
+                ))}
+              </div>
+            ) : (
+              <Text className={styles.quiet}>Chưa ghi nhận tệp thay đổi.</Text>
+            )}
+          </section>
         </div>
         <aside className={styles.column}>
+          {costBreakdown.length ? (
+            <section className={styles.section}>
+              <Title2 className={styles.sectionTitle}>Chi phí</Title2>
+              <div className={styles.costGrid}>
+                {costBreakdown.map((entry) => (
+                  <div className={styles.signal} key={entry.label}>
+                    <Text size={200}>{entry.label}</Text>
+                    <Text size={200}>{formatCost(entry.value ?? 0)}</Text>
+                  </div>
+                ))}
+                <div className={styles.signal}>
+                  <Text weight="semibold" size={200}>
+                    Tổng
+                  </Text>
+                  <Text weight="semibold" size={200}>
+                    {formatCost(run.cost.total)}
+                  </Text>
+                </div>
+              </div>
+            </section>
+          ) : null}
           <section className={styles.section}>
             <Title2 className={styles.sectionTitle}>Hoạt động</Title2>
             {events.length ? (
@@ -355,7 +687,7 @@ export function RunPage({
                   .reverse()
                   .map((event) => (
                     <div className={styles.event} key={event.id}>
-                      <Text size={200}>{event.type}</Text>
+                      <Text size={200}>{eventTypeLabel(event.type)}</Text>
                       <Text className={styles.quiet} size={100}>
                         {formatDate(event.timestamp)}
                       </Text>
@@ -373,26 +705,26 @@ export function RunPage({
             <div className={styles.advancedBody}>
               <div style={{ display: "flex", gap: 9, alignItems: "center" }}>
                 <Code20Regular />
-                <Text>Runtime intelligence</Text>
+                <Text>Điều chỉnh mức độ giám sát</Text>
               </div>
               <Text className={styles.quiet} size={200}>
                 {run.modeExplanation.reason}
               </Text>
               <div className={styles.fact}>
                 <Text className={styles.quiet} size={200}>
-                  Execution mode (effective)
+                  Chế độ đang áp dụng
                 </Text>
-                <Text>{run.effectiveMode ?? run.executionMode}</Text>
+                <Text>{friendlyMode(run.effectiveMode ?? run.executionMode)}</Text>
               </div>
               {run.desiredMode && run.desiredMode !== run.effectiveMode ? (
                 <div className={styles.fact}>
                   <Text className={styles.quiet} size={200}>
-                    Desired mode (not yet enforced)
+                    Chế độ mong muốn (chưa áp dụng)
                   </Text>
                   <Text>
-                    {run.desiredMode}
+                    {friendlyMode(run.desiredMode)}
                     {run.modeExplanation.pendingEnforcement
-                      ? ` — pending ${run.modeExplanation.pendingEnforcement.method}`
+                      ? ` — chờ ${run.modeExplanation.pendingEnforcement.method}`
                       : ""}
                   </Text>
                 </div>
@@ -411,8 +743,8 @@ export function RunPage({
                   {!budgetAllocated || !budgetAllocated.configured
                     ? "Chưa cấu hình (không giới hạn)"
                     : budgetAllocated.mode === "HARD"
-                      ? `Giới hạn cứng — $${budgetAllocated.allocation?.total.toFixed(2)}`
-                      : `Khuyến nghị — $${budgetAllocated.allocation?.total.toFixed(2)}`}
+                      ? `Giới hạn cứng — ${formatCost(budgetAllocated.allocation?.total ?? 0)}`
+                      : `Khuyến nghị — ${formatCost(budgetAllocated.allocation?.total ?? 0)}`}
                 </Text>
               </div>
               {costEstimated?.estimate ? (
@@ -421,8 +753,8 @@ export function RunPage({
                     Ước tính chi phí ({costEstimated.estimate.confidence})
                   </Text>
                   <Text>
-                    ${costEstimated.estimate.low.toFixed(2)} – $
-                    {costEstimated.estimate.high.toFixed(2)}
+                    {formatCost(costEstimated.estimate.low)} –{" "}
+                    {formatCost(costEstimated.estimate.high)}
                   </Text>
                 </div>
               ) : (
@@ -451,26 +783,13 @@ export function RunPage({
                 )}
               </div>
               <div>
-                <Text weight="semibold">Bằng chứng chất lượng</Text>
-                {(["Security", "Performance"] as const).map((dimension) => {
-                  const result = quality?.report?.[dimension];
-                  return (
-                    <div className={styles.signal} key={dimension}>
-                      <Text size={200}>{dimension}</Text>
-                      <Text className={styles.quiet} size={200}>
-                        {qualityStateLabel(result?.state)}
-                      </Text>
-                    </div>
-                  );
-                })}
-              </div>
-              <div>
-                <Text weight="semibold">Chuyển đổi chế độ</Text>
+                <Text weight="semibold">Lịch sử điều chỉnh giám sát</Text>
                 {run.modeExplanation.timeline.length ? (
                   run.modeExplanation.timeline.map((transition) => (
                     <div className={styles.signal} key={`${transition.timestamp}-${transition.to}`}>
                       <Text size={200}>
-                        {transition.from} sang {transition.to}
+                        {friendlyMode(transition.from as Run["executionMode"])} sang{" "}
+                        {friendlyMode(transition.to as Run["executionMode"])}
                         {transition.enforcement ? ` (${transition.enforcement})` : ""}
                       </Text>
                       <Text className={styles.quiet} size={200}>
@@ -480,10 +799,16 @@ export function RunPage({
                   ))
                 ) : (
                   <Text block className={styles.quiet} size={200}>
-                    Chưa có chuyển đổi chế độ.
+                    Chưa có điều chỉnh nào.
                   </Text>
                 )}
               </div>
+              {run.error && capsule === undefined && run.state !== "PAUSED" ? (
+                <div style={{ display: "flex", gap: 9, alignItems: "center" }}>
+                  <ShieldError20Regular />
+                  <Text size={200}>Xem chi tiết lỗi trong phần Xác minh ở trên.</Text>
+                </div>
+              ) : null}
             </div>
           </details>
         </aside>

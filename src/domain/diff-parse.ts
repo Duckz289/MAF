@@ -14,7 +14,22 @@ export interface FilePatch {
   /** Git reported a binary patch body that line-oriented security checkers cannot inspect. */
   binary: boolean;
   /** Other Git change forms whose destination bytes are not present in the textual patch. */
-  uninspectableReasons?: Array<"BINARY" | "GITLINK" | "RENAME_OR_COPY">;
+  uninspectableReasons?: Array<"BINARY" | "GITLINK" | "RENAME_OR_COPY" | "MODE_CHANGE">;
+  /** Hunk-local context retained for conservative lexical-state proofs. */
+  hunks?: FilePatchHunk[];
+}
+
+export interface FilePatchHunkLine {
+  kind: "CONTEXT" | "ADDED" | "REMOVED";
+  text: string;
+  /** Index in FilePatch.addedLines/removedLines for changed lines. */
+  changedIndex?: number;
+}
+
+export interface FilePatchHunk {
+  oldStart: number;
+  newStart: number;
+  lines: FilePatchHunkLine[];
 }
 
 const stripPrefix = (path: string): string => path.replace(/^(?:a|b)\//u, "").replace(/\\/g, "/");
@@ -100,7 +115,8 @@ export const parseFilePatches = (patch: string): FilePatch[] => {
   let current: FilePatch | undefined;
   let minusFile: string | undefined;
   let diffFile: string | undefined;
-  let pendingUninspectable = new Set<"BINARY" | "GITLINK" | "RENAME_OR_COPY">();
+  let pendingUninspectable = new Set<"BINARY" | "GITLINK" | "RENAME_OR_COPY" | "MODE_CHANGE">();
+  let currentHunk: FilePatchHunk | undefined;
   const ensureCurrent = (): FilePatch | undefined => {
     if (!current && diffFile) {
       current = { file: diffFile, addedLines: [], removedLines: [], binary: false };
@@ -108,7 +124,9 @@ export const parseFilePatches = (patch: string): FilePatch[] => {
     }
     return current;
   };
-  const markUninspectable = (reason: "BINARY" | "GITLINK" | "RENAME_OR_COPY"): void => {
+  const markUninspectable = (
+    reason: "BINARY" | "GITLINK" | "RENAME_OR_COPY" | "MODE_CHANGE",
+  ): void => {
     pendingUninspectable.add(reason);
     const entry = ensureCurrent();
     if (!entry) return;
@@ -122,12 +140,18 @@ export const parseFilePatches = (patch: string): FilePatch[] => {
         decodeGitPath(diffMatch[3] ?? diffMatch[4] ?? diffMatch[1] ?? diffMatch[2] ?? ""),
       );
       current = undefined;
+      currentHunk = undefined;
       minusFile = undefined;
       pendingUninspectable = new Set();
       continue;
     }
+    if (/^(?:old mode|new mode) \d{6}$/u.test(rawLine)) {
+      markUninspectable("MODE_CHANGE");
+      if (/ 160000$/u.test(rawLine)) markUninspectable("GITLINK");
+      continue;
+    }
     if (
-      /^(?:new file mode|deleted file mode|old mode|new mode) 160000$/u.test(rawLine) ||
+      /^(?:new file mode|deleted file mode) 160000$/u.test(rawLine) ||
       /^index [0-9a-f]+\.\.[0-9a-f]+ 160000$/iu.test(rawLine)
     ) {
       markUninspectable("GITLINK");
@@ -147,6 +171,7 @@ export const parseFilePatches = (patch: string): FilePatch[] => {
         current = { file, addedLines: [], removedLines: [], binary: false };
         files.push(current);
       }
+      currentHunk = undefined;
       if (current && pendingUninspectable.size > 0) {
         current.uninspectableReasons = [...pendingUninspectable];
         current.binary = pendingUninspectable.has("BINARY");
@@ -165,8 +190,30 @@ export const parseFilePatches = (patch: string): FilePatch[] => {
       continue;
     }
     if (!current) continue;
-    if (rawLine.startsWith("+")) current.addedLines.push(rawLine.slice(1));
-    else if (rawLine.startsWith("-")) current.removedLines.push(rawLine.slice(1));
+    const hunkMatch = rawLine.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(?: .*)?$/u);
+    if (hunkMatch?.[1] !== undefined && hunkMatch[2] !== undefined) {
+      currentHunk = {
+        oldStart: Number.parseInt(hunkMatch[1], 10),
+        newStart: Number.parseInt(hunkMatch[2], 10),
+        lines: [],
+      };
+      current.hunks ??= [];
+      current.hunks.push(currentHunk);
+      continue;
+    }
+    if (rawLine.startsWith("+")) {
+      const changedIndex = current.addedLines.length;
+      const text = rawLine.slice(1);
+      current.addedLines.push(text);
+      currentHunk?.lines.push({ kind: "ADDED", text, changedIndex });
+    } else if (rawLine.startsWith("-")) {
+      const changedIndex = current.removedLines.length;
+      const text = rawLine.slice(1);
+      current.removedLines.push(text);
+      currentHunk?.lines.push({ kind: "REMOVED", text, changedIndex });
+    } else if (rawLine.startsWith(" ")) {
+      currentHunk?.lines.push({ kind: "CONTEXT", text: rawLine.slice(1) });
+    }
   }
   return files;
 };

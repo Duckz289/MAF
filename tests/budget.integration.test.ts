@@ -2,7 +2,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { GuidedContextBuilder } from "../src/application/context-builder";
-import { RunService, type RecoveryPolicy } from "../src/application/run-service";
+import { type RecoveryPolicy, RunService } from "../src/application/run-service";
 import { EvidenceRuntimeSignalCollector } from "../src/application/runtime-signal-collector";
 import type { BudgetReservationPolicy } from "../src/domain/budget";
 import { ProviderCircuitBreaker } from "../src/domain/circuit-breaker";

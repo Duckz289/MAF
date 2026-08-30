@@ -1,3 +1,5 @@
+import type { MissionContract } from "./mission";
+
 export type ExecutionMode = "STRICT" | "GUIDED" | "SOLO_NATIVE";
 
 /** Ascending execution freedom. Used to classify transitions as tightening or broadening. */
@@ -30,6 +32,7 @@ export type ModeEnforcementMethod =
 
 export type VerificationState =
   | "PROPOSED"
+  | "NOT_CHECKED"
   | "VERIFYING"
   | "VERIFIED"
   | "QUARANTINED"
@@ -62,10 +65,20 @@ export type ModelHealth = "HEALTHY" | "DEGRADED" | "BROKEN";
 export interface Task {
   id: string;
   prompt: string;
+  /**
+   * Canonical authority-bearing interpretation for current tasks. `prompt` remains compatibility
+   * input and objective text; it is never itself an authority contract. Absent is legacy data,
+   * never permission to infer authority from prose.
+   */
+  missionContract?: MissionContract;
   repositoryPath: string;
   revision: string;
   createdAt: string;
   verification: VerificationSpec;
+  /** Identity of the canonical normalized verification specification persisted with this task. */
+  verificationSpecIdentity?: string;
+  /** Explicit registry mission/node scope this task was created to execute. */
+  missionBinding?: { missionId: string; nodeId: string };
   /** Optional trusted baseline/candidate command used only when the assurance plan requires it. */
   performance?: PerformanceSpec;
   /** Optional trusted fault-injection command used only when the assurance plan requires it. */
@@ -139,6 +152,10 @@ export interface Run {
   /** The mode actually enforced on the current/next agent session, backed by evidence. */
   effectiveMode: ExecutionMode;
   verificationState: VerificationState;
+  /** Canonical verification-spec identity used by this run. */
+  verificationSpecIdentity?: string;
+  /** Mirror of the task's explicit mission/node scope; never inferred from a later handoff. */
+  missionBinding?: { missionId: string; nodeId: string };
   /** Derived (M6) from verification + quality report + any required independent review. */
   trustState?: TrustState;
   agent: string;
@@ -243,6 +260,76 @@ export interface Verification {
   completedAt: string;
   attempt?: number;
   candidateId?: string;
+  /** Deterministic identity of the canonical, normalized verification specification. */
+  verificationSpecIdentity?: string;
+  /** Literal candidate-material digest the verifier started from. */
+  candidateDigest?: string;
+  /** Honest local environment binding; absent/insufficient evidence cannot authorize promotion. */
+  environment?: VerificationEnvironmentBinding;
+  /** Canonical-bound verifiers set this explicitly; legacy injected ports may be unbound. */
+  authority?: { authorized: boolean; reasons: string[] };
+  /**
+   * Structured execution evidence produced at the verifier boundary — the only place that knows
+   * which shell ran and whether the verification command's NAME resolved inside it. Output-text
+   * matching alone cannot reliably distinguish "the verifier command does not exist" (a broken
+   * verification environment) from candidate-caused failures: on Windows PowerShell a missing
+   * command exits 1 with prose no generic pattern matches. This field is consumed by failure
+   * attribution ahead of any output regex.
+   */
+  execution?: VerifierExecutionEvidence;
+}
+
+export interface VerificationEnvironmentBinding {
+  /** Digest over the bounded fields below. This is not a claim that the whole host is sealed. */
+  identity: string;
+  identityQuality: "BOUNDED" | "UNKNOWN";
+  promotionAuthority: "BOUNDED_LOCAL" | "INSUFFICIENT";
+  materialization: "FRESH_CANDIDATE_MATERIALIZATION" | "UNAVAILABLE";
+  candidateContainment: "WORKSPACE_CONTAINED" | "INSUFFICIENT";
+  gitMetadata: "EXCLUDED" | "UNKNOWN";
+  filesystemIsolation: "FRESH_ROOT_WITH_STATIC_ESCAPE_GUARD" | "NOT_ESTABLISHED";
+  externalToolchain: "OPERATOR_PATH_ALLOWED" | "UNKNOWN";
+  temporaryArtifacts: "DEDICATED_EXTERNAL_TEMP_ALLOWED" | "UNKNOWN";
+  platform: string;
+  architecture: string;
+  harnessRuntime: string;
+  shell: string;
+  dependencyManifestDigests: Array<{ path: string; digest: string }>;
+  unknowns: string[];
+}
+
+export interface VerifierExecutionEvidence {
+  /** False when the verifier's shell process itself could not be spawned. */
+  shellSpawned: boolean;
+  /**
+   * RESOLVED: the shell started and reported no command-resolution error. COMMAND_NOT_FOUND: the
+   * shell itself reported the verification command's name as unresolvable (the verifier toolchain
+   * is unavailable — the candidate's code cannot cause this shape). SHELL_UNAVAILABLE: the shell
+   * process could not be spawned at all. UNKNOWN: no structured evidence either way.
+   */
+  commandResolution: "RESOLVED" | "COMMAND_NOT_FOUND" | "SHELL_UNAVAILABLE" | "UNKNOWN";
+  /**
+   * How the verifier process ended, as observed by the boundary that ran it rather than inferred
+   * from its output.
+   *
+   * COMPLETED   the process ran to completion and its exit code is meaningful.
+   * TIMED_OUT   the harness's own timer stopped it. This is a HARNESS fact: no output pattern is
+   *             needed, and none could be trusted — a candidate's program can print "timed out".
+   * SIGNALLED   a signal terminated it (including the harness's escalation to a forced tree kill).
+   * NOT_STARTED the shell never ran.
+   *
+   * A timeout is a bounded-execution outcome, not a test result. It is deliberately NOT reported
+   * as a candidate failure (a candidate CAN hang, so repair stays available) and deliberately NOT
+   * retried as an environment fault (re-running a timeout costs another full timeout and rarely
+   * clears). Recording the shape structurally is what lets attribution choose correctly.
+   */
+  termination?: "COMPLETED" | "TIMED_OUT" | "SIGNALLED" | "NOT_STARTED";
+  /** The signal that terminated the verifier process, when the runtime reported one. */
+  terminatingSignal?: string;
+  /** Wall-clock duration of the verification command, in milliseconds. */
+  durationMs?: number;
+  /** The timeout ceiling the verification command was run under, in milliseconds. */
+  timeoutMs?: number;
 }
 
 export interface TokenUsage {
@@ -328,6 +415,7 @@ export const signalValues = (snapshot: RuntimeSignalSnapshot): RuntimeSignals =>
  * verifier failures without reaching this classifier.
  */
 export type FailureClassification =
+  | "PROCESS_RESTART"
   | "PROVIDER_TRANSIENT"
   | "PROVIDER_DEGRADED"
   | "RATE_LIMIT"
@@ -383,6 +471,18 @@ export interface RecoveryCapsule {
   decisions: string[];
   recoveryReason: FailureClassification;
   recoveryDetail: string;
+  /**
+   * Safety limits ALREADY CONSUMED by this run before it paused. Restarting a paused run must not
+   * hand it a fresh allowance: `maxRecoveryAttempts` and `maxPolicyRestarts` bound how much
+   * automatic remediation a single run may spend, and a resume that reset them to zero would turn
+   * every bounded limit into an unbounded one, one resume at a time. Absent on capsules written
+   * before this field existed; a consumer reading a legacy capsule must say so rather than
+   * assuming zero were used.
+   */
+  safetyCountersUsed?: {
+    recoveryAttempts: number;
+    policyRestarts: number;
+  };
   createdAt: string;
 }
 

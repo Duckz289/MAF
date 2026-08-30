@@ -1,13 +1,14 @@
-import { Button, MessageBar, MessageBarBody, Text, makeStyles } from "@fluentui/react-components";
+import { Button, MessageBar, MessageBarBody, makeStyles, Text } from "@fluentui/react-components";
 import {
+  ArrowRight20Regular,
   Bot20Regular,
   Key20Regular,
   Play20Regular,
   Settings20Regular,
 } from "@fluentui/react-icons";
+import { connectionStatusLabel } from "../presentation";
 import type { Connection, ConnectionTestResult } from "../types";
 import { formatDate } from "../utils";
-import { connectionStatusLabel } from "../presentation";
 import { StatusBadge } from "./StatusBadge";
 
 const useStyles = makeStyles({
@@ -57,31 +58,45 @@ export function ProviderCard({
   checking,
   connection,
   onConfigure,
+  configureActionLabel,
+  onDisconnect,
+  onPrimaryAction,
   onTest,
+  primaryActionDisabled,
+  primaryActionLabel,
   result,
 }: {
   checking?: boolean | undefined;
   connection: Connection;
   onConfigure?: (() => void) | undefined;
+  configureActionLabel?: string | undefined;
+  onDisconnect?: (() => void) | undefined;
+  onPrimaryAction?: (() => void) | undefined;
   onTest?: (() => void) | undefined;
+  primaryActionDisabled?: boolean | undefined;
+  primaryActionLabel?: string | undefined;
   result?: ConnectionTestResult | undefined;
 }) {
   const styles = useStyles();
-  const native = connection.method === "NATIVE_SESSION";
+  const accountAgent = connection.category === "ACCOUNT_AGENT";
   const status = result?.status ?? connection.status;
   return (
     <article className={styles.card}>
       <div className={styles.head}>
         <div className={styles.identity}>
           <span className={styles.mark} aria-hidden="true">
-            {native ? <Bot20Regular /> : <Key20Regular />}
+            {accountAgent ? <Bot20Regular /> : <Key20Regular />}
           </span>
           <div className={styles.name}>
             <Text size={400} weight="semibold">
               {connection.provider}
             </Text>
             <Text size={200} style={{ color: "#8d97a2" }}>
-              {native ? "Agent CLI native" : "Thực thi qua API"}
+              {accountAgent
+                ? connection.method === "NATIVE_SESSION"
+                  ? "Tài khoản và agent CLI native"
+                  : "Tài khoản provider"
+                : "API provider"}
             </Text>
           </div>
         </div>
@@ -97,27 +112,73 @@ export function ProviderCard({
           Xác thực
         </Text>
         <Text className={styles.value} size={200}>
-          {native ? "Do phiên Claude Code quản lý" : "Tham chiếu credential"}
+          {accountAgent
+            ? (connection.authentication ??
+              (connection.method === "OAUTH_PKCE" ? "OAuth provider" : "Phiên native"))
+            : "API key"}
         </Text>
+        {connection.account ? (
+          <>
+            <Text className={styles.label} size={200}>
+              Tài khoản
+            </Text>
+            <Text className={styles.value} size={200}>
+              {connection.account.email}
+              {connection.account.planType
+                ? ` · ${formatPlanType(connection.account.planType)}`
+                : ""}
+            </Text>
+          </>
+        ) : null}
         <Text className={styles.label} size={200}>
           Khả năng
         </Text>
         <Text className={styles.value} size={200}>
           {connection.capability}
         </Text>
+        {connection.protocol ? (
+          <>
+            <Text className={styles.label} size={200}>
+              Protocol
+            </Text>
+            <Text className={styles.value} size={200}>
+              {connection.protocol === "OPENAI_COMPATIBLE"
+                ? "OpenAI Compatible"
+                : "Anthropic Compatible"}
+            </Text>
+          </>
+        ) : null}
+        {connection.baseUrl ? (
+          <>
+            <Text className={styles.label} size={200}>
+              Endpoint
+            </Text>
+            <Text className={styles.value} size={200}>
+              {connection.baseUrl}
+            </Text>
+          </>
+        ) : null}
+        {connection.defaultModel ? (
+          <>
+            <Text className={styles.label} size={200}>
+              Model mặc định
+            </Text>
+            <Text className={styles.value} size={200}>
+              {connection.defaultModel}
+            </Text>
+          </>
+        ) : null}
         <Text className={styles.label} size={200}>
           MAF lưu trữ
         </Text>
         <Text className={styles.value} size={200}>
-          {native
-            ? "Không lưu OAuth token"
+          {accountAgent
+            ? "Chỉ trạng thái; email/gói chỉ được đọc trực tiếp khi tải trang"
             : (connection.credentialReference ?? "Không lưu API key thô")}
         </Text>
       </div>
       <Text className={styles.note} size={200}>
-        {native
-          ? "MAF dùng phiên đăng nhập native sẵn có của Claude Code."
-          : "Kho bí mật an toàn và executor OpenAI chưa có trong bản dựng này."}
+        {connection.detail}
       </Text>
       {result ? (
         <MessageBar intent={result.status === "UNAVAILABLE" ? "warning" : "info"}>
@@ -132,6 +193,11 @@ export function ProviderCard({
         </MessageBar>
       ) : null}
       <div className={styles.actions}>
+        {onDisconnect ? (
+          <Button appearance="subtle" onClick={onDisconnect}>
+            {accountAgent ? "Ngắt khỏi MAF" : "Ngắt kết nối"}
+          </Button>
+        ) : null}
         {onTest ? (
           <Button
             appearance="secondary"
@@ -139,15 +205,43 @@ export function ProviderCard({
             icon={<Play20Regular />}
             onClick={onTest}
           >
-            {checking ? "Đang kiểm tra" : result ? "Kiểm tra lại" : "Kiểm tra kết nối"}
+            {checking
+              ? "Đang kiểm tra"
+              : result
+                ? "Kiểm tra lại"
+                : accountAgent
+                  ? "Kiểm tra trạng thái"
+                  : "Kiểm tra kết nối"}
+          </Button>
+        ) : null}
+        {onPrimaryAction ? (
+          <Button
+            appearance="primary"
+            icon={<ArrowRight20Regular />}
+            onClick={onPrimaryAction}
+            {...(primaryActionDisabled === undefined ? {} : { disabled: primaryActionDisabled })}
+          >
+            {primaryActionLabel ?? "Cấu hình"}
           </Button>
         ) : null}
         {onConfigure ? (
           <Button appearance="primary" icon={<Settings20Regular />} onClick={onConfigure}>
-            Cấu hình
+            {configureActionLabel ?? "Cấu hình"}
           </Button>
         ) : null}
       </div>
     </article>
   );
+}
+
+function formatPlanType(planType: string): string {
+  const labels: Record<string, string> = {
+    plus: "ChatGPT Plus",
+    pro: "ChatGPT Pro",
+    team: "ChatGPT Team",
+    business: "ChatGPT Business",
+    enterprise: "ChatGPT Enterprise",
+    free: "ChatGPT Free",
+  };
+  return labels[planType.toLowerCase()] ?? planType;
 }

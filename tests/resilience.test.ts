@@ -156,14 +156,14 @@ describe("deriveResiliencePosture", () => {
     false,
   );
 
-  it("returns a deterministic PASS when no scenario is relevant to the diff", () => {
+  it("keeps detector silence NOT_CHECKED when no scenario is relevant to the diff", () => {
     const empty = deriveResilienceRelevance(
       patchFor("src/domain/pure.ts", ["const x = 1;"]),
       false,
     );
     const posture = deriveResiliencePosture(undefined, "candidate-1", "digest-1", empty);
-    expect(posture.state).toBe("PASS");
-    expect(posture.evidence.join(" ")).toContain("no production-like failure scenario is relevant");
+    expect(posture.state).toBe("NOT_CHECKED");
+    expect(posture.evidence.join(" ")).toContain("detector silence is not durability evidence");
   });
 
   it("is NOT_CHECKED when relevant scenarios exist but no measurement was produced", () => {

@@ -2,6 +2,13 @@ export interface ProjectPreferences {
   providerPreference?: string | undefined;
   qualityPreference?: "FAST" | "BALANCED" | "HIGH" | "CRITICAL" | undefined;
   budgetPreference?: "AUTO" | "CUSTOM" | undefined;
+  /** Default execution mode applied to new tasks created from this project; AUTO defers to the
+   * adaptive policy (see mode-controller.ts) rather than pinning a mode. */
+  executionModePreference?: "AUTO" | "STRICT" | "GUIDED" | "SOLO_NATIVE" | undefined;
+  /** Default per-task budget seeded into new runs' real BudgetPolicy (see budget.ts); undefined
+   * means no project-level default is configured, not a zero limit. */
+  budgetLimitUsd?: number | undefined;
+  budgetMode?: "ADVISORY" | "HARD" | undefined;
 }
 
 export interface ProjectRecord {
@@ -52,5 +59,18 @@ export class InMemoryProjectRegistry {
     };
     this.projects.set(project.id, project);
     return structuredClone(project);
+  }
+
+  /** Merges preferences (undefined fields in the patch leave the stored value unchanged). */
+  update(id: string, preferencesPatch: ProjectPreferences): ProjectRecord | undefined {
+    const existing = this.projects.get(id);
+    if (!existing) return undefined;
+    const updated: ProjectRecord = {
+      ...existing,
+      preferences: { ...existing.preferences, ...preferencesPatch },
+      updatedAt: new Date().toISOString(),
+    };
+    this.projects.set(id, updated);
+    return structuredClone(updated);
   }
 }

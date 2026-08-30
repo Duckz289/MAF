@@ -1,8 +1,8 @@
 import { TasksApp20Regular } from "@fluentui/react-icons";
-import type { Agent, Navigate, Project } from "../types";
 import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
 import { TaskComposer } from "../components/TaskComposer";
+import type { Agent, Navigate, Project } from "../types";
 
 export function NewTaskPage({
   agents,

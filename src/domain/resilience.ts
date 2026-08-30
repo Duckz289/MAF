@@ -1,3 +1,4 @@
+import type { AnalysisCoverage } from "./assurance";
 import { parseFilePatches } from "./diff-parse";
 import type { ResilienceScenario } from "./types";
 
@@ -19,6 +20,23 @@ export interface ResilienceRelevanceEvidence {
    * signal we could not look for is unknown, not evidence of nothing.
    */
   uninspectable: boolean;
+  /**
+   * COVERAGE of this relevance derivation, as distinct from its RESULT (trust invariant E). The
+   * scan reads CODE files (see {@link isResilienceEvidencePath}) looking for outbound-dependency,
+   * consistency and concurrency shapes. It never opens a Compose file, a Kubernetes manifest, a
+   * Terraform plan, a CI workflow or a `.env`: those carry deployment/operational behaviour with
+   * no code shape to match. When such an artefact is in the diff, "zero relevant scenarios" is a
+   * statement about the code files only — it cannot discharge a concern that the operational
+   * artefact itself raised. That is precisely how an operational RESILIENCE requirement was
+   * previously settled by a scan that never looked at the operational file.
+   */
+  coverage?: AnalysisCoverage;
+  /**
+   * Changed operational/deployment artefacts this content scan structurally cannot read. Always
+   * populated by {@link deriveResilienceRelevance}; optional only so that relevance objects built
+   * by older adapters/records stay readable, and read defensively wherever it gates.
+   */
+  uncoveredOperationalFiles?: string[];
 }
 
 const resilienceEvidencePath =
@@ -27,6 +45,18 @@ const nonProductionPath =
   /(^|\/)(?:tests?|__tests__|fixtures?|scripts?|tools?|benchmarks?)(\/|$)|\.(?:test|spec)\.[^/]+$/iu;
 const isResilienceEvidencePath = (file: string): boolean =>
   resilienceEvidencePath.test(file) && !nonProductionPath.test(file);
+
+/**
+ * Deployment/operational artefacts: the file classes that make OperationalSensitivity rise and
+ * that this content scan has no way to reason about. Declaring the boundary is the point — it is
+ * a coverage statement, not a detector, and no verdict is derived from matching it.
+ */
+const operationalArtifactPath =
+  /\.(?:ya?ml|tf|tfvars|hcl|toml|ini|cfg|conf|properties)$|(^|\/)(?:dockerfile[^/]*|docker-compose\.ya?ml|compose\.ya?ml|procfile|makefile)$|(^|\/)\.env(\.|$)|(^|\/)\.github\/workflows\/|(^|\/)(?:deploy|deployment|infra|infrastructure|k8s|kubernetes|helm|charts|terraform|ansible)(\/|$)/iu;
+const isUncoveredOperationalArtifact = (file: string): boolean =>
+  !isResilienceEvidencePath(file) &&
+  !nonProductionPath.test(file) &&
+  operationalArtifactPath.test(file);
 
 /** An outbound dependency on another process/service over a network or IPC boundary. */
 const outboundDependencySignal =
@@ -96,10 +126,35 @@ export const deriveResilienceRelevance = (
       "assurance plan requires CONCURRENCY (DataConsistencyRisk HIGH): duplicate-request and out-of-order scenarios are always relevant",
     );
   }
+  const uncoveredOperationalFiles = parseFilePatches(patch)
+    .filter((entry) => isUncoveredOperationalArtifact(entry.file))
+    .map((entry) => entry.file);
+  const coveredFileCount = parseFilePatches(patch).filter((entry) =>
+    isResilienceEvidencePath(entry.file),
+  ).length;
+  const coverage: AnalysisCoverage =
+    uncoveredOperationalFiles.length > 0
+      ? coveredFileCount > 0
+        ? "PARTIAL"
+        : "UNSUPPORTED"
+      : coveredFileCount > 0
+        ? "FULL"
+        : "NOT_APPLICABLE";
+  if (uncoveredOperationalFiles.length > 0) {
+    evidence.push(
+      `resilience relevance coverage ${coverage}: ${uncoveredOperationalFiles.length} deployment/operational artefact(s) changed that this content scan cannot read (${uncoveredOperationalFiles.slice(0, 10).join(", ")}) — their failure behaviour is not represented by the scenario relevance above`,
+    );
+  }
   if (evidence.length === 0) {
     evidence.push("no production-like failure scenario is evidenced by this candidate diff");
   }
-  return { scenarios: [...scenarios], evidence, uninspectable };
+  return {
+    scenarios: [...scenarios],
+    evidence,
+    uninspectable,
+    coverage,
+    uncoveredOperationalFiles,
+  };
 };
 
 export interface ResilienceScenarioResult {
@@ -129,6 +184,8 @@ export interface ResiliencePostureResult {
   state: "PASS" | "FAIL" | "NOT_CHECKED";
   evidence: string[];
   scenarios: ResilienceScenarioResult[];
+  /** Coverage of the relevance scan this posture rests on. Never inferred from the verdict. */
+  coverage?: AnalysisCoverage;
 }
 
 /**
@@ -143,21 +200,33 @@ export const deriveResiliencePosture = (
   expectedDiffDigest: string,
   relevance: ResilienceRelevanceEvidence,
 ): ResiliencePostureResult => {
-  // Zero relevant scenarios is deterministic diff evidence, not a missing check: when the plan
-  // requires RESILIENCE but this diff touches no failure-relevant path, there is legitimately
-  // nothing to inject. Checked before the measurement so the verdict never depends on a fault
-  // harness that has nothing to do — and it can never fabricate a pass, because relevance itself
-  // is derived from the same candidate diff the caller bound. One exception: an uninspectable
-  // (binary) diff proves nothing about absence of signals — that is unknown, not empty, and
-  // unknown stays NOT_CHECKED.
-  if (relevance.scenarios.length === 0 && !relevance.uninspectable) {
+  // A relevance scan is bounded discovery, not proof that no resilience scenario matters. An
+  // empty result therefore stays NOT_CHECKED; only candidate-bound scenario execution may PASS.
+  const uncoveredOperational = relevance.uncoveredOperationalFiles ?? [];
+  if (relevance.scenarios.length === 0 && uncoveredOperational.length > 0) {
+    // Trust invariant C/E: a relevance-empty verdict only resolves what the relevance scan can
+    // actually read. A deployment/operational artefact changed in this candidate, and the scan
+    // never opened it — reporting PASS here would let a content scan of the CODE discharge an
+    // obligation raised by the OPERATIONAL change. Unsupported coverage stays unresolved.
     return {
-      state: "PASS",
+      state: "NOT_CHECKED",
       evidence: [
         ...relevance.evidence,
-        "no production-like failure scenario is relevant to this candidate, so none was required to run",
+        `no failure scenario was derivable from the code files, but this candidate changes ${uncoveredOperational.length} deployment/operational artefact(s) whose resilience behaviour no available capability evaluates — absence of a code-shaped signal cannot resolve that`,
       ],
       scenarios: [],
+      ...(relevance.coverage ? { coverage: relevance.coverage } : {}),
+    };
+  }
+  if (relevance.scenarios.length === 0 && !relevance.uninspectable) {
+    return {
+      state: "NOT_CHECKED",
+      evidence: [
+        ...relevance.evidence,
+        "the bounded relevance scan found no scenario, but detector silence is not durability evidence",
+      ],
+      scenarios: [],
+      ...(relevance.coverage ? { coverage: relevance.coverage } : {}),
     };
   }
   if (relevance.scenarios.length === 0 && relevance.uninspectable) {
@@ -168,6 +237,7 @@ export const deriveResiliencePosture = (
         "relevance could not be derived from an uninspectable diff, so no scenario verdict is possible",
       ],
       scenarios: [],
+      ...(relevance.coverage ? { coverage: relevance.coverage } : {}),
     };
   }
   if (!measurement) {
@@ -175,6 +245,7 @@ export const deriveResiliencePosture = (
       state: "NOT_CHECKED",
       evidence: ["resilience evidence was required but no scenario execution was produced"],
       scenarios: [],
+      ...(relevance.coverage ? { coverage: relevance.coverage } : {}),
     };
   }
   if (
@@ -185,10 +256,16 @@ export const deriveResiliencePosture = (
       state: "NOT_CHECKED",
       evidence: ["resilience evidence is not bound to the current candidate id and diff digest"],
       scenarios: [],
+      ...(relevance.coverage ? { coverage: relevance.coverage } : {}),
     };
   }
   if (measurement.state !== "EXECUTED") {
-    return { state: "NOT_CHECKED", evidence: measurement.evidence, scenarios: [] };
+    return {
+      state: "NOT_CHECKED",
+      evidence: measurement.evidence,
+      scenarios: [],
+      ...(relevance.coverage ? { coverage: relevance.coverage } : {}),
+    };
   }
   const executed = new Map(measurement.scenarios.map((result) => [result.scenario, result]));
   const missing = relevance.scenarios.filter((scenario) => !executed.has(scenario));
@@ -200,6 +277,7 @@ export const deriveResiliencePosture = (
         `relevant scenario(s) were never executed: ${missing.join(", ")}`,
       ],
       scenarios: measurement.scenarios,
+      ...(relevance.coverage ? { coverage: relevance.coverage } : {}),
     };
   }
   const scored = relevance.scenarios
@@ -217,6 +295,22 @@ export const deriveResiliencePosture = (
         `scenario(s) were not run: ${notRun.map((result) => result.scenario).join(", ")}`,
       ],
       scenarios: measurement.scenarios,
+      ...(relevance.coverage ? { coverage: relevance.coverage } : {}),
+    };
+  }
+  if (failed.length === 0 && uncoveredOperational.length > 0) {
+    // Every scenario the CODE made relevant passed — and that is exactly as far as the evidence
+    // reaches. A deployment/operational artefact also changed in this candidate, and no scenario
+    // was or could be derived for it, so the obligation is not fully discharged. The executed
+    // evidence is preserved on the result rather than discarded.
+    return {
+      state: "NOT_CHECKED",
+      evidence: [
+        ...measurement.evidence,
+        `all ${scored.length} code-derived scenario(s) executed and passed, but ${uncoveredOperational.length} deployment/operational artefact(s) changed that the relevance scan cannot read (${uncoveredOperational.slice(0, 10).join(", ")}) — their failure behaviour remains unevaluated`,
+      ],
+      scenarios: measurement.scenarios,
+      ...(relevance.coverage ? { coverage: relevance.coverage } : {}),
     };
   }
   return {
@@ -232,5 +326,6 @@ export const deriveResiliencePosture = (
           ]),
     ],
     scenarios: measurement.scenarios,
+    ...(relevance.coverage ? { coverage: relevance.coverage } : {}),
   };
 };

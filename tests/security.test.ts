@@ -457,4 +457,21 @@ describe("redactSensitiveData (M8 persistence boundary)", () => {
       invalidCredentialCapability: "[REDACTED]",
     });
   });
+
+  it("redacts cookies, private keys, and fine-grained GitHub tokens without hiding telemetry", () => {
+    const value = redactSensitiveData({
+      cookie: "session=private-cookie-value",
+      privateKey: "private-key-value",
+      output: `github_pat_${"A".repeat(40)}`,
+      tokenEstimateBasis: "CHARACTERS_DIVIDED_BY_4",
+      inputTokens: 123,
+    });
+    expect(value).toMatchObject({
+      cookie: "[REDACTED]",
+      privateKey: "[REDACTED]",
+      tokenEstimateBasis: "CHARACTERS_DIVIDED_BY_4",
+      inputTokens: 123,
+    });
+    expect(JSON.stringify(value)).not.toContain("github_pat_");
+  });
 });

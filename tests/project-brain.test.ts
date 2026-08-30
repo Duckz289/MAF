@@ -1,10 +1,12 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { Pool } from "pg";
 import { describe, expect, it } from "vitest";
 import {
   InMemoryProjectBrain,
   LocalRepositoryIndex,
   OptionalCodebaseMemoryIndex,
+  PostgresProjectBrain,
 } from "../src/infrastructure/project-brain";
 import { runProcess } from "../src/infrastructure/process-utils";
 import {
@@ -26,6 +28,12 @@ describe("Project Brain", () => {
         evidenceIds: [],
         status: "ACTIVE",
         createdAt: new Date().toISOString(),
+        provenance: {
+          producer: "LOCAL_REPOSITORY_INDEX",
+          source: "REPOSITORY_SNAPSHOT",
+          sourceId: "src/a.ts",
+          sourceDigest: "a".repeat(64),
+        },
       }),
     ).rejects.toThrow("Facts require");
   });
@@ -41,6 +49,12 @@ describe("Project Brain", () => {
       evidenceIds: [],
       status: "ACTIVE",
       createdAt: new Date().toISOString(),
+      provenance: {
+        producer: "LOCAL_REPOSITORY_INDEX",
+        source: "REPOSITORY_SNAPSHOT",
+        sourceId: "src/a.ts",
+        sourceDigest: "a".repeat(64),
+      },
     });
     await brain.add({
       id: "fact",
@@ -51,9 +65,43 @@ describe("Project Brain", () => {
       evidenceIds: ["evidence"],
       status: "ACTIVE",
       createdAt: new Date().toISOString(),
+      provenance: {
+        producer: "LOCAL_REPOSITORY_INDEX",
+        source: "REPOSITORY_SNAPSHOT",
+        sourceId: "src/a.ts#exports",
+        sourceDigest: "a".repeat(64),
+      },
     });
     expect(await brain.markStale("project", "b")).toBe(2);
     expect(await brain.list("project", "a")).toEqual([]);
+  });
+
+  it("propagates PostgreSQL write failures instead of claiming durable knowledge", async () => {
+    const failure = new Error("project knowledge database unavailable");
+    const pool = {
+      query: async () => {
+        throw failure;
+      },
+    } as unknown as Pool;
+    const brain = new PostgresProjectBrain(pool);
+    await expect(
+      brain.add({
+        id: "fact",
+        projectId: "project",
+        revision: "a",
+        kind: "FACT",
+        statement: "A is exported",
+        evidenceIds: ["evidence"],
+        status: "ACTIVE",
+        createdAt: new Date().toISOString(),
+        provenance: {
+          producer: "LOCAL_REPOSITORY_INDEX",
+          source: "REPOSITORY_SNAPSHOT",
+          sourceId: "src/a.ts",
+          sourceDigest: "a".repeat(64),
+        },
+      }),
+    ).rejects.toBe(failure);
   });
 
   it("uses ast-grep for deterministic structural search", async () => {

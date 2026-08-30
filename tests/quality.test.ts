@@ -16,22 +16,29 @@ const lowRiskVector = deriveRiskVector({
   crossModuleEdgeCount: 0,
 });
 
-/** SECURITY HIGH (three auth-path files) — the vector that drives CRITICAL review. */
+/**
+ * SECURITY HIGH (three auth-path files) — the vector that drives CRITICAL review. All three files
+ * sit in ONE module on purpose: CodeCoupling then stays LOW, so INTEGRATION is raised only by the
+ * CRITICAL quality preference and not by evidence about the candidate. That keeps this fixture
+ * about the Security/review/durability rungs. The multi-module case — where CodeCoupling raises
+ * INTEGRATION from candidate evidence and the missing integration capability blocks promotion —
+ * is pinned separately in tests/trust-kernel.test.ts.
+ */
 const securityHighRiskVector = deriveRiskVector({
   files: [
     "src/api/auth/session.ts",
     "src/api/auth/credential-store.ts",
-    "src/domain/permission.ts",
+    "src/api/auth/permission.ts",
   ],
   moduleOwnership: {
     "src/api/auth/session.ts": "api",
     "src/api/auth/credential-store.ts": "api",
-    "src/domain/permission.ts": "domain",
+    "src/api/auth/permission.ts": "api",
   },
   packageOwnership: {
     "src/api/auth/session.ts": "src",
     "src/api/auth/credential-store.ts": "src",
-    "src/domain/permission.ts": "src",
+    "src/api/auth/permission.ts": "src",
   },
   crossModuleEdgeCount: 2,
 });
@@ -145,7 +152,7 @@ describe("deriveQualityReport", () => {
     expect(report.Correctness.provenance).toBe("DETERMINISTIC");
   });
 
-  it("warns on Architecture when the diff's coupling grew beyond the pre-execution estimate", () => {
+  it("keeps Architecture invariant when only the pre-execution context estimate changes", () => {
     const grown = deriveRiskVector({
       files: ["src/api/auth/session.ts", "src/domain/widget.ts"],
       moduleOwnership: {
@@ -159,15 +166,19 @@ describe("deriveQualityReport", () => {
       crossModuleEdgeCount: 3,
     });
     const grownPlan = buildAssurancePlan(grown, "BALANCED");
-    const report = deriveQualityReport(
+    const narrowContext = deriveQualityReport(
       reportInput({
         assurancePlan: grownPlan,
         preExecutionRisk: lowRiskVector,
         diffRisk: grown,
       }),
     );
+    const wideContext = deriveQualityReport(
+      reportInput({ assurancePlan: grownPlan, preExecutionRisk: grown, diffRisk: grown }),
+    );
     expect(grownPlan.required).toContain("ARCHITECTURE");
-    expect(report.Architecture.state).toBe("WARN");
+    expect(narrowContext.Architecture).toEqual(wideContext.Architecture);
+    expect(narrowContext.Architecture.state).toBe("PASS");
   });
 
   it("passes Architecture when the footprint stayed within the estimate", () => {
@@ -298,7 +309,7 @@ describe("deriveQualityReport", () => {
     );
   });
 
-  it("gates on measured Performance regression and promotes a candidate within threshold", () => {
+  it("gates on measured Performance regression without letting it erase discovery incompleteness", () => {
     const patch = patchFor("src/infrastructure/query.ts", [
       'await database.query("SELECT * FROM widgets");',
     ]);
@@ -344,7 +355,13 @@ describe("deriveQualityReport", () => {
     expect(deriveTrustState("VERIFIED", failed, performancePlan, undefined)).toBe(
       "CORRECTNESS_VERIFIED",
     );
-    expect(deriveTrustState("VERIFIED", passed, performancePlan, undefined)).toBe("MERGE_ELIGIBLE");
+    expect(
+      deriveTrustState("VERIFIED", passed, performancePlan, undefined, {
+        diffPatch: patch,
+        qualityPreference: "BALANCED",
+        resiliencePosture: passingResilience,
+      }),
+    ).toBe("CORRECTNESS_VERIFIED");
   });
 });
 
@@ -359,7 +376,7 @@ describe("deriveTrustState", () => {
       changedFiles: [
         "src/api/auth/session.ts",
         "src/api/auth/credential-store.ts",
-        "src/domain/permission.ts",
+        "src/api/auth/permission.ts",
       ],
       performancePosture: passingPerformance,
       resiliencePosture: passingResilience,
@@ -421,7 +438,13 @@ describe("deriveTrustState", () => {
       }),
     );
     expect(report.Security.state).toBe("PASS");
-    expect(deriveTrustState("VERIFIED", report, criticalSecurePlan, true)).toBe("MERGE_ELIGIBLE");
+    expect(
+      deriveTrustState("VERIFIED", report, criticalSecurePlan, true, {
+        diffPatch: "",
+        qualityPreference: "CRITICAL",
+        resiliencePosture: passingResilience,
+      }),
+    ).toBe("MERGE_ELIGIBLE");
   });
 
   it("keeps a required binary Security check NOT_CHECKED and blocks promotion", () => {
@@ -451,7 +474,8 @@ describe("deriveTrustState", () => {
   });
 
   it("caps at CORRECTNESS_VERIFIED when a gated dimension WARNs", () => {
-    // ARCHITECTURE is required by this plan; make the footprint grow.
+    // ARCHITECTURE is required by this plan; inject a checked-and-flagged result independently of
+    // the pre-execution context estimate.
     const grown = deriveRiskVector({
       files: ["src/api/auth/session.ts", "src/domain/widget.ts"],
       moduleOwnership: {
@@ -466,6 +490,12 @@ describe("deriveTrustState", () => {
     });
     const plan = buildAssurancePlan(grown, "BALANCED");
     const report = deriveQualityReport(reportInput({ assurancePlan: plan, diffRisk: grown }));
+    report.Architecture = {
+      state: "WARN",
+      provenance: "DETERMINISTIC",
+      coverage: "FULL",
+      evidence: ["candidate-bound architecture evidence flagged a material issue"],
+    };
     expect(report.Architecture.state).toBe("WARN");
     expect(deriveTrustState("VERIFIED", report, plan, undefined)).toBe("CORRECTNESS_VERIFIED");
   });
@@ -523,21 +553,30 @@ describe("deriveTrustState", () => {
   });
 
   it("reaches MERGE_ELIGIBLE only when a required review is actually approved", () => {
-    expect(deriveTrustState("VERIFIED", reviewRequiredReport, criticalSecurePlan, true)).toBe(
-      "MERGE_ELIGIBLE",
-    );
+    expect(
+      deriveTrustState("VERIFIED", reviewRequiredReport, criticalSecurePlan, true, {
+        diffPatch: "",
+        qualityPreference: "CRITICAL",
+        resiliencePosture: passingResilience,
+      }),
+    ).toBe("MERGE_ELIGIBLE");
   });
 
   it("reaches DURABLE_VERIFIED when plan-required resilience passed and review is pending (M10)", () => {
-    expect(deriveTrustState("VERIFIED", reviewRequiredReport, criticalSecurePlan, undefined)).toBe(
-      "DURABLE_VERIFIED",
-    );
-    expect(deriveTrustState("VERIFIED", reviewRequiredReport, criticalSecurePlan, false)).toBe(
-      "DURABLE_VERIFIED",
-    );
+    const context = {
+      diffPatch: "",
+      qualityPreference: "CRITICAL" as const,
+      resiliencePosture: passingResilience,
+    };
+    expect(
+      deriveTrustState("VERIFIED", reviewRequiredReport, criticalSecurePlan, undefined, context),
+    ).toBe("DURABLE_VERIFIED");
+    expect(
+      deriveTrustState("VERIFIED", reviewRequiredReport, criticalSecurePlan, false, context),
+    ).toBe("DURABLE_VERIFIED");
   });
 
-  it("keeps a relevance-empty resilience PASS at QUALITY_VERIFIED, never DURABLE_VERIFIED (M10)", () => {
+  it("keeps relevance-empty resilience unresolved even after review approval", () => {
     // Heuristic absence of a fault-relevant signal is not proof that nothing is relevant: the
     // relevance regexes provably miss risk-relevant diffs, so DURABLE_VERIFIED (which claims
     // scenarios were actually executed and held) must require MEASURED evidence.
@@ -550,13 +589,20 @@ describe("deriveTrustState", () => {
         resiliencePosture: relevanceEmptyResilience,
       }),
     );
-    expect(report.Resilience.state).toBe("PASS");
+    expect(report.Resilience.state).toBe("NOT_CHECKED");
     expect(report.Resilience.provenance).toBe("DETERMINISTIC");
-    expect(deriveTrustState("VERIFIED", report, criticalSecurePlan, undefined)).toBe(
-      "QUALITY_VERIFIED",
+    const context = {
+      diffPatch: "",
+      qualityPreference: "CRITICAL" as const,
+      resiliencePosture: relevanceEmptyResilience,
+    };
+    expect(deriveTrustState("VERIFIED", report, criticalSecurePlan, undefined, context)).toBe(
+      "CORRECTNESS_VERIFIED",
     );
-    // Once the review approves, the rung above is reachable normally.
-    expect(deriveTrustState("VERIFIED", report, criticalSecurePlan, true)).toBe("MERGE_ELIGIBLE");
+    // Review cannot replace measured resilience evidence.
+    expect(deriveTrustState("VERIFIED", report, criticalSecurePlan, true, context)).toBe(
+      "CORRECTNESS_VERIFIED",
+    );
   });
 
   it("caps at CORRECTNESS_VERIFIED when plan-required Resilience is NOT_CHECKED (M10)", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildAssurancePlan, type AssuranceCheck } from "../src/domain/assurance";
+import { type AssuranceCheck, buildAssurancePlan } from "../src/domain/assurance";
 import type { RiskLevel, RiskProvenance, RiskVector } from "../src/domain/risk";
 
 const value = (level: RiskLevel, provenance: RiskProvenance = "DETERMINISTIC") => ({

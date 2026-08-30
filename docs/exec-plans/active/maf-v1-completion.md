@@ -1150,3 +1150,348 @@ M14 verification (2026-08-21):
   for scoped evaluation. It is not represented as a fully autonomous production delivery system:
   live CI/observability adapters, independent cost metering, automatic strategy adoption,
   deployment authority, and production comparative/longitudinal evidence remain explicit gaps.
+
+## Hardening pass #4 — trust kernel (2026-08-22)
+
+Entered after an independent full-system forensic audit returned `MATERIAL_TRUST_MODEL_FLAWS`. The
+audit's root causes were independently reproduced from the live code before any change; three of
+the seven were partially or wholly stale, and are recorded as such rather than acted on.
+
+### Reproduction results
+
+| Finding | Verdict | Evidence |
+| --- | --- | --- |
+| F1 INTEGRATION required, no checker, still MERGE_ELIGIBLE | CONFIRMED | `deriveTrustState` iterated the report; no `Integration` dimension exists, so nothing gated. |
+| F2 Architecture deterministic FAIL ignored when unplanned | CONFIRMED | `gatesPromotion` was plan-bound with a single hand-added Security exception. |
+| F3 Operational RESILIENCE discharged by relevance-empty PASS | CONFIRMED | `deriveResilienceRelevance` reads code files only; `deploy/*.json`, YAML, Terraform were never opened. |
+| F4 "Scannable" conflated with "understood" | CONFIRMED, and worse than reported | A Go file on an auth path made SECURITY *required*, then the credential-literal scan's PASS discharged it. |
+| F5 CONCURRENCY required with no producing dimension | CONFIRMED | Same mechanism as F1. |
+| F6 Verifier timeout classified ambiguously | CONFIRMED | `runProcess` only appended "Process timed out" to stderr; attribution reached UNKNOWN and spent a full second timeout as an "environment retry". |
+| F7 OOM becomes CANDIDATE_FAILURE | CONFIRMED | `\b1? ?failed\b` matched "Allocation failed"; `candidateBound: true` authorised model repair. |
+| F8 ModuleNotFoundError becomes NETWORK_FAILURE | CONFIRMED | Unanchored `enotfound` matches inside `modul-enotfound-error`; NETWORK_FAILURE is auto-retryable. |
+| F11 Emergency stop not durable | CONFIRMED | Private in-memory boolean only. |
+| F12 Resume resets safety counters | CONFIRMED | `resume()` set `policyRestartsUsed: 0, recoveryAttemptsUsed: 0`. |
+| F15 Mission handoff uses correctness, not trust | CONFIRMED | `MissionTree.promote/merge/canRun` gated on `verificationState === "VERIFIED"`. |
+| F19 Independent review is same-adapter | CONFIRMED | `runIndependentReview` calls `this.dependencies.agent.start` — fresh session, same authority. |
+
+Explicitly NOT confirmed as still-live: delivery already gated on `TrustState`
+(`candidateQuality = trustState === "MERGE_ELIGIBLE" ? READY : BLOCKED`), `operationalStatus`
+already distinguished `AWAITING_REVIEW` from `VERIFIED`, and legacy runs with no `trustState`
+already fell to `ASSURANCE_BLOCKED`. Those were left alone.
+
+### Architectural decision
+
+Hybrid: the explicit Concern → Obligation → Capability → Evidence model was adopted, but as an
+**additive derivation layer over** the existing `RiskVector` → `AssurancePlan` → `QualityReport`
+records rather than as a replacement. Nothing was discarded. Attempting the smaller correction
+first (fix the gate predicate) fails invariant C — it cannot express "this PASS does not address
+this concern", which is what F3 and F4 are.
+
+One planner change was necessary and is the least obvious decision in the pass. `plan.required`
+conflated "a concern exists about this candidate" with "the requester asked for depth". Under the
+new fold, `INTEGRATION` (required by `HIGH`/`CRITICAL` preference alone, with no capability in this
+build) would have made every `CRITICAL` task permanently un-promotable, taking `INDEPENDENT_REVIEW`
+and `DURABLE_VERIFIED` with it as unreachable dead code. `AssurancePlan.requirementOrigin` now
+records which of the two raised each requirement; evidence-raised obligations are always material,
+preference-raised ones gate on capabilities that exist but do not create unmeetable bars. This is a
+uniform provenance rule, not a per-dimension exception list.
+
+### Delivered
+
+- `src/domain/assurance-obligation.ts` (new): obligation/capability model, capability registry with
+  explicit `null` for `INTEGRATION`/`CONCURRENCY`, and `deriveAssuranceObligations`.
+- `deriveTrustState` folds over material obligations; the gate list and the Security exception are
+  gone as mechanisms (the Security bar itself is preserved, now as an obligation rule).
+- `AnalysisCoverage` on `QualityCheckResult`, `SemanticSensitivityEvidence` and
+  `ResiliencePostureResult`; per-language coverage in the semantic scanner; operational-artefact
+  coverage boundary in the resilience relevance scan.
+- `VerifierExecutionEvidence.termination` + structured `timedOut`/`signal` from `runProcess`;
+  `EXECUTION_LIMIT_FAILURE`; `environmentRetryUseful` separated from `candidateBound`; two
+  over-broad attributor patterns and two over-broad session-classifier patterns narrowed.
+- `ReviewIndependence` derived from the identities actually used (`CONTEXT_ONLY` today).
+- `MissionNode.trustState` + trust-aware handoff gate + `handoffBasis()`.
+- Durable Emergency Stop (`migrations/010_harness_control_state.sql`, `RunStore.saveControlState` /
+  `getControlState`) and `RecoveryCapsule.safetyCountersUsed` restored on resume.
+- `tests/trust-kernel.test.ts` (new): 43 invariant tests labelled UNIT / LIVE_ENGINE /
+  SYSTEM_COMPOSITION, written against properties rather than the audit's examples.
+
+### Behavioural consequences accepted on purpose
+
+- A change touching two or more modules raises `INTEGRATION` from candidate evidence. No capability
+  can establish it, so the candidate is `CORRECTNESS_VERIFIED`, not `MERGE_ELIGIBLE`. This is the
+  honest state: MAF has no integration checker. Single-module changes are unaffected.
+- A change touching a deployment/operational artefact leaves its resilience obligation unresolved.
+- Sensitive-path changes in an unmodelled language are `NOT_CHECKED`, not PASS.
+- A verifier timeout no longer consumes the environment retry; repair remains available.
+- Session failures that previously matched a broad pattern now land in `UNKNOWN_FAILURE`, which is
+  not auto-retryable: the run pauses with a durable capsule instead of being retried on a guess.
+
+### Validation
+
+`npm run validate` — format, lint, typecheck, 505 tests passing across 43 files (5 skipped where
+opt-in infrastructure is absent), server and UI builds, Compose validation, smoke. No benchmark was
+run: this pass ends at implementation and validation, and none of these tests are effectiveness
+evidence.
+
+## Hardening pass #5 — focused capability repair (2026-08-22)
+
+Entered after three adversarial examples exposed false-safe paths inside the pass-#4 capability
+model. Each example was reproduced against the live tree before implementation:
+
+| Finding | Reproduction before repair |
+| --- | --- |
+| Sensitive `getpass` binding used as `cache[pw]` | `SENSITIVE_INPUT_FLOW` existed, but its evidence was `PASS` and the candidate reached `MERGE_ELIGIBLE`. |
+| Auth/billing path with required Security and a broad Security PASS | No typed concern was discovered; the broad dimension PASS settled the plan requirement and the candidate reached `MERGE_ELIGIBLE`. |
+| `Process.run(userCommand, [])` | No subprocess concern was discovered and the candidate reached `MERGE_ELIGIBLE`. |
+
+### Architectural decision
+
+The repair keeps the additive Concern → Obligation → Capability → Evidence architecture. It does
+not add dimension-specific gate exceptions or method-name enumerations. Plan-required Security and
+Resilience are represented as typed assurance questions with dedicated producers, while discovered
+behaviour remains a separate typed concern. Broad report projections no longer provide affirmative
+evidence for those plan questions or concerns; deterministic FAIL remains authoritative.
+
+### Delivered
+
+- `local-code-semantics.ts` provides bounded statement, call-site, import-provenance, literal, and
+  dynamic-command-boundary analysis shared by concern discovery and evidence derivation.
+- Sensitive-input clean evidence now requires complete classification of every local use and alias.
+  Computed-key/index use, container insertion, mutation, interpolation, returns, external calls,
+  multiline escape, and unknown use remain unresolved.
+- Authorization decisions are raised from subject/value use in structural decision contexts;
+  constant-only auth-path edits remain light.
+- Dynamic subprocess concerns require both an invoked execution boundary and a dynamic argument;
+  imported aliases and receiver/builder forms are covered, while import/reference-only and fixed
+  literal examples remain non-material.
+- `AssuranceQuestionEvidence` and the capability establishment registry separate plan triage from
+  typed concern resolution. Producer selection evaluates all candidate-bound establishing
+  capabilities by coverage and strength instead of relying on registry order.
+- The run service passes the same candidate-bound discovery and resilience evidence into both the
+  emitted obligation ledger and the trust decision.
+
+### Bounded limitations and validation scope
+
+The local analyzers are intentionally not full parsers or interprocedural data-flow engines. Their
+coverage and evidence text say so; ambiguity stays unresolved instead of being upgraded to PASS.
+The 31-test focused adversarial suite exercises both directions of every repair, and the complete
+unit/integration suite passes 601 runnable tests across 46 files (5 opt-in tests skipped). The final
+repository gate for this pass is `npm run validate`. No benchmark is run because implementation
+validation is not effectiveness evidence.
+
+## Hardening pass #6 — evidence completeness repair (2026-08-22)
+
+Entered after the independent follow-up audit demonstrated that pass #5 still allowed producers to
+turn unenumerated syntax and bounded-detector silence into negative PASS. All supplied examples were
+reproduced against the live `deriveTrustState` path before production edits.
+
+### Reproduction results
+
+| Finding | Before repair |
+| --- | --- |
+| Inline, exported, Python f-string, and destructured sensitive origins | Each raised `SECURITY.SENSITIVE_INPUT_FLOW`, emitted concern `PASS` at FULL coverage, and reached `MERGE_ELIGIBLE`. |
+| Novel authorization representation (`actor.kind`, `record.createdBy`) | No typed concern; bounded discovery emitted PASS/FULL and plan Security reached `MERGE_ELIGIBLE`. |
+| `execa(request.command)` | No subprocess concern; bounded discovery emitted PASS/FULL and plan Security reached `MERGE_ELIGIBLE`. |
+
+### Architectural decision
+
+The obligation fold remains unchanged as the trust spine. Producer evidence now carries claim
+direction (`POSITIVE_FINDING` / `NEGATIVE_ABSENCE`), completeness, claim-relative coverage,
+strength, exact analysis scope, and candidate binding. Positive detection authority and negative
+absence authority are separate establishment-registry facts. A negative PASS without complete
+enumeration is rejected by the fold even if a producer attempts to label it FULL.
+
+Plan Security has two deliberately different producers. `SECURITY.CONCERN_DISCOVERY` is
+positive-only and may refine a plan question into typed concerns. Silence over behavioural or
+unclassified statements produces `NOT_CHECKED`, never PASS. The separate
+`SECURITY.NON_BEHAVIORAL_CHANGE_CLASSIFIER` may emit negative PASS only for a completely enumerated
+fixed-data-only/empty executable scope. This preserves constant-only auth-path progression without
+treating a bounded vocabulary as a security proof. Preference-only depth records an incomplete gap
+as non-material when no candidate concern was found; candidate-evidence plans remain fail-closed.
+
+### Delivered
+
+- Sensitive-flow completeness is a mechanically recorded tuple: origins identified, direct local
+  bindings enumerated, later uses enumerated, and uses classified. Inline sources, exports/stores,
+  destructuring, nested origins, unsupported interpolation, propagation, and unknown uses emit
+  `NOT_CHECKED` with incomplete coverage.
+- Discovery coverage is claim-relative. Concrete findings carry a witness; fixed-data-only absence
+  can be FULL; arbitrary detector silence is PARTIAL/UNSUPPORTED.
+- Dynamic-boundary detection is unchanged as useful positive detection. Missed wrappers, unchanged
+  provenance, or unfamiliar boundary names can no longer become negative FULL/PASS evidence for a
+  material plan Security question.
+- `deriveTrustState` accepts candidate id/diff digest and `RunService` passes the same binding used
+  by `assuranceObligationsFor`, aligning the decision and emitted ledger without a persistence
+  redesign.
+- `tests/evidence-completeness-repair.test.ts` adds 31 invariant tests across sensitive origins,
+  authorization representations, command wrappers, forged incomplete evidence, progressive local
+  observations, constants, fixed commands/imports, unsupported-language edits, and binding parity.
+
+### Validation scope
+
+Focused trust/composition tests pass 200/200; the complete
+unit/integration suite passes 632 runnable tests across 47 files, with 5 opt-in tests skipped. The
+repository's final gate remains `npm run validate`. No Native-vs-MAF effectiveness benchmark is run.
+
+## Hardening pass #7 — discovery adequacy repair (2026-08-22)
+
+Entered after the independent obligation-generation audit showed that pass #6 could honestly
+report material-concern discovery as `INCOMPLETE`, then omit that fact from the obligation set when
+Risk/Planner did not independently require Security. The fold was sound over the obligations it
+received; obligation generation was incomplete.
+
+### Reproduction results
+
+With a correctness-only plan, neutral-path ownership, membership, entitlement, dynamic wrapper,
+deserialization-like, redirect/target, policy/config, workflow, and uncommon-language changes all
+produced discovery `INCOMPLETE` at `PARTIAL`/`UNSUPPORTED` coverage, no typed concern, and a ledger
+containing only passing Correctness. Every candidate reached `MERGE_ELIGIBLE`. The same defect was
+reproduced through the live trust function before production edits.
+
+### Architectural decision
+
+`DISCOVERY.ADEQUACY` is a third first-class obligation source alongside plan requirements and
+deterministic findings. It is candidate/digest-bound and uses the existing claim direction,
+completeness, claim-relative coverage, evidence strength, producer selection, and negative-first
+rules. It does not add a Security gate or change the trust-state ladder:
+
+- `CONCERNS_FOUND` supplies positive routing evidence and leaves each typed concern independently
+  material.
+- `ABSENCE_ESTABLISHED` supplies negative PASS only for a completely enumerated bounded local
+  class.
+- `INCOMPLETE` supplies a material `NOT_CHECKED`/`UNSUPPORTED` obligation independently of
+  Risk/Planner Security and independently of a preference-only Security question's materiality.
+
+The bounded progressive classifier recognizes only fixed data without expansion, declaration-only
+imports, local scalar computation, fixed-argument invocation, and empty executable scope. Its
+claim is the changed-local syntax/material-boundary class, not product-level Security or unchanged
+consumer behavior. Expansion-bearing data such as `"${user.command}"`, arbitrary branches/calls,
+dynamic targets, wrapper provenance, and policy/config semantics remain incomplete.
+
+### Delivered
+
+- `concern-discovery.ts` now emits a separate promotion-facing scope-adequacy assessment without
+  changing typed concern discovery or plan Security evidence.
+- `discovery-adequacy.ts` stamps that assessment as exact capability evidence.
+- `capability-adequacy.ts` separates positive concern witnesses from bounded negative scope
+  classification.
+- `assurance-obligation.ts` enumerates `DISCOVERY.ADEQUACY` before plan obligations whenever
+  discovery ran. A later same-candidate complete record can resolve an earlier incomplete record;
+  stale records cannot.
+- `local-code-semantics.ts` supplies the bounded statement classifier and rejects interpolation or
+  expansion markers from fixed-data claims.
+- `tests/discovery-adequacy-repair.test.ts` adds 29 invariant/live-composition tests covering
+  planner independence, all three discovery outcomes, escalation, binding, Mission/Delivery,
+  adversarial unknowns, and progressive classified scope.
+
+### Validation scope
+
+Focused trust/quality/integration coverage passes 294/294 across 9 files. Final
+`npm run validate` passes: format checks 159 files; lint exits successfully with 11 warnings and 6
+informational suggestions; TypeScript passes; the complete suite passes 695 runnable tests across
+48 files, with 5 opt-in tests skipped across 3 files; server/UI builds, Compose validation, and the
+production smoke path pass. No Native-vs-MAF effectiveness benchmark is run.
+
+## Hardening pass #8 — scope-remainder discovery repair (2026-08-23)
+
+Entered after the independent follow-up audit demonstrated two remaining false-safe paths in pass
+#7: one positive concern witness made candidate-global discovery adequacy PASS despite unrelated
+unsupported/unclassified scope, and syntactically fixed arguments made arbitrary calls look like
+promotion-grade absence.
+
+### Reproduction results
+
+Before production edits, 14 focused invariants failed while all 29 prior discovery-adequacy tests
+passed. The failures covered same-file and multi-file concern laundering, YAML and unmodelled
+siblings, bounded-plus-unclassified scope, missing explicit accounting, arbitrary zero/literal/array/
+receiver calls, and runtime import initialization.
+
+### Architectural decision
+
+The obligation spine remains unchanged. Discovery now accounts candidate-wide added and removed
+executable scope in statement-level units while preserving unit-local attribution. Uninspectable
+executable material receives a file-bound sentinel unit. `CONCERNS_FOUND` and
+`discoveryIncomplete` may both be true: a concern accounts only for the statements routed to its
+typed obligation, never for siblings or other files. `DISCOVERY.ADEQUACY` can PASS only when both
+unsupported units and unclassified remainder units are zero.
+
+`FIXED_ARGUMENT_INVOCATION` remains syntax metadata (`argumentDynamism = FIXED`) but is excluded
+from promotion-grade bounded classification. Runtime imports are likewise excluded because module
+initialization may execute behavior; explicit TypeScript `import type` and Rust `use` remain
+progressive as erased/name-resolution-only declarations.
+
+### Delivered
+
+- `ConcernDiscoveryResult.scopeAccounting` records total relevant statement units,
+  concern-attributed units, promotion-grade bounded units, fixed-argument metadata, unsupported
+  units, unclassified remainder, and complete/incomplete flags.
+- Scope adequacy derives from the remainder, not from `concerns.length`. Positive witnesses resolve
+  routing only when the independent accounting covers the entire relevant changed scope.
+- Obligation producer selection encodes that an incomplete remainder outranks a positive witness
+  regardless of record order, while later COMPLETE FULL same-candidate negative evidence can still
+  resolve an earlier gap.
+- Typed flow evidence is scoped to the files that raised that concern, so an unrelated unsupported
+  sibling stays visible through `DISCOVERY.ADEQUACY` without repainting an otherwise resolved typed
+  concern.
+- Focused mixed-diff and fixed-call adversarial tests cover exact obligation status, structured
+  remainder counts, typed concern status, final trust, escalation, and candidate binding.
+
+### Validation scope
+
+Focused discovery/evidence/trust/capability/quality coverage passes 245/245 across 6 files.
+Affected discovery/focused-capability/quality-governance coverage passes 100/100 across 3 files. Final
+`npm run validate` passes: format checks 159 files; lint exits successfully with the existing 11
+warnings and 6 informational suggestions; TypeScript passes; the complete suite passes 708 runnable
+tests across 48 files, with 5 opt-in tests skipped across 3 files; server/UI builds, Compose
+validation, and the production smoke path pass. No effectiveness benchmark is run.
+
+## Hardening pass #9 — within-unit scope and claim-authority repair (2026-08-23)
+
+Entered after an independent audit showed that pass #8 still treated any concern attribution as
+whole-statement coverage, let syntax-only fixed-data/local-scalar labels establish promotion-grade
+absence, and erased opaque material under dependency-path filters. The exact mixed sensitive-flow
+plus opaque-call example, comma-origin case, policy/config literals, and vendor-path opaque cases
+were reproduced against the live trust fold before production changes; 20 of 22 new invariants
+failed while the two already-honest controls passed.
+
+### Architectural decision
+
+The obligation fold and all prior trust invariants remain unchanged. Discovery accounting now
+separates concern attribution from exhaustive concern coverage, and bounded syntax classification
+from promotion-grade absence authority. A relevant changed-local unit is complete only when the
+whole unit is concern-covered or an exact promotion-authorized bounded claim covers it; otherwise
+its residual remains explicit. This is a conservative whole-unit proof model, not a general AST or
+data-flow engine.
+
+Opaque or path-filtered changed material receives one file-bound unsupported sentinel. Plain
+inspectable documentation remains outside executable scope, but binary, gitlink, rename/copy-only,
+and dependency-path changes cannot become empty scope by naming or extension.
+
+### Delivered
+
+- `DiscoveryScopeAccounting` separately records attributed, fully concern-covered, partially
+  concern-covered, syntax-classified, promotion-authorized, unsupported, and residual units.
+- Sensitive-flow use completeness no longer doubles as discovery-scope completeness. A mixed
+  statement may have typed flow `PASS` while `DISCOVERY.ADEQUACY` remains `NOT_CHECKED` for its
+  opaque sibling.
+- Direct source parsing requires the complete initializer to be one direct call. Comma, boolean,
+  assignment, and second-call siblings make the origin/use evidence partial.
+- Discovery alias propagation now matches the flow analyzer's exact direct-alias rule; merely
+  mentioning a sensitive binding in an expression does not create a proven alias.
+- `FIXED_DATA_DECLARATION` and `LOCAL_SCALAR_COMPUTATION` remain useful syntax metadata, but their
+  labels alone cannot establish absence. Promotion authority is limited to newly added plain
+  numeric constants, newly added unquoted local scalar observations, erased/name-resolution-only
+  imports, and empty scope. Removed data/computation never receives absence authority from old
+  syntax alone. `FIXED_ARGUMENT_INVOCATION` remains metadata only.
+- Later same-candidate COMPLETE evidence must carry structured changed-unit coverage matching the
+  candidate total with zero residual; candidate/digest binding plus an unscoped COMPLETE assertion
+  is insufficient.
+- `tests/within-unit-scope-claim-authority.test.ts` adds 22 same-statement, classifier-authority,
+  removal, opaque-path, and progressive calibration invariants. Existing progression fixtures were
+  narrowed from exported constants to the plain local numeric claim they actually establish.
+
+### Validation scope
+
+Focused discovery/evidence/trust coverage passes 237/237 across 6 files. The complete test suite
+passes 731 runnable tests across 49 files, with 5 opt-in tests skipped across 3 files. The final
+repository gate remains `npm run validate`. No Native-vs-MAF effectiveness benchmark is run.

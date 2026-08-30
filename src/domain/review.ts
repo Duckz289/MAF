@@ -13,6 +13,66 @@ import type { RiskVector } from "./risk";
 
 export type ReviewVerdictStatus = "APPROVED" | "REJECTED" | "INVALID";
 
+/**
+ * What an "independent review" in this build actually guarantees, stated as a level rather than
+ * implied by the word "independent".
+ *
+ * CONTEXT_ONLY        a fresh session that never saw the author's conversation, reasoning, or
+ *                     conclusion — but the SAME adapter, model and provider produced both the
+ *                     candidate and the verdict. Correlated blind spots are not addressed: a model
+ *                     that could not see a flaw while writing the code may not see it while
+ *                     reading the code either. This is what RunService provides today.
+ * SEPARATE_MODEL      the reviewer ran on a different model or provider than the author, so at
+ *                     least the failure modes are not identical by construction.
+ * SEPARATE_AUTHORITY  a different adapter/provider entirely, or a human. Not reachable through
+ *                     the current single-adapter review path.
+ *
+ * The level is DERIVED from the identities actually used, never declared. Nothing in the trust
+ * fold currently demands a level above CONTEXT_ONLY; the point of recording it is that no
+ * downstream consumer can read "independent review approved" as a stronger claim than the
+ * evidence supports.
+ */
+export type ReviewIndependence = "CONTEXT_ONLY" | "SEPARATE_MODEL" | "SEPARATE_AUTHORITY";
+
+export interface ReviewAuthority {
+  adapter: string;
+  model: string;
+  provider: string;
+}
+
+export interface ReviewIndependenceEvidence {
+  level: ReviewIndependence;
+  author: ReviewAuthority;
+  reviewer: ReviewAuthority;
+  /** Plain statement of what this level does and does not establish. Never marketing. */
+  guarantee: string;
+}
+
+export const deriveReviewIndependence = (
+  author: ReviewAuthority,
+  reviewer: ReviewAuthority,
+): ReviewIndependenceEvidence => {
+  const sameAdapter = author.adapter === reviewer.adapter;
+  const sameProvider = author.provider === reviewer.provider;
+  const sameModel = author.model === reviewer.model;
+  const level: ReviewIndependence = !sameAdapter
+    ? "SEPARATE_AUTHORITY"
+    : sameModel && sameProvider
+      ? "CONTEXT_ONLY"
+      : "SEPARATE_MODEL";
+  return {
+    level,
+    author,
+    reviewer,
+    guarantee:
+      level === "CONTEXT_ONLY"
+        ? "fresh context only: the reviewer never saw the author's session, but the same adapter, model and provider produced both the candidate and the verdict, so correlated blind spots are not ruled out"
+        : level === "SEPARATE_MODEL"
+          ? "fresh context plus a different model or provider than the author's, so identical-by-construction blind spots are reduced but not eliminated"
+          : "fresh context and a different adapter than the author's",
+  };
+};
+
 export interface ReviewVerdict {
   status: ReviewVerdictStatus;
   reasons: string[];

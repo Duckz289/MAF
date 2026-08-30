@@ -24,6 +24,18 @@
 - Agent initial context contains credential references only.
 - `.env.example` contains placeholders and `.env` is ignored.
 
+The local Connections vault automatically creates a cryptographically random process key when
+`MAF_LOCAL_VAULT_MASTER_KEY` is absent. It uses AES-256-GCM but keeps ciphertext in process memory
+only, clears it on restart, and never adds raw provider keys or OAuth tokens to a run, event,
+project record, or API response. It is therefore not a substitute for an encrypted durable secret
+manager in a deployed service. Google Gemini OAuth
+uses an expiring one-time PKCE state and stores exchange results solely in this vault; provider
+availability checks never make billable model requests.
+
+Native account login launches only explicit provider CLI commands without a shell, with a bounded
+timeout and cancellation path. MAF does not log native CLI stdout/stderr, scrape browser cookies,
+copy session files, or perform provider-global logout when the user chooses Disconnect from MAF.
+
 The local fixture and mock OAuth paths are labeled `MOCK_VERIFIED`. They do not imply a production
 provider test.
 

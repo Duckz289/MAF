@@ -3,16 +3,22 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AppShell } from "./components/AppShell";
 import { LoadingState } from "./components/LoadingState";
 import { ConnectionsPage } from "./pages/ConnectionsPage";
+import { DecisionsPage } from "./pages/DecisionsPage";
+import { EvaluationPage } from "./pages/EvaluationPage";
+import { EvolutionInspectionPage } from "./pages/EvolutionInspectionPage";
 import { HomePage } from "./pages/HomePage";
+import { MissionControlPage } from "./pages/MissionControlPage";
 import { NewTaskPage } from "./pages/NewTaskPage";
 import { ProjectPage } from "./pages/ProjectPage";
 import { ProjectsPage } from "./pages/ProjectsPage";
+import { ProvidersStatusPage } from "./pages/ProvidersStatusPage";
 import { RunPage } from "./pages/RunPage";
 import { RunsPage } from "./pages/RunsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { UsagePage } from "./pages/UsagePage";
+import { WorkItemsPage } from "./pages/WorkItemsPage";
 import { mafDarkTheme } from "./theme";
-import type { Agent, Connection, HomeData, Project, Run } from "./types";
+import type { Agent, Connection, DecisionItem, HomeData, Project, Run } from "./types";
 import { readJson } from "./utils";
 
 export function App() {
@@ -24,6 +30,7 @@ export function App() {
   const [connections, setConnections] = useState<Connection[]>([]);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [home, setHome] = useState<HomeData>();
+  const [decisions, setDecisions] = useState<DecisionItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [technicalError, setTechnicalError] = useState<string>();
   const url = useMemo(() => new URL(location, window.location.origin), [location]);
@@ -37,18 +44,21 @@ export function App() {
 
   const refresh = useCallback(async () => {
     try {
-      const [nextRuns, nextProjects, nextConnections, nextAgents, nextHome] = await Promise.all([
-        readJson<Run[]>("/api/v1/runs"),
-        readJson<{ projects: Project[] }>("/api/v1/projects"),
-        readJson<Connection[]>("/api/v1/connections"),
-        readJson<Agent[]>("/api/v1/agents"),
-        readJson<HomeData>("/api/v1/home"),
-      ]);
+      const [nextRuns, nextProjects, nextConnections, nextAgents, nextHome, nextDecisions] =
+        await Promise.all([
+          readJson<Run[]>("/api/v1/runs"),
+          readJson<{ projects: Project[] }>("/api/v1/projects"),
+          readJson<Connection[]>("/api/v1/connections"),
+          readJson<Agent[]>("/api/v1/agents"),
+          readJson<HomeData>("/api/v1/home"),
+          readJson<DecisionItem[]>("/api/v1/decisions").catch(() => []),
+        ]);
       setRuns(nextRuns);
       setProjects(nextProjects.projects);
       setConnections(nextConnections);
       setAgents(nextAgents);
       setHome(nextHome);
+      setDecisions(nextDecisions);
       setTechnicalError(undefined);
     } catch (error) {
       setTechnicalError(error instanceof Error ? error.message : String(error));
@@ -71,9 +81,10 @@ export function App() {
     return () => window.clearInterval(timer);
   }, [hasActiveWork, refresh]);
 
+  const rawRunId = path.match(/^\/runs\/([^/]+)\/raw$/)?.[1];
   const selectedRunId = path.match(/^\/runs\/([^/]+)$/)?.[1];
   const selectedProjectId = path.match(/^\/projects\/([^/]+)$/)?.[1];
-  const selectedRun = runs.find((run) => run.id === selectedRunId);
+  const selectedRun = runs.find((run) => run.id === selectedRunId || run.id === rawRunId);
   const selectedProject = projects.find((project) => project.id === selectedProjectId);
   const requestedProject = projects.find(
     (project) => project.id === url.searchParams.get("project"),
@@ -100,7 +111,15 @@ export function App() {
       <ProjectsPage navigate={navigate} projects={projects} refresh={refresh} runs={runs} />
     );
   } else if (selectedProjectId) {
-    content = <ProjectPage navigate={navigate} project={selectedProject} runs={runs} />;
+    content = (
+      <ProjectPage
+        agents={agents}
+        navigate={navigate}
+        project={selectedProject}
+        refresh={refresh}
+        runs={runs}
+      />
+    );
   } else if (path === "/runs/new") {
     content = (
       <NewTaskPage
@@ -113,8 +132,20 @@ export function App() {
     );
   } else if (path === "/runs") {
     content = <RunsPage navigate={navigate} runs={runs} />;
-  } else if (selectedRunId) {
+  } else if (rawRunId) {
     content = <RunPage navigate={navigate} refresh={refresh} run={selectedRun} />;
+  } else if (selectedRunId) {
+    content = <MissionControlPage navigate={navigate} runId={selectedRunId} />;
+  } else if (path === "/work") {
+    content = <WorkItemsPage navigate={navigate} projects={projects} />;
+  } else if (path === "/evolution") {
+    content = <EvolutionInspectionPage />;
+  } else if (path === "/providers") {
+    content = <ProvidersStatusPage navigate={navigate} />;
+  } else if (path === "/decisions") {
+    content = <DecisionsPage navigate={navigate} />;
+  } else if (path === "/evaluation") {
+    content = <EvaluationPage projects={projects} runs={runs} />;
   } else if (path === "/connections") {
     content = (
       <ConnectionsPage
@@ -122,6 +153,7 @@ export function App() {
         connections={connections}
         navigate={navigate}
         projects={projects}
+        refresh={refresh}
       />
     );
   } else if (path === "/usage") {
@@ -130,7 +162,14 @@ export function App() {
     content = <SettingsPage agents={agents} />;
   } else {
     content = (
-      <HomePage agents={agents} home={home} navigate={navigate} projects={projects} runs={runs} />
+      <HomePage
+        agents={agents}
+        decisions={decisions}
+        home={home}
+        navigate={navigate}
+        projects={projects}
+        runs={runs}
+      />
     );
   }
 
@@ -138,6 +177,7 @@ export function App() {
     <FluentProvider theme={mafDarkTheme}>
       <AppShell
         contextProject={contextProject}
+        decisionCount={decisions.length}
         navigate={navigate}
         path={path}
         technicalError={technicalError}

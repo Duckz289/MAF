@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MissionTree, type MissionNode } from "../src/domain/mission-tree";
+import { type MissionNode, MissionTree } from "../src/domain/mission-tree";
 
 const node = (id: string, dependencyIds: string[] = [], parentId?: string): MissionNode => ({
   id,
@@ -13,6 +13,11 @@ const node = (id: string, dependencyIds: string[] = [], parentId?: string): Miss
   inputs: [],
   outputs: [],
   verificationState: "PROPOSED",
+  // These fixtures exercise the tree's ORIGINAL correctness-only handoff rule, which since the
+  // trust kernel requires an explicit declaration rather than being inferred from an absent
+  // trustState (finding H4). Declaring it here keeps these tests about what they test — split,
+  // merge, collapse and dependency gating — rather than about the trust basis.
+  legacyTrustBasis: true,
 });
 
 describe("MissionTree", () => {
@@ -41,5 +46,23 @@ describe("MissionTree", () => {
     expect(tree.get("merged").inputs).toEqual(["artifact://a", "artifact://b"]);
     tree.collapse("root");
     expect(tree.get("root").executionMode).toBe("SOLO_NATIVE");
+  });
+
+  it("collapses workflow state without overwriting child verification evidence", () => {
+    const tree = new MissionTree(node("root"));
+    tree.split("root", [node("a", [], "root"), node("b", [], "root")]);
+    tree.setVerification("a", "FAILED", ["artifact://failed-a"]);
+    tree.collapse("root");
+    expect(tree.get("a")).toMatchObject({
+      state: "CANCELLED",
+      verificationState: "FAILED",
+      outputs: ["artifact://failed-a"],
+    });
+    expect(tree.get("root").lastModeTransition).toMatchObject({
+      from: "GUIDED",
+      to: "SOLO_NATIVE",
+      reason: expect.any(String),
+      evidence: expect.any(Array),
+    });
   });
 });

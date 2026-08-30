@@ -172,7 +172,15 @@ describe("CommandResilienceVerifier (real subprocesses)", () => {
       options: { cwd: string },
     ): Promise<ProcessResult> => {
       calls.push({ command, args, cwd: options.cwd });
-      return { exitCode: 0, stdout: "ok", stderr: "", durationMs: 1 };
+      return {
+        exitCode: 0,
+        stdout: "ok",
+        stderr: "",
+        durationMs: 1,
+        timedOut: false,
+        aborted: false,
+        signal: null,
+      };
     };
     const composedVerifier = new CommandResilienceVerifier(successful);
     const input = await inputFor("fixture-command", ["TIMEOUT"], {

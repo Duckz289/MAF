@@ -1,4 +1,5 @@
 import type { KnowledgeRecord } from "./ports";
+import { redactSensitiveText } from "./security";
 import type {
   Artifact,
   CandidateLineageEntry,
@@ -11,7 +12,6 @@ import type {
   Verification,
   VerificationState,
 } from "./types";
-import { redactSensitiveText } from "./security";
 
 /**
  * Marks an error whose message text originated from agent-supplied data (an `error` AgentEvent's
@@ -51,6 +51,25 @@ export interface FailureContext {
   circuitOpen?: boolean;
 }
 
+/**
+ * Message-shape classification, used only after the caller's own certain-context flags.
+ *
+ * Every entry here assigns OWNERSHIP from text the harness did not structure, so each pattern is
+ * word-anchored on purpose. Two unanchored ones were removed in hardening pass #4 after being
+ * reproduced live:
+ *
+ * - `enotfound` matched inside `ModuleNotFoundError` ("modul-ENOTFOUND-error"), turning a missing
+ *   Python/Node module — which is often the candidate's own broken import — into NETWORK_FAILURE,
+ *   an auto-retryable class. `\benotfound\b` cannot match inside that word, and still matches the
+ *   real `getaddrinfo ENOTFOUND host` shape.
+ * - a bare `network` matched any message that merely mentioned networking ("agent stopped while
+ *   editing the networking layer"). It now requires a failure noun beside it.
+ *
+ * `timeout` was likewise narrowed: it previously matched any message containing the word,
+ * including configuration errors about a timeout value. A message that no longer matches lands in
+ * UNKNOWN_FAILURE, which is NOT auto-retryable — the run pauses with a durable capsule instead of
+ * being retried on a guess. That is the intended direction: honest unknown over convenient guess.
+ */
 const patternClassification: Array<[RegExp, FailureClassification]> = [
   [/rate.?limit|too many requests|\b429\b/iu, "RATE_LIMIT"],
   [
@@ -59,13 +78,16 @@ const patternClassification: Array<[RegExp, FailureClassification]> = [
   ],
   [/bad gateway|service unavailable|gateway timeout|\b50[0234]\b|\b529\b/iu, "PROVIDER_DEGRADED"],
   [
-    /econnreset|econnrefused|etimedout|eai_again|enotfound|network|fetch failed|socket hang up/iu,
+    /\beconnreset\b|\beconnrefused\b|\betimedout\b|\beai_again\b|\benotfound\b|\bnetwork (?:error|failure|unreachable|is unreachable)\b|\bfetch failed\b|\bsocket hang up\b/iu,
     "NETWORK_FAILURE",
   ],
   [/enospc|eacces|eperm|worktree|sandbox|disk|permission denied/iu, "ENVIRONMENT_FAILURE"],
   [/run cancelled/iu, "USER_INTERRUPT"],
   [/agent failed|agent (?:process|session) (?:exited|closed|crashed)/iu, "AGENT_FAILURE"],
-  [/timeout|timed out|econnaborted/iu, "PROVIDER_TRANSIENT"],
+  [
+    /\b(?:request|connection|socket|read|response|operation|stream)\b[^\n]{0,20}\btimed out\b|\btimed out\b[^\n]{0,20}\b(?:after|waiting)\b|\btimeout of \d+ ?m?s\b|\brequest timeout\b|\beconnaborted\b/iu,
+    "PROVIDER_TRANSIENT",
+  ],
 ];
 
 export const classifyFailure = (
@@ -196,6 +218,8 @@ export interface RecoveryCapsuleInput {
   recoveryDetail: string;
   /** Caller-computed (budget.ts owns the arithmetic); null when no budget was configured. */
   remainingBudget?: number | null | undefined;
+  /** Safety limits this run already consumed, so a resume cannot silently restore the allowance. */
+  safetyCountersUsed?: { recoveryAttempts: number; policyRestarts: number } | undefined;
   now?: string;
 }
 
@@ -245,6 +269,7 @@ export const buildRecoveryCapsule = (input: RecoveryCapsuleInput): RecoveryCapsu
       .map((record) => redactSensitiveText(record.statement)),
     recoveryReason: input.recoveryReason,
     recoveryDetail: redactSensitiveText(input.recoveryDetail),
+    ...(input.safetyCountersUsed ? { safetyCountersUsed: input.safetyCountersUsed } : {}),
     createdAt: input.now ?? new Date().toISOString(),
   };
 };

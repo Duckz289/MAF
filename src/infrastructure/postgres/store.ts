@@ -8,7 +8,7 @@ import {
   type CiEvidence,
   type DeliveryHandoff,
 } from "../../domain/delivery";
-import type { RunStore } from "../../domain/ports";
+import type { HarnessControlState, RunStore } from "../../domain/ports";
 import { projectIdentity } from "../../domain/project-identity";
 import {
   assertProductionFeedback,
@@ -207,8 +207,8 @@ export class PostgresRunStore implements RunStore {
     await this.pool.query(
       `INSERT INTO verifications(
          id, run_id, type, state, command, exit_code, output, started_at, completed_at,
-         attempt, candidate_id
-       ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+         attempt, candidate_id, verification_spec_identity, candidate_digest, environment, authority
+       ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
       [
         verification.id,
         verification.runId,
@@ -221,6 +221,10 @@ export class PostgresRunStore implements RunStore {
         verification.completedAt,
         verification.attempt ?? 1,
         verification.candidateId ?? null,
+        verification.verificationSpecIdentity ?? null,
+        verification.candidateDigest ?? null,
+        verification.environment ? JSON.stringify(verification.environment) : null,
+        verification.authority ? JSON.stringify(verification.authority) : null,
       ],
     );
   }
@@ -229,7 +233,9 @@ export class PostgresRunStore implements RunStore {
     const result = await this.pool.query<Verification>(
       `SELECT id, run_id AS "runId", type, state, command, exit_code AS "exitCode", output,
               started_at::text AS "startedAt", completed_at::text AS "completedAt",
-              attempt, candidate_id AS "candidateId"
+              attempt, candidate_id AS "candidateId",
+              verification_spec_identity AS "verificationSpecIdentity",
+              candidate_digest AS "candidateDigest", environment, authority
        FROM verifications WHERE run_id=$1 ORDER BY attempt, started_at`,
       [runId],
     );
@@ -272,6 +278,37 @@ export class PostgresRunStore implements RunStore {
          updated_at = EXCLUDED.updated_at`,
       [capsule.runId, capsule.recoveryReason, capsule, capsule.createdAt],
     );
+  }
+
+  async saveControlState(state: HarnessControlState): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO harness_control_state(name, emergency_stopped, reason, updated_at)
+       VALUES('default', $1, $2, $3)
+       ON CONFLICT (name) DO UPDATE SET
+         emergency_stopped = EXCLUDED.emergency_stopped,
+         reason = EXCLUDED.reason,
+         updated_at = EXCLUDED.updated_at`,
+      [state.emergencyStopped, state.reason ?? null, state.updatedAt],
+    );
+  }
+
+  async getControlState(): Promise<HarnessControlState | undefined> {
+    const result = await this.pool.query<{
+      emergencyStopped: boolean;
+      reason: string | null;
+      updatedAt: string;
+    }>(
+      `SELECT emergency_stopped AS "emergencyStopped", reason, updated_at::text AS "updatedAt"
+       FROM harness_control_state WHERE name='default'`,
+    );
+    const row = result.rows[0];
+    return row
+      ? {
+          emergencyStopped: row.emergencyStopped,
+          updatedAt: row.updatedAt,
+          ...(row.reason === null ? {} : { reason: row.reason }),
+        }
+      : undefined;
   }
 
   async getRecoveryCapsule(runId: string): Promise<RecoveryCapsule | undefined> {

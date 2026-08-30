@@ -1,36 +1,70 @@
-import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
 import { Pool } from "pg";
 import { z } from "zod";
+import { CapabilityRegistry } from "../application/capability-registry";
 import { GuidedContextBuilder } from "../application/context-builder";
+import { ContextNavigationService } from "../application/context-navigation";
+import { ControlCenterService, describeOptionalProviders } from "../application/control-center";
 import { MissionRegistry } from "../application/mission-registry";
 import { InMemoryProjectRegistry } from "../application/project-registry";
 import { RunService } from "../application/run-service";
 import { EvidenceRuntimeSignalCollector } from "../application/runtime-signal-collector";
-import type { RunStore } from "../domain/ports";
+import { BuiltInWorkItemRegistry } from "../application/work-item-registry";
+import type { ProjectBrain, RunStore } from "../domain/ports";
+import { projectIdentity } from "../domain/project-identity";
+import type { RepositoryIntelligenceProvider } from "../domain/repository-intelligence";
 import { redactSensitiveData } from "../domain/security";
-import {
-  InMemoryPlatformApiKeys,
-  LocalDevelopmentAuth,
-  MockExternalConnections,
-} from "../infrastructure/credentials";
-import { LocalWorktreeSandbox, type SandboxRetention } from "../infrastructure/local-worktree";
+import { assessVerificationAuthority } from "../domain/verification-evidence";
+import { normalizeVerificationSpecification } from "../domain/verification-spec";
+import { assertWorkItemCannotMutateTrust } from "../domain/work";
+import { FileSystemAgentSkillRegistry } from "../infrastructure/agent-skill-registry";
+import { AntigravityCliAdapter } from "../infrastructure/antigravity-cli-adapter";
+import { LocalBoundedProcessRunner } from "../infrastructure/bounded-process-runner";
 import { ClaudeCodeAdapter } from "../infrastructure/claude-code-adapter";
+import { CodexCliAdapter } from "../infrastructure/codex-cli-adapter";
+import { LocalContextPageSource } from "../infrastructure/context-page-source";
+import { InMemoryPlatformApiKeys, LocalDevelopmentAuth } from "../infrastructure/credentials";
+import { LocalWorktreeSandbox, type SandboxRetention } from "../infrastructure/local-worktree";
 import { InMemoryRunStore } from "../infrastructure/memory-store";
+import {
+  NativeAgentAuthManager,
+  resolveAntigravityCommand,
+  resolveCodexCommand,
+} from "../infrastructure/native-agent-auth";
 import { NativeCliAdapter } from "../infrastructure/native-cli-adapter";
+import { OtelCapabilityExecutionObserver } from "../infrastructure/otel-capability-observer";
+import { startOtelTraceRuntime } from "../infrastructure/otel-runtime";
+import { CommandPerformanceVerifier } from "../infrastructure/performance-verifier";
 import { PostgresRunStore } from "../infrastructure/postgres/store";
 import {
   InMemoryProjectBrain,
   LocalRepositoryIndex,
   OptionalCodebaseMemoryIndex,
+  PostgresProjectBrain,
 } from "../infrastructure/project-brain";
-import { DomainTelemetryRecorder, PostgresTelemetrySink } from "../infrastructure/telemetry";
-import { CommandPerformanceVerifier } from "../infrastructure/performance-verifier";
+import {
+  browseDirectory,
+  defaultBrowseStart,
+  detectProject,
+  listFilesystemRoots,
+} from "../infrastructure/project-detection";
+import { ProviderConnectionRegistry } from "../infrastructure/provider-connections";
+import {
+  OpenGrepAdapter,
+  type OpenGrepRuleManifest,
+} from "../infrastructure/providers/opengrep-adapter";
+import { OsvScannerAdapter } from "../infrastructure/providers/osv-scanner-adapter";
+import {
+  loadScipRepositoryIntelligenceManifest,
+  ScipRepositoryIntelligenceAdapter,
+} from "../infrastructure/providers/scip-repository-intelligence-adapter";
 import { CommandResilienceVerifier } from "../infrastructure/resilience-verifier";
+import { DomainTelemetryRecorder, PostgresTelemetrySink } from "../infrastructure/telemetry";
 import { CommandVerifier } from "../infrastructure/verifier";
 
 const createRunSchema = z.object({
@@ -44,6 +78,16 @@ const createRunSchema = z.object({
       expectedFile: z.string().max(1_000).optional(),
       timeoutMs: z.number().int().positive().max(600_000).optional(),
     })
+    .superRefine((value, context) => {
+      const normalized = normalizeVerificationSpecification(value);
+      for (const reason of normalized.invalidReasons) {
+        context.addIssue({ code: "custom", message: reason });
+      }
+    })
+    .optional(),
+  missionBinding: z
+    .object({ missionId: z.string().min(1).max(200), nodeId: z.string().min(1).max(200) })
+    .strict()
     .optional(),
   performance: z
     .object({
@@ -105,9 +149,41 @@ const createRunSchema = z.object({
     })
     .optional(),
   qualityPreference: z.enum(["FAST", "BALANCED", "HIGH", "CRITICAL"]).optional(),
+  scopePaths: z.array(z.string().trim().min(1).max(2_000)).max(100).optional(),
+  scopeExclusions: z.array(z.string().trim().min(1).max(2_000)).max(100).optional(),
+  constraints: z.array(z.string().trim().min(1).max(2_000)).max(100).optional(),
+  acceptanceCriteria: z.array(z.string().trim().min(1).max(2_000)).max(100).optional(),
+  acceptanceCriteriaAmbiguous: z.boolean().optional(),
+  expectedEvidence: z.array(z.string().trim().min(1).max(2_000)).max(100).optional(),
+  requestedAuthority: z
+    .array(
+      z.enum([
+        "READ_BOUNDED_CONTEXT",
+        "REQUEST_CONTEXT_PAGE",
+        "READ_SANDBOX",
+        "WRITE_SANDBOX",
+        "RUN_SANDBOX_COMMAND",
+        "SUBMIT_CANDIDATE",
+        "ACCESS_RAW_CREDENTIALS",
+        "BYPASS_VERIFICATION",
+        "ALTER_TRUST_CONSTITUTION",
+        "SELF_PROMOTE_POLICY",
+        "MERGE_OR_DEPLOY",
+      ]),
+    )
+    .max(20)
+    .optional(),
+  skillIds: z
+    .array(z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u))
+    .max(32)
+    .optional(),
 });
 const healthLedgerQuerySchema = z.object({
   projectId: z.string().min(1).max(200).optional(),
+  // The health ledger keys samples by the deterministic repository identity RunService already
+  // computes (see projectIdentity), not the MAF project-registry id. Accepting repositoryPath here
+  // lets the UI scope the ledger to "this project" without duplicating that derivation client-side.
+  repositoryPath: z.string().min(1).max(4_000).optional(),
 });
 const ciEvidenceRequestSchema = z.object({
   provider: z.string().trim().min(1).max(200),
@@ -129,68 +205,101 @@ const resumeSchema = z.object({
   credentialReferences: z.array(z.string().startsWith("credential://")).max(20).optional(),
 });
 
+const projectPreferencesSchema = z.object({
+  providerPreference: z.string().max(120).optional(),
+  qualityPreference: z.enum(["FAST", "BALANCED", "HIGH", "CRITICAL"]).optional(),
+  budgetPreference: z.enum(["AUTO", "CUSTOM"]).optional(),
+  executionModePreference: z.enum(["AUTO", "STRICT", "GUIDED", "SOLO_NATIVE"]).optional(),
+  budgetLimitUsd: z.number().nonnegative().max(100_000).optional(),
+  budgetMode: z.enum(["ADVISORY", "HARD"]).optional(),
+});
 const projectSchema = z.object({
   name: z.string().trim().min(1).max(120),
   repositoryPath: z.string().trim().min(1).max(4_000),
   revision: z.string().trim().min(1).max(500).optional(),
-  preferences: z
-    .object({
-      providerPreference: z.string().max(120).optional(),
-      qualityPreference: z.enum(["FAST", "BALANCED", "HIGH", "CRITICAL"]).optional(),
-      budgetPreference: z.enum(["AUTO", "CUSTOM"]).optional(),
-    })
-    .optional(),
+  preferences: projectPreferencesSchema.optional(),
 });
+const filesystemBrowseQuerySchema = z.object({ path: z.string().min(1).max(4_000).optional() });
+const filesystemDetectSchema = z.object({ repositoryPath: z.string().trim().min(1).max(4_000) });
 
 const platformKeySchema = z.object({
   ownerId: z.string().min(1).max(200),
   scopes: z.array(z.string().min(1).max(120)).min(1).max(20),
 });
 
-const claudeConnectionStatus = (): {
-  status: "UNKNOWN" | "UNAVAILABLE";
-  lastCheckedAt: string;
-  detail: string;
-} => {
-  const checkedAt = new Date().toISOString();
-  const result = spawnSync(process.env.CLAUDE_COMMAND ?? "claude", ["--version"], {
-    encoding: "utf8",
-    timeout: 5_000,
-    windowsHide: true,
-  });
-  if (result.error || result.status !== 0) {
-    return {
-      status: "UNAVAILABLE",
-      lastCheckedAt: checkedAt,
-      detail: "Không thể khởi chạy Claude Code. Hãy cài đặt rồi đăng nhập qua Claude CLI.",
-    };
-  }
-  return {
-    status: "UNKNOWN",
-    lastCheckedAt: checkedAt,
-    detail: "Claude Code đã được cài. Phiên đăng nhập native do Claude Code sở hữu và xác minh.",
-  };
-};
+const providerConnectionSchema = z.discriminatedUnion("source", [
+  z.object({
+    source: z.literal("ENVIRONMENT"),
+    environmentVariable: z.string().trim().min(1).max(128),
+    model: z.string().trim().min(1).max(200).optional(),
+  }),
+  z.object({
+    source: z.literal("LOCAL_ENCRYPTED_VAULT"),
+    apiKey: z.string().min(1).max(8_000),
+    model: z.string().trim().min(1).max(200).optional(),
+  }),
+]);
+const customEndpointSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  protocol: z.enum(["OPENAI_COMPATIBLE", "ANTHROPIC_COMPATIBLE"]),
+  baseUrl: z.string().trim().min(1).max(2_000),
+  apiKey: z.string().min(1).max(8_000),
+  model: z.string().trim().min(1).max(200),
+  headers: z
+    .array(
+      z.object({
+        name: z.string().trim().min(1).max(100),
+        value: z.string().min(1).max(2_000),
+        classification: z.enum(["PUBLIC", "SECRET"]),
+      }),
+    )
+    .max(20)
+    .optional(),
+  timeoutMs: z.number().int().min(1_000).max(30_000).optional(),
+});
 
-const missionNodeSchema = z.object({
-  id: z.string().min(1),
-  parentId: z.string().min(1).optional(),
-  dependencyIds: z.array(z.string()),
-  state: z.enum(["BLOCKED", "READY", "RUNNING", "DONE", "CANCELLED"]),
-  executionMode: z.enum(["STRICT", "GUIDED", "SOLO_NATIVE"]),
-  agent: z.string(),
-  model: z.string(),
-  budget: z.number().nonnegative(),
-  inputs: z.array(z.string()),
-  outputs: z.array(z.string()),
-  verificationState: z.enum([
-    "PROPOSED",
-    "VERIFYING",
-    "VERIFIED",
-    "QUARANTINED",
-    "FAILED",
-    "CANCELLED",
-  ]),
+const controlCenterPageQuery = z.object({
+  cursor: z.string().max(32).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+const controlCenterMissionQuery = controlCenterPageQuery.extend({
+  depth: z.enum(["SIMPLE", "ADVANCED", "INSPECT"]).optional(),
+});
+const controlCenterMapQuery = controlCenterPageQuery.extend({
+  search: z.string().max(200).optional(),
+  focus: z.string().max(500).optional(),
+  neighborhood: z.enum(["true", "false"]).optional(),
+});
+const workItemCreateSchema = z
+  .object({
+    projectId: z.string().min(1).max(200),
+    title: z.string().min(1).max(240),
+    description: z.string().max(4_000).optional(),
+    priority: z.enum(["UNSET", "LOW", "MEDIUM", "HIGH", "URGENT"]).optional(),
+    owner: z.string().max(200).nullable().optional(),
+    milestone: z.string().max(200).nullable().optional(),
+    dependencyIds: z.array(z.string().min(1).max(200)).max(32).optional(),
+  })
+  .strict();
+
+const missionProposalSchema = z
+  .object({
+    id: z.string().min(1).max(200),
+    parentId: z.string().min(1).max(200).optional(),
+    dependencyIds: z.array(z.string().min(1).max(200)).max(64).default([]),
+    executionMode: z.enum(["STRICT", "GUIDED", "SOLO_NATIVE"]).default("GUIDED"),
+    agent: z.string().min(1).max(200),
+    model: z.string().min(1).max(200),
+    budget: z.number().nonnegative(),
+    inputs: z.array(z.string().max(2_000)).max(128).default([]),
+  })
+  .strict();
+
+const missionNodeFromProposal = (proposal: z.infer<typeof missionProposalSchema>) => ({
+  ...proposal,
+  state: proposal.dependencyIds.length > 0 ? ("BLOCKED" as const) : ("READY" as const),
+  outputs: [],
+  verificationState: "NOT_CHECKED" as const,
 });
 
 const fixtureAgentPath = (): { command: string; args: string[] } => {
@@ -207,9 +316,113 @@ const fixtureAgentPath = (): { command: string; args: string[] } => {
   };
 };
 
+const environmentEnabled = (name: string): boolean =>
+  process.env[name]?.trim().toLowerCase() === "true";
+
+const boundedEnvironmentInteger = (name: string, fallback: number, maximum: number): number => {
+  const parsed = Number(process.env[name]);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? Math.min(parsed, maximum) : fallback;
+};
+
+const configureRepositoryIntelligence = async (
+  app: FastifyInstance,
+): Promise<RepositoryIntelligenceProvider | undefined> => {
+  if (!environmentEnabled("MAF_SCIP_ENABLED")) return undefined;
+  const manifestPath = process.env.MAF_SCIP_MANIFEST_PATH?.trim();
+  if (!manifestPath) {
+    app.log.warn("Repository intelligence enabled without a trusted manifest path");
+    return undefined;
+  }
+  try {
+    const loaded = await loadScipRepositoryIntelligenceManifest(manifestPath);
+    return new ScipRepositoryIntelligenceAdapter({
+      manifest: loaded.manifest,
+      indexPath: loaded.indexPath,
+      timeoutMs: boundedEnvironmentInteger("MAF_SCIP_TIMEOUT_MS", 15_000, 120_000),
+      bounds: {
+        maxIndexBytes: boundedEnvironmentInteger(
+          "MAF_SCIP_MAX_INDEX_BYTES",
+          256 * 1024 * 1024,
+          512 * 1024 * 1024,
+        ),
+        maxDocumentBytes: boundedEnvironmentInteger(
+          "MAF_SCIP_MAX_DOCUMENT_BYTES",
+          16 * 1024 * 1024,
+          256 * 1024 * 1024,
+        ),
+        maxDocuments: boundedEnvironmentInteger("MAF_SCIP_MAX_DOCUMENTS", 100_000, 100_000),
+        maxOccurrences: boundedEnvironmentInteger("MAF_SCIP_MAX_OCCURRENCES", 2_000_000, 5_000_000),
+        maxResults: boundedEnvironmentInteger("MAF_SCIP_MAX_RESULTS", 1_000, 10_000),
+      },
+    });
+  } catch {
+    app.log.warn("Repository intelligence configuration was refused");
+    return undefined;
+  }
+};
+
+const registerOptionalCapabilities = async (
+  registry: CapabilityRegistry,
+  runner: LocalBoundedProcessRunner,
+  app: FastifyInstance,
+): Promise<void> => {
+  if (environmentEnabled("MAF_OSV_SCANNER_ENABLED")) {
+    const command = process.env.MAF_OSV_SCANNER_COMMAND?.trim();
+    if (!command) {
+      app.log.warn("Dependency-vulnerability capability enabled without an executable path");
+    } else {
+      try {
+        registry.register(
+          new OsvScannerAdapter({
+            command,
+            trustedConfigPath: path.resolve(
+              process.env.MAF_OSV_SCANNER_CONFIG ?? path.join("config", "osv-scanner.toml"),
+            ),
+            timeoutMs: boundedEnvironmentInteger("MAF_OSV_SCANNER_TIMEOUT_MS", 120_000, 600_000),
+            runner,
+          }),
+        );
+      } catch {
+        app.log.warn("Dependency-vulnerability capability configuration was refused");
+      }
+    }
+  }
+
+  if (environmentEnabled("MAF_OPENGREP_ENABLED")) {
+    const command = process.env.MAF_OPENGREP_COMMAND?.trim();
+    const rulesPath = process.env.MAF_OPENGREP_RULES_PATH?.trim();
+    const rulesetDigest = process.env.MAF_OPENGREP_RULESET_DIGEST?.trim();
+    const manifestPath = process.env.MAF_OPENGREP_MANIFEST_PATH?.trim();
+    if (!command || !rulesPath || !rulesetDigest || !manifestPath) {
+      app.log.warn("Static-analysis capability enabled without complete local rules configuration");
+    } else {
+      try {
+        const manifestSource = await readFile(path.resolve(manifestPath), "utf8");
+        if (Buffer.byteLength(manifestSource) > 1024 * 1024) {
+          throw new Error("manifest exceeds its composition bound");
+        }
+        const manifest = JSON.parse(manifestSource) as OpenGrepRuleManifest;
+        registry.register(
+          new OpenGrepAdapter({
+            command,
+            rulesPath,
+            rulesetDigest,
+            manifest,
+            timeoutMs: boundedEnvironmentInteger("MAF_OPENGREP_TIMEOUT_MS", 120_000, 600_000),
+            runner,
+          }),
+        );
+      } catch {
+        app.log.warn("Static-analysis capability configuration was refused");
+      }
+    }
+  }
+};
+
 export interface AppRuntime {
   app: FastifyInstance;
   runs: RunService;
+  controlCenter: ControlCenterService;
   close: () => Promise<void>;
 }
 
@@ -223,10 +436,24 @@ export const createApp = async (): Promise<AppRuntime> => {
   } else {
     store = new InMemoryRunStore();
   }
-  const brain = new InMemoryProjectBrain();
+  const brain: ProjectBrain = pool ? new PostgresProjectBrain(pool) : new InMemoryProjectBrain();
   const repositoryIndex = new OptionalCodebaseMemoryIndex(new LocalRepositoryIndex());
+  const repositoryIntelligence = await configureRepositoryIntelligence(app);
+  const contextNavigation = new ContextNavigationService(
+    new LocalContextPageSource(repositoryIndex, brain, repositoryIntelligence),
+  );
   const genericTelemetry = new DomainTelemetryRecorder();
   const telemetry = pool ? new PostgresTelemetrySink(pool, genericTelemetry) : genericTelemetry;
+  const capabilities = new CapabilityRegistry();
+  const capabilityRunner = new LocalBoundedProcessRunner(
+    boundedEnvironmentInteger("MAF_CAPABILITY_MAX_OUTPUT_BYTES", 8 * 1024 * 1024, 64 * 1024 * 1024),
+  );
+  await registerOptionalCapabilities(capabilities, capabilityRunner, app);
+  const otelRuntime = startOtelTraceRuntime();
+  const capabilityObserver =
+    otelRuntime.enabled && otelRuntime.tracer
+      ? new OtelCapabilityExecutionObserver(otelRuntime.tracer)
+      : undefined;
   const agentCommand = fixtureAgentPath();
   const agent =
     process.env.MAF_NATIVE_AGENT === "claude"
@@ -237,15 +464,30 @@ export const createApp = async (): Promise<AppRuntime> => {
             ? { maxBudgetUsd: Number(process.env.CLAUDE_MAX_BUDGET_USD) }
             : {}),
         })
-      : new NativeCliAdapter({
-          ...agentCommand,
-          // The bundled fixture agent implements the live policy-update protocol.
-          capabilities: { livePolicyUpdate: true },
-        });
+      : process.env.MAF_NATIVE_AGENT === "codex"
+        ? new CodexCliAdapter({
+            command: resolveCodexCommand(),
+            ...(process.env.CODEX_MODEL ? { model: process.env.CODEX_MODEL } : {}),
+          })
+        : process.env.MAF_NATIVE_AGENT === "antigravity"
+          ? new AntigravityCliAdapter({
+              command: resolveAntigravityCommand(),
+              ...(process.env.ANTIGRAVITY_MODEL ? { model: process.env.ANTIGRAVITY_MODEL } : {}),
+            })
+          : new NativeCliAdapter({
+              ...agentCommand,
+              // The bundled fixture agent implements the live policy-update protocol.
+              capabilities: { livePolicyUpdate: true },
+            });
   const sandboxRoot = path.resolve(
     process.env.SANDBOX_ROOT ?? path.join(process.cwd(), ".adaptive-harness", "worktrees"),
   );
   const retention = (process.env.SANDBOX_RETENTION ?? "failed") as SandboxRetention;
+  const skillRoots = (process.env.MAF_SKILLS_ROOTS ?? "")
+    .split(path.delimiter)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const skills = new FileSystemAgentSkillRegistry({ roots: skillRoots });
   const runs = new RunService({
     store,
     agent,
@@ -255,15 +497,51 @@ export const createApp = async (): Promise<AppRuntime> => {
     resilienceVerifier: new CommandResilienceVerifier(),
     repositoryIndex,
     projectBrain: brain,
-    contextBuilder: new GuidedContextBuilder(brain),
+    contextBuilder: new GuidedContextBuilder(brain, undefined, repositoryIntelligence),
+    contextNavigation,
+    skills,
     telemetry,
     runtimeSignals: new EvidenceRuntimeSignalCollector(),
+    capabilities,
+    ...(capabilityObserver ? { capabilityObserver } : {}),
   });
+  await runs.reconcileInterruptedRuns();
   const auth = new LocalDevelopmentAuth();
-  const externalConnections = new MockExternalConnections();
+  const providerConnections = new ProviderConnectionRegistry();
+  const nativeAuth = new NativeAgentAuthManager();
   const platformKeys = new InMemoryPlatformApiKeys();
   const missions = new MissionRegistry();
   const projects = new InMemoryProjectRegistry();
+  const workItems = new BuiltInWorkItemRegistry();
+  const controlCenter = new ControlCenterService({
+    store,
+    projects,
+    missions,
+    projectBrain: brain,
+    repositoryIndex,
+    capabilities,
+    workItems,
+    optionalProviders: describeOptionalProviders({
+      dependencyScannerEnabled: environmentEnabled("MAF_OSV_SCANNER_ENABLED"),
+      dependencyScannerCommand: Boolean(process.env.MAF_OSV_SCANNER_COMMAND?.trim()),
+      staticAnalysisEnabled: environmentEnabled("MAF_OPENGREP_ENABLED"),
+      staticAnalysisConfigured: Boolean(
+        process.env.MAF_OPENGREP_COMMAND?.trim() &&
+          process.env.MAF_OPENGREP_RULES_PATH?.trim() &&
+          process.env.MAF_OPENGREP_RULESET_DIGEST?.trim() &&
+          process.env.MAF_OPENGREP_MANIFEST_PATH?.trim(),
+      ),
+      repositoryIntelligenceConfigured: repositoryIntelligence !== undefined,
+      otlpEnabled: otelRuntime.enabled,
+      pricingConfigured: Boolean(process.env.MAF_LITELLM_PRICING_PATH?.trim()),
+    }),
+    ...(repositoryIntelligence ? { repositoryIntelligence } : {}),
+    emergencyStop: () => runs.isEmergencyStopped(),
+  });
+
+  app.addHook("onClose", async () => {
+    await otelRuntime.shutdown();
+  });
 
   app.setErrorHandler((error, _request, reply) => {
     const normalized = error instanceof Error ? error : new Error(String(error));
@@ -282,11 +560,24 @@ export const createApp = async (): Promise<AppRuntime> => {
   app.get("/health", async () => ({
     status: "ok",
     store: pool ? "postgres" : "memory",
+    projectBrain: pool ? "postgres" : "memory",
     repositoryIndex: repositoryIndex.status(),
   }));
   app.post("/api/v1/runs", async (request, reply) => {
     const body = createRunSchema.parse(request.body);
+    if (body.missionBinding) {
+      // Resolve before creating durable work so a typo cannot mint an unbound mission claim.
+      missions.node(body.missionBinding.missionId, body.missionBinding.nodeId);
+    }
     const run = await runs.create(body);
+    if (body.missionBinding) {
+      missions.bindExecution(
+        body.missionBinding.missionId,
+        body.missionBinding.nodeId,
+        run.taskId,
+        run.id,
+      );
+    }
     return reply.code(202).send(run);
   });
   app.get("/api/v1/runs", async () => runs.listSummaries());
@@ -353,7 +644,16 @@ export const createApp = async (): Promise<AppRuntime> => {
     "/api/v1/runs/:id/recovery-capsule",
     async (request, reply) => {
       const capsule = await runs.recoveryCapsule(request.params.id);
-      return capsule ? capsule : reply.code(404).send({ error: "RECOVERY_CAPSULE_NOT_FOUND" });
+      if (!capsule) return reply.code(404).send({ error: "RECOVERY_CAPSULE_NOT_FOUND" });
+      const {
+        workspacePath: _workspacePath,
+        repositoryPath: _repositoryPath,
+        ...publicCapsule
+      } = capsule;
+      return redactSensitiveData({
+        ...publicCapsule,
+        workspacePreserved: capsule.workspacePath !== undefined,
+      });
     },
   );
   app.post<{ Params: { id: string }; Body: { credentialReferences?: string[] } }>(
@@ -375,7 +675,68 @@ export const createApp = async (): Promise<AppRuntime> => {
   app.get("/api/v1/health-ledger", async (request, reply) => {
     const parsed = healthLedgerQuerySchema.safeParse(request.query);
     if (!parsed.success) return reply.code(400).send({ error: "INVALID_QUERY" });
-    return redactSensitiveData(await runs.healthLedger(parsed.data.projectId));
+    const projectId =
+      parsed.data.projectId ??
+      (parsed.data.repositoryPath ? projectIdentity(parsed.data.repositoryPath) : undefined);
+    return redactSensitiveData(await runs.healthLedger(projectId));
+  });
+  // Smallest truthful projection over already-computed run state: only runs that genuinely need
+  // explicit user authority (paused for recovery, blocked on assurance evidence, or a delivery
+  // handoff pending/blocked on external approval) become a decision item. Retries, routine
+  // verification, and in-progress runs are deliberately excluded — those are handled automatically.
+  app.get("/api/v1/decisions", async () => {
+    const summaries = await runs.listSummaries();
+    const items: Array<Record<string, unknown>> = [];
+    for (const run of summaries) {
+      if (run.state === "PAUSED") {
+        const capsule = await runs.recoveryCapsule(run.id);
+        items.push({
+          type: "RECOVERY",
+          runId: run.id,
+          task: run.task,
+          projectId: projectIdentity(run.repositoryPath),
+          updatedAt: run.updatedAt,
+          recoveryReason: capsule?.recoveryReason ?? "UNKNOWN_FAILURE",
+          recoveryDetail: capsule?.recoveryDetail,
+          remainingBudget: capsule?.remainingBudget ?? null,
+          costSpent: capsule?.costSpent.total ?? run.cost.total,
+        });
+        continue;
+      }
+      if (run.operationalStatus === "ASSURANCE_BLOCKED") {
+        items.push({
+          type: "ASSURANCE_BLOCKED",
+          runId: run.id,
+          task: run.task,
+          projectId: projectIdentity(run.repositoryPath),
+          updatedAt: run.updatedAt,
+        });
+        continue;
+      }
+      if (run.operationalStatus === "AWAITING_REVIEW") {
+        const delivery = await runs.delivery(run.id);
+        if (delivery && delivery.mergeEligibility !== "PENDING") {
+          items.push({
+            type: "DELIVERY",
+            runId: run.id,
+            task: run.task,
+            projectId: projectIdentity(run.repositoryPath),
+            updatedAt: run.updatedAt,
+            mergeEligibility: delivery.mergeEligibility,
+            knownWarnings: delivery.handoff.knownWarnings,
+          });
+        } else {
+          items.push({
+            type: "AWAITING_REVIEW",
+            runId: run.id,
+            task: run.task,
+            projectId: projectIdentity(run.repositoryPath),
+            updatedAt: run.updatedAt,
+          });
+        }
+      }
+    }
+    return redactSensitiveData(items);
   });
   app.post("/api/v1/system/resume-new-runs", async () => {
     runs.resumeNewRuns();
@@ -441,9 +802,32 @@ export const createApp = async (): Promise<AppRuntime> => {
       }),
     );
   });
+  app.patch<{ Params: { id: string } }>("/api/v1/projects/:id", async (request, reply) => {
+    const body = projectPreferencesSchema.parse(request.body);
+    const updated = projects.update(request.params.id, body);
+    return updated ? updated : reply.code(404).send({ error: "PROJECT_NOT_FOUND" });
+  });
+  // Local-first bridge for the folder picker: the server already runs on the user's own machine,
+  // so this lists real local directories instead of faking a browser file-system picker that
+  // cannot hand back a usable absolute path. Never uploads repository contents.
+  app.get("/api/v1/filesystem/roots", async () => ({
+    roots: await listFilesystemRoots(),
+    defaultPath: defaultBrowseStart(),
+  }));
+  app.get("/api/v1/filesystem/browse", async (request, reply) => {
+    const parsed = filesystemBrowseQuerySchema.safeParse(request.query);
+    if (!parsed.success) return reply.code(400).send({ error: "INVALID_QUERY" });
+    return browseDirectory(parsed.data.path ?? defaultBrowseStart());
+  });
+  app.post("/api/v1/filesystem/detect", async (request) => {
+    const body = filesystemDetectSchema.parse(request.body);
+    return detectProject(body.repositoryPath);
+  });
   app.get("/api/v1/agents", async () => {
     const capabilities = await agent.capabilities();
     const nativeClaude = agent.name === "claude-code";
+    const nativeCodex = agent.name === "codex-cli";
+    const nativeAntigravity = agent.name === "antigravity-cli";
     return [
       {
         id: "claude-code",
@@ -458,40 +842,49 @@ export const createApp = async (): Promise<AppRuntime> => {
           : "MAF hỗ trợ nhưng chưa chọn làm executor của server này.",
       },
       {
-        id: agent.name,
-        name: agent.name === "native-cli" ? "Local fixture agent" : agent.name,
-        available: true,
+        id: "codex-cli",
+        name: "Codex CLI",
+        available: nativeCodex,
         supported: true,
-        active: true,
-        authMethod: "NOT_APPLICABLE",
-        capabilities,
-        detail: "Executor hiện được cấu hình trên server.",
+        active: nativeCodex,
+        authMethod: "NATIVE_SESSION",
+        capabilities: nativeCodex ? capabilities : null,
+        detail: nativeCodex
+          ? "Được cấu hình làm executor. Codex CLI sở hữu phiên Sign in with ChatGPT và quota Codex."
+          : "MAF hỗ trợ Codex CLI; đặt MAF_NATIVE_AGENT=codex sau khi chạy codex --login.",
       },
+      {
+        id: "antigravity-cli",
+        name: "Antigravity CLI",
+        available: nativeAntigravity,
+        supported: true,
+        active: nativeAntigravity,
+        authMethod: "NATIVE_SESSION",
+        capabilities: nativeAntigravity ? capabilities : null,
+        detail: nativeAntigravity
+          ? "Được cấu hình làm executor. Antigravity IDE sở hữu phiên Google và quota provider."
+          : "MAF hỗ trợ Antigravity CLI; đăng nhập trong Antigravity IDE rồi đặt MAF_NATIVE_AGENT=antigravity.",
+      },
+      ...(nativeClaude || nativeCodex || nativeAntigravity
+        ? []
+        : [
+            {
+              id: agent.name,
+              name: agent.name === "native-cli" ? "Local fixture agent" : agent.name,
+              available: true,
+              supported: true,
+              active: true,
+              authMethod: "NOT_APPLICABLE",
+              capabilities,
+              detail: "Executor hiện được cấu hình trên server.",
+            },
+          ]),
     ];
   });
   app.get("/api/v1/connections", async () => {
     return [
-      {
-        id: "claude-code",
-        category: "AI_PROVIDER",
-        provider: "Claude Code",
-        method: "NATIVE_SESSION",
-        status: "UNKNOWN",
-        capability: "Executor CLI native",
-        detail:
-          "Chưa rõ trạng thái. Chạy Kiểm tra kết nối để xem Claude Code đã được cài chưa. Phiên đăng nhập vẫn do Claude sở hữu.",
-      },
-      {
-        id: "openai-api",
-        category: "AI_PROVIDER",
-        provider: "OpenAI API",
-        method: "CREDENTIAL_REFERENCE",
-        status: "NOT_CONFIGURED",
-        capability: "Chưa hỗ trợ trong bản build này",
-        credentialReference: "credential://user/openai/default",
-        detail:
-          "MAF nhận tham chiếu credential, nhưng chưa có kho bí mật an toàn, bền vững hoặc executor OpenAI được cấu hình.",
-      },
+      ...(await nativeAuth.listWithAccount()),
+      ...providerConnections.list("development-user"),
       {
         id: "development-auth",
         category: "MAF_ACCOUNT",
@@ -504,23 +897,130 @@ export const createApp = async (): Promise<AppRuntime> => {
     ];
   });
   app.post<{ Params: { id: string } }>("/api/v1/connections/:id/test", async (request, reply) => {
-    if (request.params.id !== "claude-code") {
-      return reply.code(409).send({
-        error: "CONNECTION_TEST_UNAVAILABLE",
-        message: "Không thể kiểm tra kết nối này vì chưa có tích hợp provider thực thi được.",
+    if (["claude-code", "codex-cli", "antigravity-cli"].includes(request.params.id)) {
+      const connection = nativeAuth.connection(request.params.id);
+      return {
+        status: connection.status,
+        detail: connection.detail,
+        lastCheckedAt: new Date().toISOString(),
+      };
+    }
+    try {
+      return providerConnections.test("development-user", request.params.id.replace(/-api$/u, ""));
+    } catch (error) {
+      return reply.code(404).send({
+        error: "CONNECTION_NOT_FOUND",
+        message: error instanceof Error ? error.message : "Connection not found",
       });
     }
-    return claudeConnectionStatus();
   });
-  app.post<{ Body: { provider: string; ownerId: string } }>(
-    "/api/v1/connections/authorize",
-    async (request) => ({
-      url: await externalConnections.createAuthorizationUrl(
-        request.body.provider,
-        request.body.ownerId,
-      ),
-      verification: "MOCK_VERIFIED",
-    }),
+  app.post<{ Params: { id: string } }>(
+    "/api/v1/connections/:id/configure",
+    async (request, reply) => {
+      const body = providerConnectionSchema.parse(request.body);
+      const providerId = request.params.id.replace(/-api$/u, "");
+      try {
+        const connection =
+          body.source === "ENVIRONMENT"
+            ? providerConnections.configureEnvironment(
+                "development-user",
+                providerId,
+                body.environmentVariable,
+                body.model,
+              )
+            : providerConnections.configureVault(
+                "development-user",
+                providerId,
+                body.apiKey,
+                body.model,
+              );
+        return reply.code(200).send(connection);
+      } catch (error) {
+        return reply.code(409).send({
+          error: "CONNECTION_CONFIGURATION_REFUSED",
+          message: error instanceof Error ? error.message : "Connection configuration was refused",
+        });
+      }
+    },
+  );
+  app.post("/api/v1/connections/custom", async (request, reply) => {
+    const body = customEndpointSchema.parse(request.body);
+    try {
+      return reply.code(201).send(
+        providerConnections.configureCustom("development-user", {
+          name: body.name,
+          protocol: body.protocol,
+          baseUrl: body.baseUrl,
+          apiKey: body.apiKey,
+          model: body.model,
+          ...(body.headers ? { headers: body.headers } : {}),
+          ...(body.timeoutMs ? { timeoutMs: body.timeoutMs } : {}),
+        }),
+      );
+    } catch (error) {
+      return reply.code(409).send({
+        error: "CUSTOM_CONNECTION_REFUSED",
+        message: error instanceof Error ? error.message : "Custom connection was refused",
+      });
+    }
+  });
+  app.post<{ Params: { id: string } }>(
+    "/api/v1/connections/:id/disconnect",
+    async (request, reply) => {
+      if (["claude-code", "codex-cli", "antigravity-cli"].includes(request.params.id)) {
+        nativeAuth.disconnectFromMaf(request.params.id);
+        return { id: request.params.id, disconnected: true, scope: "MAF_ONLY" };
+      }
+      try {
+        providerConnections.disconnect("development-user", request.params.id);
+        return { id: request.params.id, disconnected: true };
+      } catch (error) {
+        return reply.code(409).send({
+          error: "CONNECTION_DISCONNECT_REFUSED",
+          message: error instanceof Error ? error.message : "Connection cannot be disconnected",
+        });
+      }
+    },
+  );
+  app.post<{ Params: { id: string } }>("/api/v1/connections/:id/login", async (request, reply) => {
+    try {
+      return nativeAuth.beginLogin(request.params.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Native login is unavailable";
+      return reply.code(message === "CLI_UNAVAILABLE" ? 409 : 404).send({
+        error: message,
+        message:
+          message === "CLI_UNAVAILABLE"
+            ? "CLI chưa sẵn sàng. Hãy cài đặt theo hướng dẫn chính thức rồi thử lại."
+            : "Provider không hỗ trợ native login.",
+      });
+    }
+  });
+  app.get<{ Params: { id: string; attemptId: string } }>(
+    "/api/v1/connections/:id/login/:attemptId",
+    async (request, reply) => {
+      try {
+        return nativeAuth.pollLogin(request.params.id, request.params.attemptId);
+      } catch (error) {
+        return reply.code(404).send({
+          error: error instanceof Error ? error.message : "LOGIN_ATTEMPT_NOT_FOUND",
+          message: "Không tìm thấy phiên đăng nhập.",
+        });
+      }
+    },
+  );
+  app.delete<{ Params: { id: string; attemptId: string } }>(
+    "/api/v1/connections/:id/login/:attemptId",
+    async (request, reply) => {
+      try {
+        return nativeAuth.cancelLogin(request.params.id, request.params.attemptId);
+      } catch (error) {
+        return reply.code(404).send({
+          error: error instanceof Error ? error.message : "LOGIN_ATTEMPT_NOT_FOUND",
+          message: "Không tìm thấy phiên đăng nhập.",
+        });
+      }
+    },
   );
   app.post("/api/v1/platform-keys", async (request, reply) => {
     const body = platformKeySchema.parse(request.body);
@@ -539,27 +1039,238 @@ export const createApp = async (): Promise<AppRuntime> => {
   }));
   app.get("/api/v1/missions", async () => missions.list());
   app.post("/api/v1/missions", async (request, reply) =>
-    reply.code(201).send(missions.create(missionNodeSchema.parse(request.body))),
+    reply
+      .code(201)
+      .send(missions.create(missionNodeFromProposal(missionProposalSchema.parse(request.body)))),
   );
   app.post<{ Params: { id: string } }>("/api/v1/missions/:id/split", async (request) => {
     const body = z
-      .object({ parentId: z.string(), children: z.array(missionNodeSchema).min(2) })
+      .object({ parentId: z.string(), children: z.array(missionProposalSchema).min(2) })
+      .strict()
       .parse(request.body);
-    return missions.split(request.params.id, body.parentId, body.children);
+    return missions.split(
+      request.params.id,
+      body.parentId,
+      body.children.map(missionNodeFromProposal),
+    );
   });
   app.post<{ Params: { id: string } }>("/api/v1/missions/:id/merge", async (request) => {
     const body = z
-      .object({ nodeIds: z.array(z.string()).min(2), merged: missionNodeSchema })
+      .object({ nodeIds: z.array(z.string()).min(2), merged: missionProposalSchema })
+      .strict()
       .parse(request.body);
-    return missions.merge(request.params.id, body.nodeIds, body.merged);
+    return missions.merge(request.params.id, body.nodeIds, missionNodeFromProposal(body.merged));
   });
   app.post<{ Params: { id: string } }>("/api/v1/missions/:id/promote", async (request) => {
-    const body = z.object({ nodeId: z.string(), output: z.string() }).parse(request.body);
-    return missions.promote(request.params.id, body.nodeId, body.output);
+    const body = z
+      .object({ nodeId: z.string().min(1), runId: z.string().uuid() })
+      .strict()
+      .parse(request.body);
+    const [run, handoff, artifacts, verifications] = await Promise.all([
+      store.getRun(body.runId),
+      store.getDeliveryHandoff(body.runId),
+      store.listArtifacts(body.runId),
+      store.listVerifications(body.runId),
+    ]);
+    const task = run ? await store.getTask(run.taskId) : undefined;
+    const missionNode = missions.node(request.params.id, body.nodeId);
+    if (
+      !run ||
+      !task ||
+      !handoff ||
+      run.state !== "COMPLETED" ||
+      run.verificationState !== "VERIFIED" ||
+      run.trustState !== "MERGE_ELIGIBLE" ||
+      handoff.trustState !== "MERGE_ELIGIBLE"
+    ) {
+      throw new Error("Mission promotion requires a canonical merge-eligible run handoff");
+    }
+    const executionBinding = missionNode.executionBinding;
+    if (
+      executionBinding?.missionId !== request.params.id ||
+      executionBinding.nodeId !== body.nodeId ||
+      executionBinding.runId !== run.id ||
+      executionBinding.taskId !== task.id ||
+      task.missionBinding?.missionId !== request.params.id ||
+      task.missionBinding.nodeId !== body.nodeId ||
+      run.missionBinding?.missionId !== request.params.id ||
+      run.missionBinding.nodeId !== body.nodeId
+    ) {
+      throw new Error(
+        "Mission promotion requires the run that was bound to this exact mission node",
+      );
+    }
+    const artifact = artifacts.find(
+      (item) =>
+        item.id === handoff.candidateId &&
+        typeof item.digest === "string" &&
+        item.digest === handoff.candidateDigest,
+    );
+    const verification = verifications.find(
+      (item) =>
+        item.id === handoff.verification.id &&
+        item.state === "VERIFIED" &&
+        item.candidateId === handoff.candidateId,
+    );
+    if (!artifact?.digest || !verification) {
+      throw new Error("Mission promotion evidence binding is incomplete or inconsistent");
+    }
+    const authority = assessVerificationAuthority({
+      verification,
+      specification: task.verification,
+      candidateDigest: artifact.digest,
+    });
+    if (!authority.authorized) {
+      throw new Error(
+        `Mission promotion verification authority is insufficient: ${authority.reasons.join("; ")}`,
+      );
+    }
+    missions.bindVerification(
+      request.params.id,
+      body.nodeId,
+      "VERIFIED",
+      [artifact.uri],
+      "MERGE_ELIGIBLE",
+      {
+        runId: run.id,
+        candidateId: artifact.id,
+        candidateDigest: artifact.digest,
+        verificationId: verification.id,
+      },
+    );
+    return missions.promote(request.params.id, body.nodeId, artifact.uri);
   });
   app.post<{ Params: { id: string } }>("/api/v1/missions/:id/collapse", async (request) => {
     const body = z.object({ parentId: z.string() }).parse(request.body);
     return missions.collapse(request.params.id, body.parentId);
+  });
+
+  app.get("/api/v1/control-center/overview", async () =>
+    redactSensitiveData(await controlCenter.overview()),
+  );
+  app.get("/api/v1/control-center/providers", async () =>
+    redactSensitiveData(await controlCenter.providerStatus()),
+  );
+  app.get("/api/v1/control-center/evolution", async () =>
+    redactSensitiveData(await controlCenter.evolution()),
+  );
+  app.get<{ Params: { id: string } }>(
+    "/api/v1/control-center/projects/:id",
+    async (request, reply) => {
+      const summary = await controlCenter.projectSummary(request.params.id);
+      return summary
+        ? redactSensitiveData(summary)
+        : reply.code(404).send({ error: "PROJECT_NOT_FOUND" });
+    },
+  );
+  app.get<{ Params: { id: string } }>(
+    "/api/v1/control-center/projects/:id/map",
+    async (request, reply) => {
+      const query = controlCenterMapQuery.parse(request.query);
+      const map = await controlCenter.projectMap(request.params.id, {
+        ...(query.cursor !== undefined ? { cursor: query.cursor } : {}),
+        ...(query.limit !== undefined ? { limit: query.limit } : {}),
+        ...(query.search !== undefined ? { search: query.search } : {}),
+        ...(query.focus !== undefined ? { focus: query.focus } : {}),
+        neighborhood: query.neighborhood === "true",
+      });
+      return map ? redactSensitiveData(map) : reply.code(404).send({ error: "PROJECT_NOT_FOUND" });
+    },
+  );
+  app.get<{ Params: { id: string } }>(
+    "/api/v1/control-center/projects/:id/knowledge",
+    async (request, reply) => {
+      const query = controlCenterPageQuery.parse(request.query);
+      const page = await controlCenter.projectKnowledge(request.params.id, {
+        ...(query.cursor !== undefined ? { cursor: query.cursor } : {}),
+        ...(query.limit !== undefined ? { limit: query.limit } : {}),
+      });
+      return page
+        ? redactSensitiveData(page)
+        : reply.code(404).send({ error: "PROJECT_NOT_FOUND" });
+    },
+  );
+  app.get<{ Params: { id: string } }>("/api/v1/control-center/runs/:id", async (request, reply) => {
+    const query = controlCenterMissionQuery.parse(request.query);
+    const mission = await controlCenter.mission(request.params.id, query.depth ?? "SIMPLE");
+    return mission
+      ? redactSensitiveData(mission)
+      : reply.code(404).send({ error: "RUN_NOT_FOUND" });
+  });
+  app.get<{ Params: { id: string } }>(
+    "/api/v1/control-center/runs/:id/events",
+    async (request, reply) => {
+      const query = controlCenterPageQuery.parse(request.query);
+      const page = await controlCenter.events(request.params.id, {
+        ...(query.cursor !== undefined ? { cursor: query.cursor } : {}),
+        ...(query.limit !== undefined ? { limit: query.limit } : {}),
+      });
+      return page ? redactSensitiveData(page) : reply.code(404).send({ error: "RUN_NOT_FOUND" });
+    },
+  );
+  app.get<{ Params: { id: string } }>(
+    "/api/v1/control-center/runs/:id/evidence",
+    async (request, reply) => {
+      const query = controlCenterPageQuery.parse(request.query);
+      const page = await controlCenter.evidence(request.params.id, {
+        ...(query.cursor !== undefined ? { cursor: query.cursor } : {}),
+        ...(query.limit !== undefined ? { limit: query.limit } : {}),
+      });
+      return page ? redactSensitiveData(page) : reply.code(404).send({ error: "RUN_NOT_FOUND" });
+    },
+  );
+  app.get<{ Params: { id: string } }>(
+    "/api/v1/control-center/runs/:id/trust",
+    async (request, reply) => {
+      const inspection = await controlCenter.trust(request.params.id);
+      return inspection
+        ? redactSensitiveData(inspection)
+        : reply.code(404).send({ error: "RUN_NOT_FOUND" });
+    },
+  );
+  app.get<{ Params: { id: string } }>(
+    "/api/v1/control-center/runs/:id/context",
+    async (request, reply) => {
+      const inspection = await controlCenter.context(request.params.id);
+      return inspection
+        ? redactSensitiveData(inspection)
+        : reply.code(404).send({ error: "RUN_NOT_FOUND" });
+    },
+  );
+  app.get<{ Params: { id: string } }>(
+    "/api/v1/control-center/runs/:id/why",
+    async (request, reply) => {
+      const inspection = await controlCenter.why(request.params.id);
+      return inspection
+        ? redactSensitiveData(inspection)
+        : reply.code(404).send({ error: "RUN_NOT_FOUND" });
+    },
+  );
+  app.get("/api/v1/control-center/work-items", async (request) => {
+    const query = controlCenterPageQuery
+      .extend({ projectId: z.string().max(200).optional() })
+      .parse(request.query);
+    return redactSensitiveData(
+      await controlCenter.workItems(query.projectId, {
+        ...(query.cursor !== undefined ? { cursor: query.cursor } : {}),
+        ...(query.limit !== undefined ? { limit: query.limit } : {}),
+      }),
+    );
+  });
+  app.post("/api/v1/control-center/work-items", async (request, reply) => {
+    assertWorkItemCannotMutateTrust(request.body);
+    const body = workItemCreateSchema.parse(request.body);
+    const item = await controlCenter.applyWorkItem({
+      type: "CREATE",
+      projectId: body.projectId,
+      title: body.title,
+      ...(body.description !== undefined ? { description: body.description } : {}),
+      ...(body.priority !== undefined ? { priority: body.priority } : {}),
+      ...(body.owner !== undefined ? { owner: body.owner } : {}),
+      ...(body.milestone !== undefined ? { milestone: body.milestone } : {}),
+      ...(body.dependencyIds !== undefined ? { dependencyIds: body.dependencyIds } : {}),
+    });
+    return reply.code(201).send(redactSensitiveData(item));
   });
 
   const webRoot = path.resolve(process.cwd(), "dist/web");
@@ -571,6 +1282,7 @@ export const createApp = async (): Promise<AppRuntime> => {
   return {
     app,
     runs,
+    controlCenter,
     close: async () => {
       await app.close();
       if (pool) await pool.end();
