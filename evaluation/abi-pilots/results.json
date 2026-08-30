@@ -1,0 +1,97 @@
+{
+  "contract": "NEWLY_AUTHORED_RECONSTRUCTION",
+  "matrix": [
+    {
+      "taskId": "clamp-number-util",
+      "candidate": "pristine",
+      "statuses": [
+        "FAIL",
+        "FAIL"
+      ],
+      "deterministic": true,
+      "materialization": true,
+      "hiddenIsolated": true
+    },
+    {
+      "taskId": "clamp-number-util",
+      "candidate": "reference",
+      "statuses": [
+        "PASS",
+        "PASS"
+      ],
+      "deterministic": true,
+      "materialization": true,
+      "hiddenIsolated": true
+    },
+    {
+      "taskId": "clamp-number-util",
+      "candidate": "wrong",
+      "statuses": [
+        "FAIL",
+        "FAIL"
+      ],
+      "deterministic": true,
+      "materialization": true,
+      "hiddenIsolated": true
+    },
+    {
+      "taskId": "clamp-number-util",
+      "candidate": "alternative",
+      "statuses": [
+        "PASS",
+        "PASS"
+      ],
+      "deterministic": true,
+      "materialization": true,
+      "hiddenIsolated": true
+    },
+    {
+      "taskId": "b2-partial-validation-mutation",
+      "candidate": "pristine",
+      "statuses": [
+        "FAIL",
+        "FAIL",
+        "FAIL"
+      ],
+      "deterministic": true,
+      "materialization": true,
+      "hiddenIsolated": true
+    },
+    {
+      "taskId": "b2-partial-validation-mutation",
+      "candidate": "reference",
+      "statuses": [
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "deterministic": true,
+      "materialization": true,
+      "hiddenIsolated": true
+    },
+    {
+      "taskId": "b2-partial-validation-mutation",
+      "candidate": "wrong",
+      "statuses": [
+        "FAIL",
+        "FAIL",
+        "FAIL"
+      ],
+      "deterministic": true,
+      "materialization": true,
+      "hiddenIsolated": true
+    },
+    {
+      "taskId": "b2-partial-validation-mutation",
+      "candidate": "alternative",
+      "statuses": [
+        "PASS",
+        "PASS",
+        "PASS"
+      ],
+      "deterministic": true,
+      "materialization": true,
+      "hiddenIsolated": true
+    }
+  ]
+}

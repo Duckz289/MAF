@@ -1,0 +1,205 @@
+[
+  {
+    "phase": "phase-b",
+    "id": "clamp-number-util",
+    "category": "SIMPLE_TASK",
+    "difficulty": "easy",
+    "band": "B"
+  },
+  {
+    "phase": "phase-b",
+    "id": "duration-carry-fix",
+    "category": "LOCAL_BUGFIX",
+    "difficulty": "easy",
+    "band": "B"
+  },
+  {
+    "phase": "phase-b",
+    "id": "csv-export-feature",
+    "category": "MULTI_FILE_FEATURE",
+    "difficulty": "medium",
+    "band": "B"
+  },
+  {
+    "phase": "phase-b",
+    "id": "pagination-cursor-feature",
+    "category": "MULTI_FILE_FEATURE",
+    "difficulty": "medium",
+    "band": "B"
+  },
+  {
+    "phase": "phase-b",
+    "id": "stale-cache-invalidation-bug",
+    "category": "CROSS_MODULE_BUG",
+    "difficulty": "medium",
+    "band": "B"
+  },
+  {
+    "phase": "phase-b",
+    "id": "event-emitter-listener-leak",
+    "category": "LOCAL_BUGFIX",
+    "difficulty": "medium",
+    "band": "B"
+  },
+  {
+    "phase": "phase-b",
+    "id": "inventory-orientation-task",
+    "category": "CODEBASE_ORIENTATION",
+    "difficulty": "medium",
+    "band": "B"
+  },
+  {
+    "phase": "phase-b",
+    "id": "backward-compat-date-regression",
+    "category": "REGRESSION_REPAIR",
+    "difficulty": "medium-hard",
+    "band": "B"
+  },
+  {
+    "phase": "phase-b",
+    "id": "past-due-reminder-handling",
+    "category": "AMBIGUOUS_REQUIREMENT",
+    "difficulty": "medium",
+    "band": "B"
+  },
+  {
+    "phase": "phase-b",
+    "id": "report-output-path-boundary",
+    "category": "RISK_SENSITIVE_CHANGE",
+    "difficulty": "medium-hard",
+    "band": "B"
+  },
+  {
+    "phase": "phase-b",
+    "id": "idempotency-key-race",
+    "category": "RISK_SENSITIVE_CHANGE",
+    "difficulty": "hard",
+    "band": "B"
+  },
+  {
+    "phase": "phase-b",
+    "id": "webhook-retry-terminal-state",
+    "category": "RECOVERY_TASK",
+    "difficulty": "medium-hard",
+    "band": "B"
+  },
+  {
+    "phase": "phase-c",
+    "id": "b1-extend-exhaustive-union",
+    "category": "band1",
+    "difficulty": "easy",
+    "band": "band1"
+  },
+  {
+    "phase": "phase-c",
+    "id": "b1-mirror-pure-utility-fn",
+    "category": "band1",
+    "difficulty": "easy",
+    "band": "band1"
+  },
+  {
+    "phase": "phase-c",
+    "id": "b1-mirror-sibling-guard-clause",
+    "category": "band1",
+    "difficulty": "easy",
+    "band": "band1"
+  },
+  {
+    "phase": "phase-c",
+    "id": "b1-rename-exported-symbol",
+    "category": "band1",
+    "difficulty": "easy",
+    "band": "band1"
+  },
+  {
+    "phase": "phase-c",
+    "id": "b1-string-pad-length-bug",
+    "category": "band1",
+    "difficulty": "easy",
+    "band": "band1"
+  },
+  {
+    "phase": "phase-c",
+    "id": "b2-bulk-op-tenant-bypass",
+    "category": "band2",
+    "difficulty": "hard",
+    "band": "band2"
+  },
+  {
+    "phase": "phase-c",
+    "id": "b2-concurrent-seat-lost-update",
+    "category": "band2",
+    "difficulty": "hard",
+    "band": "band2"
+  },
+  {
+    "phase": "phase-c",
+    "id": "b2-order-refund-terminal-leak",
+    "category": "band2",
+    "difficulty": "hard",
+    "band": "band2"
+  },
+  {
+    "phase": "phase-c",
+    "id": "b2-record-shape-migration-loss",
+    "category": "band2",
+    "difficulty": "hard",
+    "band": "band2"
+  },
+  {
+    "phase": "phase-c",
+    "id": "b2-partial-validation-mutation",
+    "category": "band2",
+    "difficulty": "hard",
+    "band": "band2"
+  },
+  {
+    "phase": "phase-c",
+    "id": "b2-derived-aggregate-consistency",
+    "category": "band2",
+    "difficulty": "hard",
+    "band": "band2"
+  },
+  {
+    "phase": "phase-c",
+    "id": "b2-pending-write-visibility",
+    "category": "band2",
+    "difficulty": "hard",
+    "band": "band2"
+  },
+  {
+    "phase": "phase-c",
+    "id": "notification-settings-regression",
+    "category": "band3",
+    "difficulty": "context",
+    "band": "band3"
+  },
+  {
+    "phase": "phase-c",
+    "id": "discount-result-regression",
+    "category": "band3",
+    "difficulty": "context",
+    "band": "band3"
+  },
+  {
+    "phase": "phase-c",
+    "id": "subscription-price-mismatch",
+    "category": "band3",
+    "difficulty": "context",
+    "band": "band3"
+  },
+  {
+    "phase": "phase-c",
+    "id": "task-update-duplication",
+    "category": "band3",
+    "difficulty": "context",
+    "band": "band3"
+  },
+  {
+    "phase": "phase-c",
+    "id": "completion-state-regression",
+    "category": "band3",
+    "difficulty": "context",
+    "band": "band3"
+  }
+]

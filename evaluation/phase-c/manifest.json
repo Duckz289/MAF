@@ -1,0 +1,53 @@
+{
+  "version": "2.0.0-reconstructed",
+  "phase": "C",
+  "bands": {
+    "band1": [
+      "b1-extend-exhaustive-union",
+      "b1-mirror-pure-utility-fn",
+      "b1-mirror-sibling-guard-clause",
+      "b1-rename-exported-symbol",
+      "b1-string-pad-length-bug"
+    ],
+    "band2": [
+      "b2-bulk-op-tenant-bypass",
+      "b2-concurrent-seat-lost-update",
+      "b2-order-refund-terminal-leak",
+      "b2-record-shape-migration-loss",
+      "b2-partial-validation-mutation",
+      "b2-derived-aggregate-consistency",
+      "b2-pending-write-visibility"
+    ],
+    "band3": [
+      "notification-settings-regression",
+      "discount-result-regression",
+      "subscription-price-mismatch",
+      "task-update-duplication",
+      "completion-state-regression"
+    ]
+  },
+  "band3OrientationAudit": {
+    "required": true,
+    "classifications": [
+      "CONTEXT_TEST_STRONG",
+      "CONTEXT_TEST_WEAK",
+      "NOT_A_CONTEXT_TEST"
+    ],
+    "notAContextTestAction": "redesign before frontier use"
+  },
+  "validation": {
+    "pristineFail": true,
+    "referencePass": true,
+    "shortcutFailWhereMeaningful": true,
+    "deterministic": true,
+    "noLeakage": true,
+    "frontierExecution": false
+  },
+  "band3MigrationMap": {
+    "notification-settings-regression": "b3-config-provider-boundary-trace",
+    "discount-result-regression": "b3-dead-code-vs-live-discount-path",
+    "subscription-price-mismatch": "b3-decoy-cache-source-of-truth",
+    "task-update-duplication": "b3-duplicate-service-owner",
+    "completion-state-regression": "b3-event-handler-owner-trace"
+  }
+}

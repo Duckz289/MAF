@@ -1,0 +1,28 @@
+{
+  "version": "2.0.0-reconstructed",
+  "phase": "B",
+  "status": "RECONSTRUCTED_FIXTURES",
+  "tasks": [
+    ["clamp-number-util","SIMPLE_TASK","easy"],
+    ["duration-carry-fix","LOCAL_BUGFIX","easy"],
+    ["csv-export-feature","MULTI_FILE_FEATURE","medium"],
+    ["pagination-cursor-feature","MULTI_FILE_FEATURE","medium"],
+    ["stale-cache-invalidation-bug","CROSS_MODULE_BUG","medium"],
+    ["event-emitter-listener-leak","LOCAL_BUGFIX","medium"],
+    ["inventory-orientation-task","CODEBASE_ORIENTATION","medium"],
+    ["backward-compat-date-regression","REGRESSION_REPAIR","medium-hard"],
+    ["past-due-reminder-handling","AMBIGUOUS_REQUIREMENT","medium"],
+    ["report-output-path-boundary","RISK_SENSITIVE_CHANGE","medium-hard"],
+    ["idempotency-key-race","RISK_SENSITIVE_CHANGE","hard"],
+    ["webhook-retry-terminal-state","RECOVERY_TASK","medium-hard"]
+  ],
+  "fixturePolicy": {
+    "publicSeed": true,
+    "behavioralHiddenGraders": true,
+    "referenceImplementationsPrivate": true,
+    "shortcutImplementationsPrivate": true,
+    "regressionChecks": true,
+    "frontierExecution": false,
+    "requiredChecks": ["PRISTINE_FAIL","REFERENCE_PASS","SHORTCUT_FAIL","DETERMINISTIC","NO_LEAKAGE"]
+  }
+}

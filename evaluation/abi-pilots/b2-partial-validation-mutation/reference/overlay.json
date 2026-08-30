@@ -1,0 +1,1 @@
+{"src/apply-patch.mjs":"export function applyPatch(record, patch) { const next={...record,...patch}; if (!['open','closed'].includes(next.status)) throw new RangeError('invalid status'); return next; }\n"}
