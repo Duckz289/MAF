@@ -5,10 +5,9 @@
       "taskId": "clamp-number-util",
       "candidate": "pristine",
       "statuses": [
-        "PASS",
-        "PASS"
+        "FAIL",
+        "FAIL"
       ],
-      "expected": "PASS",
       "deterministic": true,
       "materialization": true,
       "hiddenIsolated": true
@@ -20,7 +19,6 @@
         "PASS",
         "PASS"
       ],
-      "expected": "PASS",
       "deterministic": true,
       "materialization": true,
       "hiddenIsolated": true
@@ -32,7 +30,6 @@
         "FAIL",
         "FAIL"
       ],
-      "expected": "FAIL",
       "deterministic": true,
       "materialization": true,
       "hiddenIsolated": true
@@ -44,7 +41,6 @@
         "PASS",
         "PASS"
       ],
-      "expected": "PASS",
       "deterministic": true,
       "materialization": true,
       "hiddenIsolated": true
@@ -53,11 +49,10 @@
       "taskId": "b2-partial-validation-mutation",
       "candidate": "pristine",
       "statuses": [
-        "PASS",
-        "PASS",
-        "PASS"
+        "FAIL",
+        "FAIL",
+        "FAIL"
       ],
-      "expected": "PASS",
       "deterministic": true,
       "materialization": true,
       "hiddenIsolated": true
@@ -70,7 +65,6 @@
         "PASS",
         "PASS"
       ],
-      "expected": "PASS",
       "deterministic": true,
       "materialization": true,
       "hiddenIsolated": true
@@ -83,7 +77,6 @@
         "FAIL",
         "FAIL"
       ],
-      "expected": "FAIL",
       "deterministic": true,
       "materialization": true,
       "hiddenIsolated": true
@@ -96,7 +89,6 @@
         "PASS",
         "PASS"
       ],
-      "expected": "PASS",
       "deterministic": true,
       "materialization": true,
       "hiddenIsolated": true
