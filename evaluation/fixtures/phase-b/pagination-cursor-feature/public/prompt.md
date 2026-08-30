@@ -1,8 +1,7 @@
-# pagination-cursor-feature
+# Add cursor pagination
 
-This task is part of the NEWLY_AUTHORED_RECONSTRUCTION benchmark. Modify the public repository to satisfy the behavior demonstrated by its existing entrypoint and source seed. Preserve existing public API compatibility and keep unrelated behavior unchanged.
-
-## Acceptance
-
-The entrypoint must complete successfully for its documented scenario, and the implementation must generalize to equivalent valid inputs rather than hard-coding the displayed example.
-Public source files currently include: bin\list-items.mjs, src\item-service.mjs, src\item-store.mjs
+Change `listItemsPage(cursor, limit)` so `cursor` is either `null`/`undefined` for the first page or
+the opaque cursor returned by the previous page. Return `{ items, nextCursor }`; `nextCursor` is a
+string when more items remain and `null` on the final page. Cursors must continue from the item after
+the last item previously returned and must not duplicate or skip items. Reject malformed/stale
+cursors and non-integer limits outside 1–100 with `RangeError`. Preserve `addItem`.

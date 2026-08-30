@@ -15,6 +15,7 @@ export async function runCase({
   publicRepo,
   grader,
   overlay,
+  overlayData,
   tempRoot = os.tmpdir(),
   timeoutMs = 10_000,
   childCwd,
@@ -27,7 +28,9 @@ export async function runCase({
     }
     workspace = await mkdtemp(path.join(tempRoot, "maf-curator-"));
     await cp(publicRepo, workspace, { recursive: true, errorOnExist: true });
+    if (overlay && overlayData) throw new Error("provide either overlay or overlayData, not both");
     if (overlay) await applyOverlay(overlay, workspace);
+    if (overlayData) await applyOverlayData(overlayData, workspace);
     evidence.materialization = "VALID";
     const leaks = await findPrivateLeakage(workspace);
     if (leaks.length > 0) {
@@ -76,6 +79,11 @@ export async function applyOverlay(overlayPath, workspace) {
   } catch {
     throw new Error("overlay is malformed JSON");
   }
+  await applyOverlayData(overlay, workspace);
+}
+
+export async function applyOverlayData(overlay, workspace) {
+  if (!(await isDirectory(workspace))) throw new Error("candidate workspace is missing");
   if (!overlay || Array.isArray(overlay) || typeof overlay !== "object") {
     throw new Error("overlay must be a JSON object");
   }
@@ -200,7 +208,7 @@ function normalizeResult(result) {
     checks: result.checks,
     message: result.message,
     evidence: result.evidence,
-  });
+  }).replaceAll(/maf-curator-[A-Za-z0-9_-]+/g, "maf-curator-<workspace>");
 }
 function invalidResult(taskId, candidate, evidence, message) {
   return { taskId, candidate, status: "INVALID", checks: [], message, evidence };

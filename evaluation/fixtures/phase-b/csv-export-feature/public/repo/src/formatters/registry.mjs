@@ -1,6 +1,8 @@
 import { formatJson } from "./json-formatter.mjs";
+import { formatCsv } from "./csv-formatter.mjs";
 
 const formatters = {
+  csv: formatCsv,
   json: formatJson,
 };
 

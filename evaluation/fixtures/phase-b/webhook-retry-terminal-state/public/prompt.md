@@ -1,8 +1,7 @@
-# webhook-retry-terminal-state
+# Stop webhook retries on terminal responses
 
-This task is part of the NEWLY_AUTHORED_RECONSTRUCTION benchmark. Modify the public repository to satisfy the behavior demonstrated by its existing entrypoint and source seed. Preserve existing public API compatibility and keep unrelated behavior unchanged.
-
-## Acceptance
-
-The entrypoint must complete successfully for its documented scenario, and the implementation must generalize to equivalent valid inputs rather than hard-coding the displayed example.
-Public source files currently include: bin\demo.mjs, src\webhook-delivery.mjs
+`deliverWebhook(job, sendFn)` returns `{ status, attempts }`. Any 2xx response is `DELIVERED`.
+Statuses 400, 401, 403, 404, and 410 are terminal and return `REJECTED` after that attempt. Retry
+408, 425, 429, and 5xx responses up to five total attempts, then return `RETRY_EXHAUSTED`. Treat any
+other HTTP status as terminal `REJECTED`. Do not test only one terminal status, and do not add
+wall-clock delays to retries.

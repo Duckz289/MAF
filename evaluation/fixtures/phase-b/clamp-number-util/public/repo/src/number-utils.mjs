@@ -6,3 +6,7 @@ export function roundTo(value, decimals = 0) {
 export function isInRange(value, min, max) {
   return value >= min && value <= max;
 }
+
+export function clampNumber(value, min, max) {
+  return Number(value);
+}

@@ -1,8 +1,8 @@
-# clamp-number-util
+# Add a numeric clamp utility
 
-This task is part of the NEWLY_AUTHORED_RECONSTRUCTION benchmark. Modify the public repository to satisfy the behavior demonstrated by its existing entrypoint and source seed. Preserve existing public API compatibility and keep unrelated behavior unchanged.
-
-## Acceptance
-
-The entrypoint must complete successfully for its documented scenario, and the implementation must generalize to equivalent valid inputs rather than hard-coding the displayed example.
-Public source files currently include: src\index.mjs, src\number-utils.mjs
+Export `clampNumber(value, min, max)` from `src/number-utils.mjs`. Convert all three arguments with
+JavaScript's `Number(...)` conversion, reject non-finite converted values with `TypeError`, and
+reject `min > max` with `RangeError`. Otherwise return the converted value limited to the inclusive
+`[min, max]` range. This means ordinary JavaScript conversion behavior is part of the contract (for
+example, `Number(null) === 0`). Preserve the existing `roundTo` and `isInRange` APIs and correct
+`roundTo` so its decimal-place argument is applied before rounding.

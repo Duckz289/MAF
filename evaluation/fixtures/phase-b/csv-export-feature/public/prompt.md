@@ -1,8 +1,7 @@
-# csv-export-feature
+# Add CSV report export
 
-This task is part of the NEWLY_AUTHORED_RECONSTRUCTION benchmark. Modify the public repository to satisfy the behavior demonstrated by its existing entrypoint and source seed. Preserve existing public API compatibility and keep unrelated behavior unchanged.
-
-## Acceptance
-
-The entrypoint must complete successfully for its documented scenario, and the implementation must generalize to equivalent valid inputs rather than hard-coding the displayed example.
-Public source files currently include: bin\export-report.mjs, src\report-writer.mjs, src\formatters\json-formatter.mjs, src\formatters\registry.mjs
+Make `writeReport(report, "csv")` return CSV text whose first row is `report.columns` and whose
+remaining rows are `report.rows`, preserving their order. Convert `null` and `undefined` cells to
+empty fields and other values with `String`. Quote a field when it contains a comma, quote, carriage
+return, or newline; inside a quoted field, double each quote. Join records with `\n` and do not add a
+trailing newline. Keep JSON output and the formatter registry API working.
