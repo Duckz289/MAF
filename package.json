@@ -39,6 +39,7 @@
     "validate:evaluation:attacks": "node evaluation/run-curator-matrix.mjs --phase all --candidates wrong,attack --repetitions 1",
     "validate:evaluation:false-fail": "node evaluation/run-curator-matrix.mjs --phase all --candidates reference,alternative,probe --skip-missing true --repetitions 1",
     "validate:evaluation:determinism": "node evaluation/run-determinism-stress.mjs --rounds 14 --concurrency 4",
+    "validate:evaluation:cross-suite": "node evaluation/audit-cross-suite.mjs",
     "validate:fixtures": "node evaluation/validate-fixtures.mjs && node evaluation/validate-reconstruction.mjs"
   },
   "dependencies": {
