@@ -38,6 +38,7 @@
     "validate:evaluation:phase-c:band3": "node evaluation/audit-band3-context.mjs && node evaluation/run-curator-matrix.mjs --phase phase-c --band band3 --candidates pristine,reference,wrong,attack,alternative --repetitions 2",
     "validate:evaluation:attacks": "node evaluation/run-curator-matrix.mjs --phase all --candidates wrong,attack --repetitions 1",
     "validate:evaluation:false-fail": "node evaluation/run-curator-matrix.mjs --phase all --candidates reference,alternative,probe --skip-missing true --repetitions 1",
+    "validate:evaluation:determinism": "node evaluation/run-determinism-stress.mjs --rounds 14 --concurrency 4",
     "validate:fixtures": "node evaluation/validate-fixtures.mjs && node evaluation/validate-reconstruction.mjs"
   },
   "dependencies": {
