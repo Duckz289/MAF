@@ -31,6 +31,8 @@
     "real-agent:smoke": "tsx scripts/real-agent-smoke.ts",
     "compose:check": "docker compose config --quiet",
     "validate": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build && npm run compose:check && npm run smoke",
+    "test:abi": "node --test evaluation/abi-tests/*.test.mjs",
+    "validate:evaluation": "npm run test:abi && node evaluation/run-abi-pilots.mjs && node evaluation/validate-fixtures.mjs && node evaluation/validate-contracts.mjs && node evaluation/validate-reconstruction.mjs",
     "validate:fixtures": "node evaluation/validate-fixtures.mjs && node evaluation/validate-reconstruction.mjs"
   },
   "dependencies": {
