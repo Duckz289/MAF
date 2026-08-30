@@ -34,6 +34,7 @@
     "test:abi": "node --test evaluation/abi-tests/*.test.mjs",
     "validate:evaluation": "npm run test:abi && node evaluation/run-abi-pilots.mjs && node evaluation/validate-fixtures.mjs && node evaluation/validate-contracts.mjs && node evaluation/validate-reconstruction.mjs",
     "validate:evaluation:phase-b": "node evaluation/run-curator-matrix.mjs --phase phase-b --repetitions 2",
+    "validate:evaluation:phase-c:band12": "node evaluation/run-curator-matrix.mjs --phase phase-c --band band1,band2 --repetitions 2",
     "validate:fixtures": "node evaluation/validate-fixtures.mjs && node evaluation/validate-reconstruction.mjs"
   },
   "dependencies": {

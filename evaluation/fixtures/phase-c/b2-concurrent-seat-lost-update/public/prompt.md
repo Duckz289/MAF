@@ -1,8 +1,8 @@
-# b2-concurrent-seat-lost-update
+# Prevent concurrent seat bookings from losing updates
 
-This task is part of the NEWLY_AUTHORED_RECONSTRUCTION benchmark. Modify the public repository to satisfy the behavior demonstrated by its existing entrypoint and source seed. Preserve existing public API compatibility and keep unrelated behavior unchanged.
-
-## Acceptance
-
-The entrypoint must complete successfully for its documented scenario, and the implementation must generalize to equivalent valid inputs rather than hard-coding the displayed example.
-Public source files currently include: bin\demo.mjs
+Add the missing `src/seat-inventory.mjs`. `seedEvent(id, available)` creates an event with an empty
+`bookedBy` list. `bookSeat(eventId, userId, auditFn)` returns a promise for `true` only when it
+atomically claims one available seat, otherwise `false`. Concurrent calls must never produce more
+successful bookings than available seats; `available` and `bookedBy` must agree after completion.
+The supplied asynchronous audit hook may yield, so the claim must be synchronized without timing
+delays. `getEvent` returns the current event.

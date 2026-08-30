@@ -1,8 +1,6 @@
-# b2-record-shape-migration-loss
+# Preserve record fields during the V1-to-V2 migration
 
-This task is part of the NEWLY_AUTHORED_RECONSTRUCTION benchmark. Modify the public repository to satisfy the behavior demonstrated by its existing entrypoint and source seed. Preserve existing public API compatibility and keep unrelated behavior unchanged.
-
-## Acceptance
-
-The entrypoint must complete successfully for its documented scenario, and the implementation must generalize to equivalent valid inputs rather than hard-coding the displayed example.
-Public source files currently include: bin\demo.mjs, src\migrate-record.mjs
+`migrateRecordV1toV2(v1)` must return a new record with `schemaVersion: 2` while preserving every
+own enumerable field from the input, including fields unknown to the migration such as `metadata`.
+It must not mutate the input. Additional non-destructive diagnostic fields are allowed; callers must
+not be rejected merely because their record shape has extensions.

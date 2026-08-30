@@ -5,6 +5,7 @@ import { runRepeatedCase } from "./lib/curator-runner.mjs";
 
 const evaluationRoot = path.dirname(fileURLToPath(import.meta.url));
 const phase = argument("--phase", "all");
+const band = argument("--band", "all");
 const repetitions = Number(argument("--repetitions", "1"));
 const requestedCandidates = argument("--candidates", "pristine,reference,wrong,alternative").split(
   ",",
@@ -20,7 +21,7 @@ const expectedStatus = {
 const matrix = [];
 
 for (const phaseName of phases) {
-  const taskIds = await loadTaskIds(phaseName);
+  const taskIds = await loadTaskIds(phaseName, band);
   const curatorRoot = path.join(evaluationRoot, "curator", phaseName);
   const overlays = JSON.parse(await readFile(path.join(curatorRoot, "overlays.json"), "utf8"));
   for (const taskId of taskIds) {
@@ -67,12 +68,13 @@ console.log(
 );
 if (failures.length > 0) process.exitCode = 1;
 
-async function loadTaskIds(phaseName) {
+async function loadTaskIds(phaseName, selectedBand) {
   const manifest = JSON.parse(
     await readFile(path.join(evaluationRoot, phaseName, "manifest.json"), "utf8"),
   );
   if (phaseName === "phase-b") return manifest.tasks.map(([id]) => id);
-  return Object.values(manifest.bands).flat();
+  if (selectedBand === "all") return Object.values(manifest.bands).flat();
+  return selectedBand.split(",").flatMap((name) => manifest.bands[name] ?? []);
 }
 function argument(name, fallback) {
   const index = process.argv.indexOf(name);
