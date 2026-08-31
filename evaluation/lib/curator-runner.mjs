@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { cp, lstat, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { findPrivateLeakage } from "./leakage.mjs";
 
 const VALID_STATUSES = new Set(["PASS", "FAIL", "INVALID"]);
 
@@ -44,7 +45,7 @@ export async function runCase({
     if (overlay) await applyOverlay(overlay, workspace);
     if (overlayData) await applyOverlayData(overlayData, workspace);
     evidence.materialization = "VALID";
-    const leaks = await findPrivateLeakage(workspace);
+    const leaks = await findPrivateLeakage(workspace, { taskId });
     if (leaks.length > 0) {
       evidence.leakage = "FAIL";
       result = invalidResult(taskId, candidate, evidence, `private leakage: ${leaks.join(", ")}`);
@@ -306,24 +307,7 @@ export function parseGraderOutput(stdout) {
   return { status: value.status, checks: value.checks, message: value.message };
 }
 
-export async function findPrivateLeakage(workspace) {
-  const leaks = [];
-  for (const entry of await readdir(workspace, { recursive: true })) {
-    const relative = String(entry);
-    if (PRIVATE_PATH_PATTERN.test(relative)) leaks.push(`path:${relative}`);
-    const absolute = path.join(workspace, relative);
-    const info = await stat(absolute).catch(() => null);
-    if (!info?.isFile() || info.size > 1_000_000) continue;
-    const content = await readFile(absolute, "utf8").catch(() => null);
-    if (content && PRIVATE_CONTENT_PATTERN.test(content)) leaks.push(`content:${relative}`);
-  }
-  return leaks;
-}
-
-const PRIVATE_PATH_PATTERN =
-  /(?:^|[\\/._-])(grader|reference|wrong|alternative|attack|curator|solution|private)(?:$|[\\/._-])/i;
-const PRIVATE_CONTENT_PATTERN =
-  /\b(?:hidden grader|reference implementation|curator notes?|private artifact|expected solution)\b/i;
+export { findPrivateLeakage } from "./leakage.mjs";
 
 function normalizeResult(result) {
   return JSON.stringify({
