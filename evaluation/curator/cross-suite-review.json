@@ -177,41 +177,61 @@
   ],
   "overlapReviews": [
     {
-      "tasks": ["clamp-number-util", "b2-partial-validation-mutation"],
+      "tasks": [
+        "clamp-number-util",
+        "b2-partial-validation-mutation"
+      ],
       "verdict": "DISTINCT",
       "reason": "Primitive conversion and bounds differ from atomic object-patch validation."
     },
     {
-      "tasks": ["idempotency-key-race", "b2-concurrent-seat-lost-update"],
+      "tasks": [
+        "idempotency-key-race",
+        "b2-concurrent-seat-lost-update"
+      ],
       "verdict": "DISTINCT",
       "reason": "Per-key exclusion with an audit record differs from finite-resource accounting under concurrency."
     },
     {
-      "tasks": ["stale-cache-invalidation-bug", "subscription-price-mismatch"],
+      "tasks": [
+        "stale-cache-invalidation-bug",
+        "subscription-price-mismatch"
+      ],
       "verdict": "DISTINCT",
       "reason": "Cache coherence after writes differs from multi-hop authoritative-source selection for new records."
     },
     {
-      "tasks": ["webhook-retry-terminal-state", "b2-order-refund-terminal-leak"],
+      "tasks": [
+        "webhook-retry-terminal-state",
+        "b2-order-refund-terminal-leak"
+      ],
       "verdict": "DISTINCT",
       "reason": "HTTP retry classification differs from transactional state ordering around an external write."
     },
     {
-      "tasks": ["event-emitter-listener-leak", "task-update-duplication"],
+      "tasks": [
+        "event-emitter-listener-leak",
+        "task-update-duplication"
+      ],
       "verdict": "DISTINCT",
       "reason": "Listener teardown across lifecycles differs from duplicate ownership of one domain event."
     },
     {
-      "tasks": ["inventory-orientation-task", "b2-bulk-op-tenant-bypass"],
+      "tasks": [
+        "inventory-orientation-task",
+        "b2-bulk-op-tenant-bypass"
+      ],
       "verdict": "DISTINCT",
       "reason": "Atomic signed quantity adjustment differs from tenant authorization and per-item bulk reporting."
+    },
+    {
+      "tasks": [
+        "inventory-orientation-task",
+        "b2-partial-validation-mutation"
+      ],
+      "verdict": "DISTINCT",
+      "reason": "Both concern ordering around a rejection, and the independent audit flagged them as sharing one invariant and one blind spot. They are kept because the ordering is with respect to different things and is observed with different instruments: inventory-orientation-task is about whether a rejected adjustment reaches the repository persistence call saveItem at all, measured with a pass-through probe over the store, and additionally asks the solver to locate and reuse an existing repository invariant across modules. b2-partial-validation-mutation is about whether any property of a caller-owned in-memory object is written before validation completes, measured with a write-recording proxy, and its contract explicitly permits mutating that object once validation has succeeded - a permitted path inventory-orientation-task has no analogue for."
     }
   ],
-  "intentionalInvalidCandidateReuse": [
-    {
-      "candidate": "wrong",
-      "tasks": ["task-update-duplication", "completion-state-regression"],
-      "reason": "The same archived-event decoy is deliberately patched to prove that changing a plausible wrong owner affects neither live behavior. Reference, alternative, probe, and attack implementations remain task-specific."
-    }
-  ]
+  "intentionalInvalidCandidateReuse": []
 }

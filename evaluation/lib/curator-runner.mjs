@@ -61,6 +61,11 @@ export async function runCase({
       checks: graderResult.checks,
       message: graderResult.message,
       evidence,
+      // Observations, not classification. They let a report measure workspace isolation and
+      // process freshness rather than assert them. normalizeResult ignores them.
+      workspace: path.basename(workspace),
+      graderPid: graderResult.pid ?? null,
+      childCwd: childCwd ? path.resolve(childCwd) : path.resolve(workspace),
     };
     return result;
   } catch (error) {
@@ -187,6 +192,7 @@ export async function invokeGrader({ grader, workspace, timeoutMs = 10_000, chil
         detached: process.platform !== "win32",
       },
     );
+    const pid = child.pid ?? null;
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -225,7 +231,7 @@ export async function invokeGrader({ grader, workspace, timeoutMs = 10_000, chil
       settled = true;
       clearTimeout(timer);
       clearTimeout(graceTimer);
-      resolve(result);
+      resolve({ ...result, pid });
     }
   });
 }
