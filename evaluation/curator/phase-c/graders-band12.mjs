@@ -493,6 +493,17 @@ export const phaseCBand12Graders = {
       "expected the new line to be present",
     );
 
+    // The prompt says the new state contains "a copy of line", so the caller keeping a reference to
+    // the line it passed must not be able to change what the cart holds.
+    const shared = { sku: "D", amount: 4 };
+    const afterShared = addLine({ lines: [], total: 0 }, shared);
+    shared.amount = 999;
+    shared.sku = "MUTATED";
+    equal("the stored line is a copy of the caller's line", afterShared.lines, [
+      { sku: "D", amount: 4 },
+    ]);
+    equal("the derived total is unaffected by mutating the caller's line", afterShared.total, 4);
+
     // A stale `total` on the input must not be trusted: the returned total is derived from the lines.
     const stale = { lines: [{ sku: "A", amount: 5 }], total: 999 };
     equal("a stale input total is recomputed", addLine(stale, { sku: "B", amount: 3 }).total, 8);

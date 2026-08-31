@@ -19,6 +19,19 @@ contract clause each candidate is meant to exercise.
 | `fresh-false-pass` | `FAIL` | Contract-derived attacks authored during the repair, not copied from the audit. |
 | `fresh-false-fail` | `PASS` | Structurally different correct implementations authored during the repair. |
 
+### Independence
+
+`fresh-false-pass` candidates are authored from the public prompt and from plausible coding-agent
+mistakes, never from a grader's case literals. Each declares the `attackClass` it belongs to --
+visible-example hard-code, partial status handling, one-id special casing, wrong-layer patch,
+temporary mutation, over-broad locking, premature rounding, phantom record, and so on -- so the
+corpus can be read as a survey of failure modes rather than a list of tricks.
+
+`fresh-false-fail` candidates each declare the `freedom` they exercise: error-subclass freedom,
+extra harmless fields, a different normalization strategy, a different locking primitive, a
+different validation architecture, or a different ownership layer. A grader that rejects one of
+these is encoding a hidden requirement.
+
 A `known-false-pass` candidate that grades `PASS` is a **grader defect**, never a candidate defect:
 every one of them is behaviourally wrong against the published prompt. Likewise a
 `known-false-fail` candidate that grades `FAIL` means the grader encodes a hidden requirement the

@@ -154,6 +154,375 @@
       "taskId": "b2-derived-aggregate-consistency",
       "contract": "Require line.amount to be a finite number and reject invalid input without mutating the original state. No exception subclass is specified.",
       "satisfies": "Rejects a non-finite amount before building the new state and reports the out-of-domain value as RangeError."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "clamp-parsefloat-conversion",
+      "phase": "phase-b",
+      "taskId": "clamp-number-util",
+      "attackClass": "visible-example hard-code",
+      "contract": "Convert all three arguments with JavaScript's Number(...) conversion.",
+      "violation": "Special-cases the null example the report shows and otherwise converts with parseFloat, so booleans, empty strings and hex text convert differently and trailing garbage is partially parsed."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "duration-parseint-validation",
+      "phase": "phase-b",
+      "taskId": "duration-carry-fix",
+      "attackClass": "loose input parsing",
+      "contract": "Reject a negative, fractional, or non-numeric duration with TypeError.",
+      "violation": "Validates the duration after parseInt, so a fractional duration is silently truncated to an integer and accepted instead of rejected."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "csv-quote-only-commas",
+      "phase": "phase-b",
+      "taskId": "csv-export-feature",
+      "attackClass": "partial escaping",
+      "contract": "Quote a field when it contains a comma, quote, carriage return, or newline; inside a quoted field, double each quote.",
+      "violation": "Doubles embedded quotes but only wraps a field when it contains a comma, a newline or a carriage return, so a field containing only a quote character is emitted unquoted."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "pagination-lower-bound-only",
+      "phase": "phase-b",
+      "taskId": "pagination-cursor-feature",
+      "attackClass": "partial range validation",
+      "contract": "Reject non-integer limits outside 1-100 with RangeError.",
+      "violation": "Validates only the lower bound of the limit, so a non-integer limit and a limit above one hundred are both accepted."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "cache-stores-patch-not-profile",
+      "phase": "phase-b",
+      "taskId": "stale-cache-invalidation-bug",
+      "attackClass": "partial state write",
+      "contract": "updateUserProfile merges the patch into the stored profile and returns the updated profile.",
+      "violation": "Refreshes the cache with the patch itself rather than the merged profile, so a partial update drops every field the patch did not mention."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "off-removes-only-last-listener",
+      "phase": "phase-b",
+      "taskId": "event-emitter-listener-leak",
+      "attackClass": "partial removal",
+      "contract": "off(eventName, listener) must remove the named listener.",
+      "violation": "off only removes the listener when it was the most recently registered one for that event, so an earlier listener can never be detached by name."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "inventory-rounds-instead-of-rejecting",
+      "phase": "phase-b",
+      "taskId": "inventory-orientation-task",
+      "attackClass": "silent coercion",
+      "contract": "Reject any adjustment whose resulting quantity is negative or non-integer.",
+      "violation": "Validates before saveItem, but rounds a fractional result to the nearest integer and stores it instead of rejecting the adjustment."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "overlap-modulo-integer-check",
+      "phase": "phase-b",
+      "taskId": "backward-compat-date-regression",
+      "attackClass": "loose validation",
+      "contract": "Reject a non-integer input with TypeError.",
+      "violation": "Checks integrality with a modulo test, which coerces, so numeric strings pass validation instead of being rejected."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "reminder-due-list-not-copied",
+      "phase": "phase-b",
+      "taskId": "past-due-reminder-handling",
+      "attackClass": "missing defensive copy",
+      "contract": "Preserve insertion order and return defensive list copies.",
+      "violation": "Returns the scheduler's own backing array from dueReminders whenever no reminder was filtered out, so a caller that clears the returned list empties the scheduler."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "path-prefix-without-separator",
+      "phase": "phase-b",
+      "taskId": "report-output-path-boundary",
+      "attackClass": "partial containment validation",
+      "contract": "Reject traversal, sibling-prefix tricks, and every other path that resolves outside outDir.",
+      "violation": "Compares the resolved target against the output directory with a bare string prefix, so a sibling directory whose name merely starts with the output directory's name is accepted."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "idempotency-global-lock",
+      "phase": "phase-b",
+      "taskId": "idempotency-key-race",
+      "attackClass": "over-broad locking",
+      "contract": "Different keys must not block each other.",
+      "violation": "Serialises every reservation behind one global lock, so a reservation for one key refuses reservations for unrelated keys."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "webhook-short-retry-budget",
+      "phase": "phase-b",
+      "taskId": "webhook-retry-terminal-state",
+      "attackClass": "partial status handling",
+      "contract": "Retry 408, 425, 429, and 5xx responses up to five total attempts.",
+      "violation": "Gives 408, 425 and 429 a three-attempt budget while 5xx keeps five, so the documented retry policy is not uniform."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "shape-rejection-type-changed",
+      "phase": "phase-c",
+      "taskId": "b1-extend-exhaustive-union",
+      "attackClass": "collateral regression",
+      "contract": "Don't change how the existing shape kinds are computed or how an unknown kind is rejected.",
+      "violation": "Adds the triangle case correctly but rewrites the default branch to throw a plain Error, changing the documented rejection behavior."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "average-without-empty-guard",
+      "phase": "phase-c",
+      "taskId": "b1-mirror-pure-utility-fn",
+      "attackClass": "missing mirrored guard",
+      "contract": "Throw the same RangeError on an empty array.",
+      "violation": "Computes the mean without mirroring sumArray's empty guard, so an empty array divides by zero and returns NaN instead of rejecting."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "title-guard-coerces-non-strings",
+      "phase": "phase-c",
+      "taskId": "b1-mirror-sibling-guard-clause",
+      "attackClass": "loose validation",
+      "contract": "Reject a non-string or a string that is empty after trimming with RangeError.",
+      "violation": "Coerces its argument with String() before trimming, so a non-string is accepted and returned as text instead of rejected."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "rename-aliased-at-the-wrong-layer",
+      "phase": "phase-c",
+      "taskId": "b1-rename-exported-symbol",
+      "attackClass": "wrong-layer patch",
+      "contract": "Rename the exported function in src/id-utils.mjs so both consumers resolve.",
+      "violation": "Adds an alias in the index barrel instead of renaming the owning module's export, so the receipt module's direct import still cannot resolve."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "pad-numbers-only",
+      "phase": "phase-c",
+      "taskId": "b1-string-pad-length-bug",
+      "attackClass": "partial type handling",
+      "contract": "A code that's already at least length characters long must still be returned unchanged; string input remains supported.",
+      "violation": "Pads on the left only for numeric codes and leaves string codes on the original right-padding path."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "bulk-archive-stops-at-first-rejection",
+      "phase": "phase-c",
+      "taskId": "b2-bulk-op-tenant-bypass",
+      "attackClass": "early exit",
+      "contract": "One rejected item must not prevent eligible items in the same batch from being archived.",
+      "violation": "Returns as soon as an item is rejected, so eligible items later in the batch are never archived or reported."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "seat-booking-creates-unknown-event",
+      "phase": "phase-c",
+      "taskId": "b2-concurrent-seat-lost-update",
+      "attackClass": "phantom record",
+      "contract": "bookSeat returns a promise for true only when it atomically claims one available seat, otherwise false.",
+      "violation": "Creates an event on demand when the id is unknown, so booking against an event that was never seeded succeeds."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "refund-terminal-state-not-persisted",
+      "phase": "phase-c",
+      "taskId": "b2-order-refund-terminal-leak",
+      "attackClass": "unpersisted state",
+      "contract": "A successful call returns the order in REFUNDED state.",
+      "violation": "Waits for the ledger correctly but applies the terminal state to a copy, so the stored order stays PAID after a successful refund."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "migration-known-field-allowlist",
+      "phase": "phase-c",
+      "taskId": "b2-record-shape-migration-loss",
+      "attackClass": "partial allowlist",
+      "contract": "Preserve every own enumerable field from the input, including fields unknown to the migration such as metadata.",
+      "violation": "Copies an allowlist that was extended with metadata after the reported bug, so any other unknown field is still dropped."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "patch-drops-unrelated-fields",
+      "phase": "phase-c",
+      "taskId": "b2-partial-validation-mutation",
+      "attackClass": "partial preservation",
+      "contract": "A valid patch must produce the requested status while preserving unrelated record fields.",
+      "violation": "Validates everything before touching the record, then returns a fresh object carrying only the status, discarding every unrelated field."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "cart-stores-caller-line-by-reference",
+      "phase": "phase-c",
+      "taskId": "b2-derived-aggregate-consistency",
+      "attackClass": "aliased state",
+      "contract": "addLine returns a new cart state containing the existing lines plus a copy of line.",
+      "violation": "Appends the caller's line object itself, so the cart's contents and its derived total change when the caller later edits that object."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "commit-publishes-every-pending-write",
+      "phase": "phase-c",
+      "taskId": "b2-pending-write-visibility",
+      "attackClass": "over-broad publication",
+      "contract": "Committing one transaction must not publish another.",
+      "violation": "Flushes every pending transaction when any one of them is committed, so an uncommitted write for a different key becomes visible."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "settings-falsy-override-ignored",
+      "phase": "phase-c",
+      "taskId": "notification-settings-regression",
+      "attackClass": "falsy-value bug",
+      "contract": "A per-request override must win over the workspace default for any setting a caller overrides.",
+      "violation": "Uses a truthiness test to decide whether an override was supplied, so a legitimate falsy override silently falls back to the workspace default."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "quote-rounds-subtotal-before-tax",
+      "phase": "phase-c",
+      "taskId": "discount-result-regression",
+      "attackClass": "premature rounding",
+      "contract": "The quoted total is rounded to two decimal places.",
+      "violation": "Rounds the discounted subtotal to cents before applying tax as well as after, so the quoted total drifts for prices and rates that do not land on a whole cent."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "rate-lookup-memoised-forever",
+      "phase": "phase-c",
+      "taskId": "subscription-price-mismatch",
+      "attackClass": "stale memoisation",
+      "contract": "A membership must capture the price that is in force for that plan at the moment it is opened, for repeated price changes.",
+      "violation": "Reads the live price book but memoises the first answer per plan for the lifetime of the process, so a later price change is never seen."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "assignment-bypasses-the-event-bus",
+      "phase": "phase-c",
+      "taskId": "task-update-duplication",
+      "attackClass": "wrong-layer patch",
+      "contract": "assignPickerCommand must publish exactly one observable PICKER_ASSIGNED update for that transition.",
+      "violation": "Removes both emits and writes to the projection directly from the service, so the transition is never published and no other subscriber can observe it."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "completion-drops-the-technician",
+      "phase": "phase-c",
+      "taskId": "completion-state-regression",
+      "attackClass": "partial record preservation",
+      "contract": "Fix the behavior while preserving the unrelated assignment behaviour and the event payload shape.",
+      "violation": "Records the completion but rebuilds the order from a fixed field list, dropping the technician the assignment step had stored."
+    },
+    {
+      "corpus": "fresh-false-fail",
+      "id": "patch-uniform-range-error",
+      "phase": "phase-c",
+      "taskId": "b2-partial-validation-mutation",
+      "freedom": "error subclass freedom",
+      "contract": "A missing patch, missing/non-string status, or any other status must throw without changing any property of record. No exception subclass is named.",
+      "satisfies": "Rejects every invalid patch with a single RangeError before touching the record, where the stored reference distinguishes TypeError from RangeError."
+    },
+    {
+      "corpus": "fresh-false-fail",
+      "id": "migration-with-diagnostic-fields",
+      "phase": "phase-c",
+      "taskId": "b2-record-shape-migration-loss",
+      "freedom": "extra harmless fields",
+      "contract": "Additional non-destructive diagnostic fields are allowed.",
+      "satisfies": "Preserves every own enumerable field and adds two diagnostic fields the prompt explicitly permits, so a grader that demanded exact object equality would wrongly reject it."
+    },
+    {
+      "corpus": "fresh-false-fail",
+      "id": "path-boundary-via-relative",
+      "phase": "phase-b",
+      "taskId": "report-output-path-boundary",
+      "freedom": "different normalization strategy",
+      "contract": "Reject every path that resolves outside outDir; a safely contained absolute path is legitimate.",
+      "satisfies": "Decides containment with path.relative rather than a resolved-prefix comparison, so no string prefix logic is involved at all."
+    },
+    {
+      "corpus": "fresh-false-fail",
+      "id": "idempotency-promise-chain-mutex",
+      "phase": "phase-b",
+      "taskId": "idempotency-key-race",
+      "freedom": "different locking primitive",
+      "contract": "Exactly one concurrent caller may receive true; different keys must not block each other; reserve deterministically before an asynchronous lookup can let another caller enter.",
+      "satisfies": "Serialises each key behind its own promise chain instead of claiming a slot in a Set, so the synchronisation primitive is entirely different while the contract still holds."
+    },
+    {
+      "corpus": "fresh-false-fail",
+      "id": "clamp-table-driven-validation",
+      "phase": "phase-b",
+      "taskId": "clamp-number-util",
+      "freedom": "different validation architecture",
+      "contract": "Convert all three arguments with Number(...), reject non-finite converted values with TypeError, reject min > max with RangeError.",
+      "satisfies": "Drives conversion and validation from a declarative table of named arguments rather than an inline guard sequence."
+    },
+    {
+      "corpus": "fresh-false-fail",
+      "id": "completion-persisted-in-the-transition-layer",
+      "phase": "phase-c",
+      "taskId": "completion-state-regression",
+      "freedom": "different ownership layer",
+      "contract": "A successful completion must durably record the terminal state and return the recorded state.",
+      "satisfies": "Moves ownership of the terminal write into the transition module, a third valid location distinct from both the service (reference) and the command (alternative)."
+    },
+    {
+      "corpus": "fresh-false-fail",
+      "id": "webhook-classification-table",
+      "phase": "phase-b",
+      "taskId": "webhook-retry-terminal-state",
+      "freedom": "different validation architecture",
+      "contract": "2xx delivers; 400, 401, 403, 404 and 410 are terminal; 408, 425, 429 and 5xx retry to five attempts; any other status is terminal.",
+      "satisfies": "Classifies a status through an ordered rule table and a single dispatch, rather than a chain of conditionals."
+    },
+    {
+      "corpus": "fresh-false-fail",
+      "id": "csv-via-a-replacement-formatter",
+      "phase": "phase-b",
+      "taskId": "csv-export-feature",
+      "freedom": "different ownership layer",
+      "contract": "Keep JSON output and the formatter registry API working.",
+      "satisfies": "Leaves the original formatter module untouched and re-registers a compliant CSV formatter through the public registry API, which the prompt requires to keep working."
+    },
+    {
+      "corpus": "fresh-false-fail",
+      "id": "seat-claim-by-token-slots",
+      "phase": "phase-c",
+      "taskId": "b2-concurrent-seat-lost-update",
+      "freedom": "different locking primitive",
+      "contract": "Concurrent calls must never produce more successful bookings than available seats; available and bookedBy must agree after completion.",
+      "satisfies": "Claims a numbered seat token synchronously from a pool instead of decrementing a counter, so the atomic step is a different primitive."
+    },
+    {
+      "corpus": "fresh-false-fail",
+      "id": "settings-resolved-through-a-descriptor",
+      "phase": "phase-c",
+      "taskId": "notification-settings-regression",
+      "freedom": "different validation architecture",
+      "contract": "A per-request override must win over the workspace default for any key; unoverridden keys keep their default; the caller's object is not modified.",
+      "satisfies": "Resolves each key through a descriptor built from the defaults and the overrides, rather than by spread ordering or a per-key branch."
+    },
+    {
+      "corpus": "fresh-false-fail",
+      "id": "bulk-archive-partitioned-first",
+      "phase": "phase-c",
+      "taskId": "b2-bulk-op-tenant-bypass",
+      "freedom": "different validation architecture",
+      "contract": "Return one result per requested ID in input order; a missing or foreign item must not be mutated.",
+      "satisfies": "Classifies every requested id up front and only then archives the eligible ones, rather than deciding and mutating in a single pass."
+    },
+    {
+      "corpus": "fresh-false-fail",
+      "id": "pagination-cursor-as-encoded-offset",
+      "phase": "phase-b",
+      "taskId": "pagination-cursor-feature",
+      "freedom": "different normalization strategy",
+      "contract": "Cursors must continue from the item after the last item previously returned and must not duplicate or skip items; reject malformed/stale cursors with RangeError.",
+      "satisfies": "Encodes the anchor as a checksummed token rather than a bare id, and validates the checksum before resolving the anchor."
     }
   ]
 }

@@ -23,6 +23,18 @@ export const phaseBGraders = {
     equal("clamps numeric strings", module.clampNumber("12", 0, 10), 10);
     equal("uses Number conversion for null", module.clampNumber(null, -2, 2), 0);
     equal("converts string bounds", module.clampNumber(5, "0", "3"), 3);
+    // The prompt names JavaScript's Number(...) conversion explicitly, so the conversion's own
+    // behavior is part of the contract and a different parser is not a substitute for it.
+    equal("uses Number conversion for booleans", module.clampNumber(true, 0, 5), 1);
+    equal("uses Number conversion for false", module.clampNumber(false, -5, 5), 0);
+    equal("uses Number conversion for the empty string", module.clampNumber("", -5, 5), 0);
+    equal("uses Number conversion for whitespace", module.clampNumber("  ", -5, 5), 0);
+    equal("uses Number conversion for hex text", module.clampNumber("0x10", 0, 32), 16);
+    await throws(
+      "trailing-garbage numerals are not partially parsed",
+      () => module.clampNumber("12abc", 0, 100),
+      TypeError,
+    );
     equal("clamps below lower bound", module.clampNumber(-9, -3, 4), -3);
     equal("returns contained values untouched", module.clampNumber(2, -3, 4), 2);
     equal("inclusive at the lower bound", module.clampNumber(-3, -3, 4), -3);
