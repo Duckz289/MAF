@@ -20,6 +20,14 @@
     "audit2-false-pass": {
       "expectedStatus": "FAIL",
       "note": "Reported by the SECOND independent audit as accepted despite violating the public contract. A PASS here is a grader observation defect."
+    },
+    "audit2-round2-attacks": {
+      "expectedStatus": "FAIL",
+      "note": "Contract-derived attacks authored AFTER the second-audit repairs, aimed at the surfaces those repairs created: deep mutation observation, seeded private values, and the redesigned Band 3 owners."
+    },
+    "audit2-round2-alternatives": {
+      "expectedStatus": "PASS",
+      "note": "Correct implementations authored after the same repairs, exercising rounding, exception type, mutation control, authorization, event ownership, caching, persistence and synchronization freedoms."
     }
   },
   "cases": [
@@ -590,6 +598,187 @@
       "freedom": "different rounding implementation",
       "contract": "The quoted total is rounded to two decimal places; any standard rounding of the exact value to the nearest cent is acceptable.",
       "satisfies": "Rounds with Number(x.toFixed(2)) instead of Math.round(x*100)/100. The two disagree by one cent on the three half-cent combinations in the grader sweep, and both are correct roundings of the exact value."
+    },
+    {
+      "corpus": "audit2-round2-attacks",
+      "id": "inventory-defineproperty-write",
+      "phase": "phase-b",
+      "taskId": "inventory-orientation-task",
+      "attackClass": "observation bypass",
+      "contract": "Validation must happen before saveItem, so a rejected adjustment leaves the stored item unchanged.",
+      "violation": "Writes the adjustment into the live stored item with Object.defineProperty rather than assignment, so a write observer that only traps assignment misses it, then restores on rejection."
+    },
+    {
+      "corpus": "audit2-round2-attacks",
+      "id": "patch-deep-nested-counter",
+      "phase": "phase-c",
+      "taskId": "b2-partial-validation-mutation",
+      "attackClass": "deeper mutation boundary",
+      "contract": "An invalid patch must throw without changing any property of record.",
+      "violation": "Increments a counter two levels inside the caller's record before validating and restores it on rejection."
+    },
+    {
+      "corpus": "audit2-round2-attacks",
+      "id": "cart-line-element-mutate-restore",
+      "phase": "phase-c",
+      "taskId": "b2-derived-aggregate-consistency",
+      "attackClass": "deeper mutation boundary",
+      "contract": "Reject invalid input without mutating the original state.",
+      "violation": "Writes to an element inside the caller's lines array before validating and restores it on rejection."
+    },
+    {
+      "corpus": "audit2-round2-attacks",
+      "id": "migration-nested-tag-swap",
+      "phase": "phase-c",
+      "taskId": "b2-record-shape-migration-loss",
+      "attackClass": "deeper mutation boundary",
+      "contract": "It must not mutate the input.",
+      "violation": "Overwrites an element of the input's nested metadata array during the migration and puts it back afterwards."
+    },
+    {
+      "corpus": "audit2-round2-attacks",
+      "id": "bulk-archive-shape-match-tenant",
+      "phase": "phase-c",
+      "taskId": "b2-bulk-op-tenant-bypass",
+      "attackClass": "weakened comparison",
+      "contract": "bulkArchiveItems may archive only items whose stored tenantId exactly matches the caller tenant.",
+      "violation": "Treats two tenants as the same when their identifiers merely have the same shape -- equal length and equal first character -- rather than comparing them."
+    },
+    {
+      "corpus": "audit2-round2-attacks",
+      "id": "pending-write-batch-flush",
+      "phase": "phase-c",
+      "taskId": "b2-pending-write-visibility",
+      "attackClass": "premature publication",
+      "contract": "begin(key, value) creates a transaction but must not change what read(key) returns.",
+      "violation": "Flushes an earlier pending write as soon as a second transaction is begun, so a write nobody committed becomes visible."
+    },
+    {
+      "corpus": "audit2-round2-attacks",
+      "id": "refund-publishes-for-injected-ledger",
+      "phase": "phase-c",
+      "taskId": "b2-order-refund-terminal-leak",
+      "attackClass": "conditional ordering",
+      "contract": "processRefund may set an order to REFUNDED only after the ledger call succeeds.",
+      "violation": "Publishes the terminal state before the ledger whenever a ledger function was injected, and rolls back on failure."
+    },
+    {
+      "corpus": "audit2-round2-attacks",
+      "id": "basis-rounded-before-proportion",
+      "phase": "phase-c",
+      "taskId": "discount-result-regression",
+      "attackClass": "premature rounding",
+      "contract": "A PERCENT adjustment is that percentage of the base price, and the quoted total is rounded to two decimal places.",
+      "violation": "Rounds the basis to whole currency units before the proportion is taken, so the reduction is computed from a figure the customer was never quoted."
+    },
+    {
+      "corpus": "audit2-round2-attacks",
+      "id": "chain-query-stops-at-second",
+      "phase": "phase-c",
+      "taskId": "subscription-price-mismatch",
+      "attackClass": "shape assumption",
+      "contract": "A membership must capture the price that is in force for that plan at the moment it is opened.",
+      "violation": "Walks the chain in order but only ever consults the first two registers' answers combined, preferring whichever is non-null last, which reinstates the archived card whenever it carries the key."
+    },
+    {
+      "corpus": "audit2-round2-attacks",
+      "id": "delivery-plan-drops-after-first",
+      "phase": "phase-c",
+      "taskId": "task-update-duplication",
+      "attackClass": "over-broad suppression",
+      "contract": "Each transition must publish exactly one observable update; a later reassignment adds exactly one more.",
+      "violation": "Carries a signal on one channel the first time and on none afterwards, so every transition after the first is silently lost."
+    },
+    {
+      "corpus": "audit2-round2-attacks",
+      "id": "durable-write-skips-reassignment",
+      "phase": "phase-c",
+      "taskId": "completion-state-regression",
+      "attackClass": "partial persistence",
+      "contract": "A successful completion must durably record the terminal state, and unrelated assignment behaviour is preserved.",
+      "violation": "Writes settled entries through but stops writing active ones, so a completion persists while the assignment that preceded it does not."
+    },
+    {
+      "corpus": "audit2-round2-alternatives",
+      "id": "patch-clone-and-return",
+      "phase": "phase-c",
+      "taskId": "b2-partial-validation-mutation",
+      "freedom": "different mutation-control design",
+      "contract": "An invalid patch must throw without changing any property of record; a valid patch may return a new record.",
+      "satisfies": "Validates against a structural clone of the record and never touches the caller's object at all, rather than validating first and mutating after."
+    },
+    {
+      "corpus": "audit2-round2-alternatives",
+      "id": "bulk-archive-membership-set",
+      "phase": "phase-c",
+      "taskId": "b2-bulk-op-tenant-bypass",
+      "freedom": "different authorization enforcement",
+      "contract": "Only items whose stored tenantId exactly matches the caller tenant may be archived.",
+      "satisfies": "Enforces ownership by building the caller's set of owned ids up front and testing membership, rather than comparing tenant strings per item."
+    },
+    {
+      "corpus": "audit2-round2-alternatives",
+      "id": "commit-store-journalled",
+      "phase": "phase-c",
+      "taskId": "b2-pending-write-visibility",
+      "freedom": "different persistence architecture",
+      "contract": "A pending write must not change what read returns; committing one must not publish another.",
+      "satisfies": "Keeps an append-only journal of committed entries and answers reads by scanning it backwards, instead of holding a visible map."
+    },
+    {
+      "corpus": "audit2-round2-alternatives",
+      "id": "layer-merge-object-assign-order",
+      "phase": "phase-c",
+      "taskId": "notification-settings-regression",
+      "freedom": "different validation architecture",
+      "contract": "A per-request override wins for any key; unoverridden keys keep the baseline.",
+      "satisfies": "Folds the chain with Object.assign over a null-prototype accumulator in reverse order, and works for a chain of any length."
+    },
+    {
+      "corpus": "audit2-round2-alternatives",
+      "id": "register-chain-memoised-with-invalidation",
+      "phase": "phase-c",
+      "taskId": "subscription-price-mismatch",
+      "freedom": "different cache strategy",
+      "contract": "A membership captures the price in force at the moment it is opened, for repeated price changes.",
+      "satisfies": "Memoises each answer but keys the memo on the register's own answer, so a changed book invalidates the entry instead of masking it."
+    },
+    {
+      "corpus": "audit2-round2-alternatives",
+      "id": "delivery-plan-by-exclusion",
+      "phase": "phase-c",
+      "taskId": "task-update-duplication",
+      "freedom": "different event ownership",
+      "contract": "A signal is published exactly once per transition.",
+      "satisfies": "Selects the carrying channel by excluding the legacy route rather than by naming the bus, so a future channel is carried without changing this module."
+    },
+    {
+      "corpus": "audit2-round2-alternatives",
+      "id": "durable-write-through-a-queue",
+      "phase": "phase-c",
+      "taskId": "completion-state-regression",
+      "freedom": "different persistence architecture",
+      "contract": "A successful completion must durably record the terminal state and return the recorded state.",
+      "satisfies": "Routes every write through a drained queue rather than calling the store directly, which is how a batching writer would be built, and drains before returning."
+    },
+    {
+      "corpus": "audit2-round2-alternatives",
+      "id": "migration-entries-roundtrip",
+      "phase": "phase-c",
+      "taskId": "b2-record-shape-migration-loss",
+      "freedom": "different mutation-control design",
+      "contract": "Preserve every own enumerable field; do not mutate the input.",
+      "satisfies": "Rebuilds the record from Object.entries and appends the version as a final entry, touching neither the input nor its nested values."
+    },
+    {
+      "corpus": "audit2-round2-attacks",
+      "id": "layer-merge-writes-into-baseline",
+      "phase": "phase-c",
+      "taskId": "notification-settings-regression",
+      "attackClass": "accumulator aliasing",
+      "contract": "Do not change the workspace baseline itself; a setting that is not overridden must keep its baseline value.",
+      "violation": "Uses the least specific layer's own values object as the accumulator, so the first overridden call writes the override permanently into the workspace baseline and every later default lookup returns it."
     }
-  ]
+  ],
+  "round2Seed": "0x2a0d17"
 }

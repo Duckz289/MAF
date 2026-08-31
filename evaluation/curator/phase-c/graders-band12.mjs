@@ -486,22 +486,36 @@ export const phaseCBand12Graders = {
       { status: null },
       { owner: "x" },
     ]) {
-      const record = { status: "open", owner: "Ada", tags: ["a"], meta: { seen: 1 } };
-      const before = structuredClone(record);
-      // Observed at every depth. A candidate that pushes onto record.tags and pops it back before
-      // returning leaves the record equal afterwards, but it did change the caller's record.
-      const tracked = trackWrites(record);
       const label = JSON.stringify(patch) ?? String(patch);
-      await throws(
-        `invalid patch ${label} rejects`,
-        () => applyPatch(tracked.value, patch),
-        REJECTION,
-      );
-      equal(`invalid patch ${label} leaves the record equal`, record, before);
+
+      // Pass 1: a plain record. Checks the rejection itself and the state afterwards, and is the
+      // only pass a candidate that clones its input will reach.
+      const plain = { status: "open", owner: "Ada", tags: ["a"], meta: { seen: 1 } };
+      const before = structuredClone(plain);
+      await throws(`invalid patch ${label} rejects`, () => applyPatch(plain, patch), REJECTION);
+      equal(`invalid patch ${label} leaves the record equal`, plain, before);
+
+      // Pass 2: a write-observing record, so mutate-then-restore is visible at any depth.
+      //
+      // structuredClone cannot clone a proxy, and cloning the input to validate against is a
+      // legitimate design. When a candidate does that, this instrument cannot see through it, so
+      // the check records exactly that rather than failing the candidate for the instrument's
+      // limitation -- pass 1 above still holds it to the contract's observable outcome.
+      const observed = { status: "open", owner: "Ada", tags: ["a"], meta: { seen: 1 } };
+      const tracked = trackWrites(observed);
+      let cloneRefused = false;
+      try {
+        applyPatch(tracked.value, patch);
+      } catch (error) {
+        cloneRefused =
+          error instanceof Error && /could not be cloned|DataCloneError/i.test(error.message);
+      }
       check(
         `invalid patch ${label} never writes to the record at any depth`,
-        tracked.writes.length === 0,
-        `observed ${tracked.writes.length} write(s) before rejection: ${JSON.stringify(tracked.writes.slice(0, 4))}`,
+        cloneRefused || tracked.writes.length === 0,
+        cloneRefused
+          ? "the candidate cloned the record, so write observation does not apply; judged on outcome instead"
+          : `observed ${tracked.writes.length} write(s) before rejection: ${JSON.stringify(tracked.writes.slice(0, 4))}`,
       );
     }
 

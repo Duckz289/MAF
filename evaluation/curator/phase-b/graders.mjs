@@ -442,6 +442,10 @@ const track = (item) =>
           __storeWrites.push({ kind: "delete", property: String(property) });
           return Reflect.deleteProperty(target, property);
         },
+        defineProperty(target, property, descriptor) {
+          __storeWrites.push({ kind: "define", property: String(property), value: descriptor.value });
+          return Reflect.defineProperty(target, property, descriptor);
+        },
       })
     : item;
 
