@@ -179,180 +179,231 @@ export const phaseCBand3Graders = {
     equal("a promotion code prices through the same contract", quoteShipment(200, adjustmentForCode("WELCOME"), 0.1), 209);
   },
 
-  // Prompt: a subscription opened after a price update captures the current price for that plan;
-  // existing records stay unchanged when prices change later; unknown plans still reject.
+  // Prompt: a membership captures the price in force for its plan at the moment it is opened;
+  // earlier memberships keep the price they captured when a plan's price changes later; an unknown
+  // plan still rejects with RangeError.
   "subscription-price-mismatch": async ({ importModule, equal, check, throws }) => {
-    const { openSubscriptionAtPrice } = await importModule("src/bootstrap.mjs");
-    const { subscriptionRepository } = await importModule("src/repositories/subscription-repository.mjs");
+    const { enrolAtPrice, openClub } = await importModule("src/app/desk-operations.mjs");
+    const { membershipLedger } = await importModule("src/enrolment/membership-ledger.mjs");
+    const { rosterReport } = await importModule("src/roster/member-directory.mjs");
+    const { buildStatement } = await importModule("src/statements/statement-builder.mjs");
+    openClub();
 
     const opened = [];
     const sequence = [
-      ["user-a", "pro", 34.5],
-      ["user-b", "basic", 14.25],
-      ["user-c", "pro", 39],
-      ["user-d", "enterprise", 120],
-      ["user-e", "basic", 11],
-      ["user-f", "pro", 41.75],
-      ["user-g", "enterprise", 130.5],
+      ["Ada", "standard", 34.99],
+      ["Bo", "basic", 14.25],
+      ["Cy", "standard", 39],
+      ["Di", "premium", 120],
+      ["Eli", "basic", 11],
+      ["Fay", "standard", 41.75],
+      ["Gus", "premium", 130.5],
     ];
-    for (const [userId, planId, price] of sequence) {
-      const record = openSubscriptionAtPrice(userId, planId, price);
-      equal(`${userId} on ${planId} captures the current price ${price}`, record.priceAtSubscription, price);
-      opened.push({ record, price });
+    for (const [name, planId, amount] of sequence) {
+      const membership = enrolAtPrice(name, planId, amount);
+      equal(`${name} on ${planId} captures the price in force (${amount})`, membership.rateAtEnrolment, amount);
+      opened.push({ name, membership, amount });
     }
 
-    // Every earlier record must keep the price it captured after all the later updates.
-    const drifted = opened.filter(({ record, price }) => record.priceAtSubscription !== price);
+    // Every earlier membership must still hold the price it captured, after all the later changes.
+    const drifted = opened.filter(({ membership, amount }) => membership.rateAtEnrolment !== amount);
     check(
-      "earlier records keep their captured price after later updates",
+      "earlier memberships keep their captured price after later price changes",
       drifted.length === 0,
-      `records whose captured price changed: ${JSON.stringify(drifted.map(({ record }) => record.userId))}`,
+      `memberships whose captured price moved: ${JSON.stringify(drifted.map(({ name }) => name))}`,
     );
     equal(
-      "the repository stores every captured price in order",
-      subscriptionRepository.all().map((record) => record.priceAtSubscription),
-      sequence.map(([, , price]) => price),
-    );
-    equal(
-      "the stored subscription shape is preserved",
-      Object.keys(subscriptionRepository.all()[0]).toSorted(),
-      ["planId", "priceAtSubscription", "userId"],
+      "the ledger holds every captured price in order",
+      membershipLedger.all().map((membership) => membership.rateAtEnrolment),
+      sequence.map(([, , amount]) => amount),
     );
     equal(
       "repeated price changes on one plan are each captured",
-      subscriptionRepository.all().filter((record) => record.planId === "pro").map((record) => record.priceAtSubscription),
-      [34.5, 39, 41.75],
+      membershipLedger.forPlan("standard").map((membership) => membership.rateAtEnrolment),
+      [34.99, 39, 41.75],
     );
-    await throws("unknown plans still reject", () => openSubscriptionAtPrice("user-x", "missing", 10), Error);
-    equal("a rejected subscription is not stored", subscriptionRepository.all().length, sequence.length);
+    equal(
+      "the stored membership shape is preserved",
+      Object.keys(membershipLedger.all()[0]).toSorted(),
+      ["memberId", "planId", "rateAtEnrolment"],
+    );
+
+    // A later enrolment must not disturb what is already recorded.
+    const beforeIdleChange = membershipLedger.all().map((membership) => membership.rateAtEnrolment);
+    enrolAtPrice("Hal", "basic", 21.5);
+    equal(
+      "a later enrolment leaves earlier captured prices untouched",
+      membershipLedger.all().slice(0, beforeIdleChange.length).map((membership) => membership.rateAtEnrolment),
+      beforeIdleChange,
+    );
+
+    const ledgerSize = membershipLedger.all().length;
+    await throws("an unknown plan still rejects", () => enrolAtPrice("Ivy", "platinum", 10), RangeError);
+    equal("a rejected enrolment is not stored", membershipLedger.all().length, ledgerSize);
+
+    // Unrelated behaviour is explicitly out of scope for the fix.
+    equal("the roster still lists every registered member", rosterReport().length >= sequence.length, true);
+    equal("statements still price from the captured rate", buildStatement(opened[0].membership).total, 49.99);
   },
 
-  // Prompt: one assignment command publishes exactly one observable update, and each later
-  // reassignment is a distinct transition that adds exactly one more.
+  // Prompt: one assignment command publishes exactly one observable PICKER_ASSIGNED update, and
+  // each later reassignment is a distinct transition that adds exactly one more.
   "task-update-duplication": async ({ importModule, equal, check }) => {
-    const { runAssignmentScenario } = await importModule("src/bootstrap.mjs");
-    const { assignTaskCommand } = await importModule("src/commands/assign-task-command.mjs");
-    const { getTaskAssignments } = await importModule("src/projections/task-summary-projection.mjs");
-    const { taskRepository } = await importModule("src/repositories/task-repository.mjs");
+    const { runAssignmentScenario, runPickScenario, initFloor } = await importModule("src/app/floor-operations.mjs");
+    const { assignPickerCommand } = await importModule("src/picking/assign-picker-command.mjs");
+    const { getPickerAssignments, getPickCompletions } = await importModule("src/projections/floor-summary.mjs");
+    const { pickListStore, createPickList } = await importModule("src/picking/pick-list-store.mjs");
+    const { registerPicker } = await importModule("src/staff/picker-directory.mjs");
     const { eventBus } = await importModule("src/events/event-bus.mjs");
     const { EVENT_TYPES } = await importModule("src/events/event-types.mjs");
+    initFloor();
 
     // An independent subscriber sees what the application actually publishes. This says nothing
-    // about *where* the duplicate effect is removed -- dropping either emit satisfies it -- but a
+    // about WHERE the duplicate effect is removed -- dropping either emit satisfies it -- but a
     // projection that silently discards half of the events it receives does not.
     const published = [];
-    eventBus.on(EVENT_TYPES.TASK_ASSIGNED, (payload) => published.push(payload));
+    eventBus.on(EVENT_TYPES.PICKER_ASSIGNED, (payload) => published.push(payload));
 
-    const first = runAssignmentScenario("project-a", "Investigate", "user-a");
-    equal("one assignment produces one update", first.updates, [{ userId: "user-a", taskId: first.task.id }]);
-    equal("assignment persists", taskRepository.get(first.task.id).assigneeId, "user-a");
-    equal("one assignment publishes one event", published, [{ taskId: first.task.id, userId: "user-a" }]);
+    const first = runAssignmentScenario("zone-a", "widget", "Ada");
+    equal("one assignment produces one update", first.updates, [
+      { pickerId: first.picker.id, pickListId: first.pickList.id },
+    ]);
+    equal("one assignment publishes one event", published, [
+      { pickListId: first.pickList.id, pickerId: first.picker.id },
+    ]);
+    equal("the assignment persists", pickListStore.get(first.pickList.id).pickerId, first.picker.id);
 
     // Every subsequent transition must contribute exactly one update. A "drop every other write"
     // shortcut satisfies a single reassignment but not a run of them.
-    const reassignments = ["user-b", "user-c", "user-d", "user-e", "user-f"];
     const perTransition = [];
     const perTransitionEvents = [];
-    for (const userId of reassignments) {
-      const before = getTaskAssignments().length;
-      const publishedBefore = published.length;
-      assignTaskCommand(first.task.id, userId);
-      perTransition.push(getTaskAssignments().slice(before));
-      perTransitionEvents.push(published.length - publishedBefore);
-      equal(`reassignment to ${userId} persists`, taskRepository.get(first.task.id).assigneeId, userId);
+    const reassigned = [];
+    for (const name of ["Bo", "Cy", "Di", "Eli", "Fay"]) {
+      const picker = registerPicker(name);
+      reassigned.push(picker);
+      const beforeUpdates = getPickerAssignments().length;
+      const beforeEvents = published.length;
+      assignPickerCommand(first.pickList.id, picker.id);
+      perTransition.push(getPickerAssignments().slice(beforeUpdates));
+      perTransitionEvents.push(published.length - beforeEvents);
+      equal(`reassignment to ${name} persists`, pickListStore.get(first.pickList.id).pickerId, picker.id);
     }
+    equal(
+      "each reassignment produces exactly one update naming the new picker",
+      perTransition,
+      reassigned.map((picker) => [{ pickerId: picker.id, pickListId: first.pickList.id }]),
+    );
     check(
       "each transition publishes exactly one event",
       perTransitionEvents.every((count) => count === 1),
       `events published per transition: ${JSON.stringify(perTransitionEvents)}`,
     );
-    equal(
-      "each reassignment produces exactly one update",
-      perTransition,
-      reassignments.map((userId) => [{ userId, taskId: first.task.id }]),
-    );
-    equal(
-      "the projection holds one update per transition overall",
-      getTaskAssignments().length,
-      1 + reassignments.length,
-    );
 
-    // Assignments on an independent task must also produce one update each.
-    const second = runAssignmentScenario("project-b", "Second", "user-z");
-    equal("an independent task produces one update", second.updates, [{ userId: "user-z", taskId: second.task.id }]);
-    const beforeInterleaved = getTaskAssignments().length;
-    assignTaskCommand(first.task.id, "user-final");
-    assignTaskCommand(second.task.id, "user-other");
-    equal("interleaved assignments each produce one update", getTaskAssignments().slice(beforeInterleaved), [
-      { userId: "user-final", taskId: first.task.id },
-      { userId: "user-other", taskId: second.task.id },
+    // Independent pick lists must each produce one update per assignment, including interleaved.
+    const second = createPickList("zone-b", "gasket");
+    const third = createPickList("zone-c", "bracket");
+    const pickerX = registerPicker("Gus");
+    const pickerY = registerPicker("Hal");
+    const beforeInterleaved = getPickerAssignments().length;
+    assignPickerCommand(second.id, pickerX.id);
+    assignPickerCommand(third.id, pickerY.id);
+    assignPickerCommand(second.id, pickerY.id);
+    equal("interleaved assignments each produce one update", getPickerAssignments().slice(beforeInterleaved), [
+      { pickerId: pickerX.id, pickListId: second.id },
+      { pickerId: pickerY.id, pickListId: third.id },
+      { pickerId: pickerY.id, pickListId: second.id },
     ]);
     check(
       "the event payload shape is preserved",
-      getTaskAssignments().every((update) => Object.keys(update).toSorted().join(",") === "taskId,userId"),
-      "assignment updates must carry exactly userId and taskId",
+      published.every((payload) => Object.keys(payload).toSorted().join(",") === "pickListId,pickerId"),
+      "assignment events must carry exactly pickListId and pickerId",
     );
+    check(
+      "the projection payload shape is preserved",
+      getPickerAssignments().every((update) => Object.keys(update).toSorted().join(",") === "pickListId,pickerId"),
+      "assignment updates must carry exactly pickListId and pickerId",
+    );
+
+    // Unrelated pick-completion behaviour is explicitly out of scope for the fix.
+    const beforeCompletions = getPickCompletions().length;
+    const picked = runPickScenario("zone-d", "widget", "Ivy");
+    equal("one pick still produces one completion update", picked.updates.length, 1);
+    equal("pick completions accumulate normally", getPickCompletions().length, beforeCompletions + 1);
+    equal("a completed pick is stored as picked", pickListStore.get(picked.pickList.id).status, "PICKED");
   },
 
-  // Prompt: a successful completion must *persist* the terminal state and publish exactly one
-  // update. Persistence is checked through every repository read path, so a state synthesized on
-  // read is not a pass.
+  // Prompt: a successful completion must durably record the terminal state and publish exactly one
+  // update, and every later read of that order must see it. Persistence is checked through every
+  // repository read path, so a state synthesized inside one accessor is not a pass.
   "completion-state-regression": async ({ importModule, equal, check, throws }) => {
-    const { runCompletionScenario } = await importModule("src/bootstrap.mjs");
-    const { completeTaskCommand } = await importModule("src/commands/complete-task-command.mjs");
-    const { createTaskCommand } = await importModule("src/commands/create-task-command.mjs");
-    const { getTaskCompletions } = await importModule("src/projections/task-summary-projection.mjs");
-    const { taskRepository } = await importModule("src/repositories/task-repository.mjs");
+    const { runCompletionScenario, runAssignmentScenario, initDispatch } = await importModule("src/app/dispatch-operations.mjs");
+    const { completeOrderCommand } = await importModule("src/workorders/complete-order-command.mjs");
+    const { workOrderRepository, raiseOrder } = await importModule("src/workorders/work-order-repository.mjs");
+    const { getOrderCompletions, boardSummary } = await importModule("src/projections/completion-board.mjs");
+    const { technicianLoad } = await importModule("src/projections/technician-load.mjs");
+    initDispatch();
 
-    const first = runCompletionScenario("project-a", "Persist me");
+    const first = runCompletionScenario("south", "Reseal joint");
     equal("completion result is terminal", first.completed.status, "COMPLETED");
     check("completion result carries a timestamp", first.completed.completedAt !== null, "completedAt must not be null");
-    equal("subsequent read is terminal", taskRepository.get(first.completed.id).status, "COMPLETED");
-    equal("completion timestamp is persisted", taskRepository.get(first.completed.id).completedAt, first.completed.completedAt);
-    equal("one completion produces one update", first.updates, [{ userId: null, taskId: first.completed.id }]);
+    equal("one completion produces one update", first.updates, [
+      { technicianId: null, orderId: first.completed.id },
+    ]);
 
-    // "Persist" means every read path over the repository agrees, not that one accessor
+    // "Durably record" means every read path over the repository agrees, not that one accessor
     // reconstructs a terminal-looking object.
-    const readPaths = {
-      get: taskRepository.get(first.completed.id),
-      listByProject: taskRepository.listByProject("project-a").find((task) => task.id === first.completed.id),
-      all: taskRepository.all().find((task) => task.id === first.completed.id),
-    };
-    const disagreeing = Object.entries(readPaths).filter(
-      ([, task]) => task?.status !== "COMPLETED" || task?.completedAt !== first.completed.completedAt,
+    const readPaths = (id, region) => ({
+      get: workOrderRepository.get(id),
+      byRegion: workOrderRepository.byRegion(region).find((order) => order.id === id),
+      all: workOrderRepository.all().find((order) => order.id === id),
+    });
+    const disagreeing = Object.entries(readPaths(first.completed.id, "south")).filter(
+      ([, order]) => order?.status !== "COMPLETED" || order?.completedAt !== first.completed.completedAt,
     );
     check(
-      "every repository read path observes the persisted completion",
+      "every repository read path observes the recorded completion",
       disagreeing.length === 0,
-      `read paths that did not observe the completion: ${disagreeing.map(([name, task]) => `${name}=${JSON.stringify(task?.status ?? null)}`).join(", ")}`,
+      `read paths that did not observe the completion: ${Object.entries(readPaths(first.completed.id, "south")).map(([name, order]) => `${name}=${JSON.stringify(order?.status ?? null)}`).join(", ")}`,
     );
+    equal("the board counts the completed order", boardSummary().completed >= 1, true);
 
-    const before = getTaskCompletions().length;
-    await throws("missing task rejects", () => completeTaskCommand("missing-task"), Error);
-    equal("failed completion emits no update", getTaskCompletions().length, before);
+    const beforeMissing = getOrderCompletions().length;
+    await throws("a missing order rejects", () => completeOrderCommand("order-does-not-exist"), Error);
+    equal("a failed completion emits no update", getOrderCompletions().length, beforeMissing);
 
-    // The behavior must hold for arbitrary tasks and repeat cleanly.
-    const second = runCompletionScenario("project-b", "Another task");
-    equal("arbitrary task IDs persist", taskRepository.get(second.completed.id), second.completed);
-    equal("the second completion also publishes one update", second.updates, [{ userId: null, taskId: second.completed.id }]);
-
-    const extra = createTaskCommand("project-c", "Third task");
-    const beforeThird = getTaskCompletions().length;
-    const completedThird = completeTaskCommand(extra.id);
-    equal("a directly completed task persists too", taskRepository.get(extra.id).status, "COMPLETED");
-    equal("a directly completed task persists its timestamp", taskRepository.get(extra.id).completedAt, completedThird.completedAt);
-    equal("a directly completed task publishes one update", getTaskCompletions().slice(beforeThird), [
-      { userId: null, taskId: extra.id },
-    ]);
+    // The behaviour must hold for arbitrary orders, including one that already has a technician.
+    const assigned = runAssignmentScenario("north", "Replace meter", "Ada");
+    const beforeAssignedCompletion = getOrderCompletions().length;
+    const completedAssigned = completeOrderCommand(assigned.order.id);
+    equal("an assigned order completes to a terminal state", completedAssigned.status, "COMPLETED");
+    equal("an assigned order's completion is recorded", workOrderRepository.get(assigned.order.id).status, "COMPLETED");
     equal(
-      "unrelated tasks are untouched by a completion",
-      taskRepository.all().filter((task) => task.status !== "COMPLETED").length,
-      taskRepository.all().length - 3,
+      "an assigned order's completion timestamp is recorded",
+      workOrderRepository.get(assigned.order.id).completedAt,
+      completedAssigned.completedAt,
     );
+    equal("an assigned order keeps its technician", workOrderRepository.get(assigned.order.id).technicianId, assigned.technician.id);
+    equal("completing an assigned order publishes one update", getOrderCompletions().slice(beforeAssignedCompletion), [
+      { technicianId: assigned.technician.id, orderId: assigned.order.id },
+    ]);
+
+    // A third, directly raised order, to show the behaviour is not tied to one code path.
+    const direct = raiseOrder("east", "Swap regulator");
+    const beforeDirect = getOrderCompletions().length;
+    const completedDirect = completeOrderCommand(direct.id);
+    equal("a directly raised order completes", workOrderRepository.get(direct.id).status, "COMPLETED");
+    equal("a directly raised order records its timestamp", workOrderRepository.get(direct.id).completedAt, completedDirect.completedAt);
+    equal("a directly raised order publishes one update", getOrderCompletions().slice(beforeDirect), [
+      { technicianId: null, orderId: direct.id },
+    ]);
+    equal("three orders are now recorded as completed", boardSummary().completed, 3);
     check(
       "the completion payload shape is preserved",
-      getTaskCompletions().every((update) => Object.keys(update).toSorted().join(",") === "taskId,userId"),
-      "completion updates must carry exactly userId and taskId",
+      getOrderCompletions().every((update) => Object.keys(update).toSorted().join(",") === "orderId,technicianId"),
+      "completion updates must carry exactly orderId and technicianId",
     );
+
+    // Unrelated assignment and load behaviour is explicitly out of scope for the fix.
+    equal("technician load is still tracked", technicianLoad().length >= 1, true);
   },
 };

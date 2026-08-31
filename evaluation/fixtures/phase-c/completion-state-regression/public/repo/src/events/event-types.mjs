@@ -1,5 +1,4 @@
 export const EVENT_TYPES = {
-  TASK_COMPLETED: "task.completed",
-  TASK_ASSIGNED: "task.assigned",
-  PROJECT_UPDATED: "project.updated",
+  ORDER_ASSIGNED: "ORDER_ASSIGNED",
+  ORDER_COMPLETED: "ORDER_COMPLETED",
 };

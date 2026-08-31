@@ -1,0 +1,437 @@
+{
+  "measuredBy": "evaluation/lib/orientation.mjs",
+  "measurementBasis": "static ESM import graph of the public repository, walked from the declared entrypoint",
+  "thresholds": {
+    "minReachableModules": 8,
+    "minOwnerPathHops": 3,
+    "minDecisionPoints": 2,
+    "minReachableFraction": 0.35,
+    "minPromptIdentifierFiles": 3,
+    "minReachableDecoys": 3
+  },
+  "classificationCounts": {
+    "CONTEXT_TEST_STRONG": 5,
+    "CONTEXT_TEST_WEAK": 0,
+    "NOT_A_CONTEXT_TEST": 0
+  },
+  "minimumOwnerPathHops": 4,
+  "minimumDecisionPoints": 3,
+  "minimumSearchDiscrimination": 3,
+  "anyEntrypointImportsOwner": false,
+  "tasks": [
+    {
+      "id": "notification-settings-regression",
+      "classification": "CONTEXT_TEST_STRONG",
+      "disqualifying": [],
+      "weakening": [],
+      "evidence": {
+        "totalModules": 26,
+        "reachableModules": 26,
+        "reachableFraction": 1,
+        "unreachableModules": 0,
+        "entrypoint": "bin/demo.mjs",
+        "defectOwner": "src/settings/settings-resolver.mjs",
+        "ownerReachable": true,
+        "shortestOwnerPath": [
+          "bin/demo.mjs",
+          "src/app/console.mjs",
+          "src/workflows/escalation-policy.mjs",
+          "src/support/escalation-window.mjs",
+          "src/settings/settings-resolver.mjs"
+        ],
+        "shortestOwnerPathHops": 4,
+        "decisionPoints": 3,
+        "entrypointImportsOwner": false,
+        "promptIdentifiers": [
+          {
+            "identifier": "sendDigest",
+            "files": 2,
+            "ownerAmong": false
+          },
+          {
+            "identifier": "ticketDigestBatchSize",
+            "files": 4,
+            "ownerAmong": false
+          },
+          {
+            "identifier": "runEscalationSweep",
+            "files": 2,
+            "ownerAmong": false
+          },
+          {
+            "identifier": "escalationAfterMinutes",
+            "files": 3,
+            "ownerAmong": false
+          },
+          {
+            "identifier": "settingValue",
+            "files": 3,
+            "ownerAmong": true
+          }
+        ],
+        "searchDiscrimination": 3,
+        "decoys": [
+          {
+            "module": "src/delivery/channel-adapters.mjs",
+            "exists": true,
+            "reachable": true,
+            "importedBy": 1,
+            "onOwnerPath": false
+          },
+          {
+            "module": "src/render/digest-template.mjs",
+            "exists": true,
+            "reachable": true,
+            "importedBy": 1,
+            "onOwnerPath": false
+          },
+          {
+            "module": "src/directory/agent-directory.mjs",
+            "exists": true,
+            "reachable": true,
+            "importedBy": 2,
+            "onOwnerPath": false
+          },
+          {
+            "module": "src/util/ordering.mjs",
+            "exists": true,
+            "reachable": true,
+            "importedBy": 1,
+            "onOwnerPath": false
+          }
+        ],
+        "reachableDecoys": 4,
+        "decoysOnOwnerPath": [],
+        "orphanModules": []
+      }
+    },
+    {
+      "id": "discount-result-regression",
+      "classification": "CONTEXT_TEST_STRONG",
+      "disqualifying": [],
+      "weakening": [],
+      "evidence": {
+        "totalModules": 26,
+        "reachableModules": 26,
+        "reachableFraction": 1,
+        "unreachableModules": 0,
+        "entrypoint": "bin/demo.mjs",
+        "defectOwner": "src/pricing/adjustment-rules.mjs",
+        "ownerReachable": true,
+        "shortestOwnerPath": [
+          "bin/demo.mjs",
+          "src/app/terminal.mjs",
+          "src/quoting/quote-service.mjs",
+          "src/pricing/charge-builder.mjs",
+          "src/pricing/adjustment-engine.mjs",
+          "src/pricing/adjustment-rules.mjs"
+        ],
+        "shortestOwnerPathHops": 5,
+        "decisionPoints": 4,
+        "entrypointImportsOwner": false,
+        "promptIdentifiers": [
+          {
+            "identifier": "PERCENT",
+            "files": 4,
+            "ownerAmong": false
+          },
+          {
+            "identifier": "FLAT",
+            "files": 5,
+            "ownerAmong": true
+          },
+          {
+            "identifier": "quoteShipment",
+            "files": 2,
+            "ownerAmong": false
+          },
+          {
+            "identifier": "basePrice",
+            "files": 5,
+            "ownerAmong": true
+          },
+          {
+            "identifier": "taxRate",
+            "files": 6,
+            "ownerAmong": true
+          }
+        ],
+        "searchDiscrimination": 5,
+        "decoys": [
+          {
+            "module": "src/promotions/promo-codes.mjs",
+            "exists": true,
+            "reachable": true,
+            "importedBy": 1,
+            "onOwnerPath": false
+          },
+          {
+            "module": "src/manifest/shipment-manifest.mjs",
+            "exists": true,
+            "reachable": true,
+            "importedBy": 1,
+            "onOwnerPath": false
+          },
+          {
+            "module": "src/invoicing/invoice-builder.mjs",
+            "exists": true,
+            "reachable": true,
+            "importedBy": 1,
+            "onOwnerPath": false
+          },
+          {
+            "module": "src/pricing/rounding.mjs",
+            "exists": true,
+            "reachable": true,
+            "importedBy": 2,
+            "onOwnerPath": false
+          }
+        ],
+        "reachableDecoys": 4,
+        "decoysOnOwnerPath": [],
+        "orphanModules": []
+      }
+    },
+    {
+      "id": "subscription-price-mismatch",
+      "classification": "CONTEXT_TEST_STRONG",
+      "disqualifying": [],
+      "weakening": [],
+      "evidence": {
+        "totalModules": 22,
+        "reachableModules": 22,
+        "reachableFraction": 1,
+        "unreachableModules": 0,
+        "entrypoint": "bin/demo.mjs",
+        "defectOwner": "src/pricing/price-lookup.mjs",
+        "ownerReachable": true,
+        "shortestOwnerPath": [
+          "bin/demo.mjs",
+          "src/app/front-desk.mjs",
+          "src/app/desk-operations.mjs",
+          "src/enrolment/enrol-member.mjs",
+          "src/enrolment/enrolment-service.mjs",
+          "src/pricing/rate-quote.mjs",
+          "src/pricing/price-lookup.mjs"
+        ],
+        "shortestOwnerPathHops": 6,
+        "decisionPoints": 5,
+        "entrypointImportsOwner": false,
+        "promptIdentifiers": [
+          {
+            "identifier": "rateAtEnrolment",
+            "files": 3,
+            "ownerAmong": false
+          },
+          {
+            "identifier": "memberId",
+            "files": 2,
+            "ownerAmong": false
+          },
+          {
+            "identifier": "planId",
+            "files": 10,
+            "ownerAmong": true
+          }
+        ],
+        "searchDiscrimination": 10,
+        "decoys": [
+          {
+            "module": "src/roster/member-directory.mjs",
+            "exists": true,
+            "reachable": true,
+            "importedBy": 2,
+            "onOwnerPath": false
+          },
+          {
+            "module": "src/statements/statement-builder.mjs",
+            "exists": true,
+            "reachable": true,
+            "importedBy": 1,
+            "onOwnerPath": false
+          },
+          {
+            "module": "src/statements/statement-lines.mjs",
+            "exists": true,
+            "reachable": true,
+            "importedBy": 1,
+            "onOwnerPath": false
+          },
+          {
+            "module": "src/access/entry-log.mjs",
+            "exists": true,
+            "reachable": true,
+            "importedBy": 1,
+            "onOwnerPath": false
+          }
+        ],
+        "reachableDecoys": 4,
+        "decoysOnOwnerPath": [],
+        "orphanModules": []
+      }
+    },
+    {
+      "id": "task-update-duplication",
+      "classification": "CONTEXT_TEST_STRONG",
+      "disqualifying": [],
+      "weakening": [],
+      "evidence": {
+        "totalModules": 23,
+        "reachableModules": 23,
+        "reachableFraction": 1,
+        "unreachableModules": 0,
+        "entrypoint": "bin/demo.mjs",
+        "defectOwner": "src/picking/pick-service.mjs",
+        "ownerReachable": true,
+        "shortestOwnerPath": [
+          "bin/demo.mjs",
+          "src/app/warehouse-console.mjs",
+          "src/app/floor-operations.mjs",
+          "src/picking/assign-picker-command.mjs",
+          "src/picking/pick-service.mjs"
+        ],
+        "shortestOwnerPathHops": 4,
+        "decisionPoints": 3,
+        "entrypointImportsOwner": false,
+        "promptIdentifiers": [
+          {
+            "identifier": "assignPickerCommand",
+            "files": 2,
+            "ownerAmong": false
+          },
+          {
+            "identifier": "pickListId",
+            "files": 6,
+            "ownerAmong": true
+          },
+          {
+            "identifier": "pickerId",
+            "files": 10,
+            "ownerAmong": true
+          },
+          {
+            "identifier": "PICKER_ASSIGNED",
+            "files": 4,
+            "ownerAmong": true
+          }
+        ],
+        "searchDiscrimination": 4,
+        "decoys": [
+          {
+            "module": "src/projections/shift-totals.mjs",
+            "exists": true,
+            "reachable": true,
+            "importedBy": 2,
+            "onOwnerPath": false
+          },
+          {
+            "module": "src/reporting/shift-report.mjs",
+            "exists": true,
+            "reachable": true,
+            "importedBy": 1,
+            "onOwnerPath": false
+          },
+          {
+            "module": "src/staff/picker-directory.mjs",
+            "exists": true,
+            "reachable": true,
+            "importedBy": 2,
+            "onOwnerPath": false
+          },
+          {
+            "module": "src/inventory/bin-locations.mjs",
+            "exists": true,
+            "reachable": true,
+            "importedBy": 1,
+            "onOwnerPath": false
+          }
+        ],
+        "reachableDecoys": 4,
+        "decoysOnOwnerPath": [],
+        "orphanModules": []
+      }
+    },
+    {
+      "id": "completion-state-regression",
+      "classification": "CONTEXT_TEST_STRONG",
+      "disqualifying": [],
+      "weakening": [],
+      "evidence": {
+        "totalModules": 23,
+        "reachableModules": 23,
+        "reachableFraction": 1,
+        "unreachableModules": 0,
+        "entrypoint": "bin/demo.mjs",
+        "defectOwner": "src/workorders/work-order-service.mjs",
+        "ownerReachable": true,
+        "shortestOwnerPath": [
+          "bin/demo.mjs",
+          "src/app/dispatch-console.mjs",
+          "src/app/dispatch-operations.mjs",
+          "src/workorders/complete-order-command.mjs",
+          "src/workorders/work-order-service.mjs"
+        ],
+        "shortestOwnerPathHops": 4,
+        "decisionPoints": 3,
+        "entrypointImportsOwner": false,
+        "promptIdentifiers": [
+          {
+            "identifier": "COMPLETED",
+            "files": 5,
+            "ownerAmong": false
+          },
+          {
+            "identifier": "completedAt",
+            "files": 2,
+            "ownerAmong": false
+          },
+          {
+            "identifier": "orderId",
+            "files": 5,
+            "ownerAmong": true
+          },
+          {
+            "identifier": "technicianId",
+            "files": 10,
+            "ownerAmong": true
+          }
+        ],
+        "searchDiscrimination": 5,
+        "decoys": [
+          {
+            "module": "src/projections/technician-load.mjs",
+            "exists": true,
+            "reachable": true,
+            "importedBy": 2,
+            "onOwnerPath": false
+          },
+          {
+            "module": "src/scheduling/appointment-slots.mjs",
+            "exists": true,
+            "reachable": true,
+            "importedBy": 1,
+            "onOwnerPath": false
+          },
+          {
+            "module": "src/scheduling/route-plan.mjs",
+            "exists": true,
+            "reachable": true,
+            "importedBy": 1,
+            "onOwnerPath": false
+          },
+          {
+            "module": "src/technicians/technician-directory.mjs",
+            "exists": true,
+            "reachable": true,
+            "importedBy": 1,
+            "onOwnerPath": false
+          }
+        ],
+        "reachableDecoys": 4,
+        "decoysOnOwnerPath": [],
+        "orphanModules": []
+      }
+    }
+  ],
+  "failures": []
+}

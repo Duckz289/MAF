@@ -1,3 +1,3 @@
-import { openSubscriptionAtPrice } from "../src/bootstrap.mjs";
+import { runFrontDesk } from "../src/app/front-desk.mjs";
 
-console.log(openSubscriptionAtPrice("user-1", "pro", 34.5));
+for (const line of runFrontDesk()) console.log(line);

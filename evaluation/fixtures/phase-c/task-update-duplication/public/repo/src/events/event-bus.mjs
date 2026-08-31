@@ -7,6 +7,6 @@ export const eventBus = {
     return () => listeners.get(type)?.delete(handler);
   },
   emit(type, payload) {
-    for (const handler of listeners.get(type) ?? []) handler(payload);
+    for (const handler of [...(listeners.get(type) ?? [])]) handler(payload);
   },
 };

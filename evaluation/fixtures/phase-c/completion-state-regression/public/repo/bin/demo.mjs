@@ -1,3 +1,3 @@
-import { runCompletionScenario } from "../src/bootstrap.mjs";
+import { runDispatchConsole } from "../src/app/dispatch-console.mjs";
 
-console.log(runCompletionScenario("project-1", "Persist completion"));
+for (const line of runDispatchConsole()) console.log(line);

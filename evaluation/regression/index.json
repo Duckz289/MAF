@@ -72,16 +72,16 @@
       "id": "projection-drop-every-second-write",
       "phase": "phase-c",
       "taskId": "task-update-duplication",
-      "contract": "Remove the duplicate effect without suppressing valid later assignments; each transition publishes exactly one observable update.",
-      "violation": "Leaves the duplicate emit in place and discards every second projection write, so three distinct assignment transitions record only two updates."
+      "contract": "Each transition must publish exactly one observable assignment update; a later reassignment is a distinct transition that adds exactly one more.",
+      "violation": "Leaves the duplicate emit in place and discards every second projection write, so a run of distinct reassignments records only half of them."
     },
     {
       "corpus": "known-false-pass",
       "id": "completion-synthesized-on-read",
       "phase": "phase-c",
       "taskId": "completion-state-regression",
-      "contract": "A successful completion must atomically persist status COMPLETED and a non-null completedAt.",
-      "violation": "Records completion in a read-time overlay instead of persisting it; the stored record and taskRepository.all() remain OPEN."
+      "contract": "A successful completion must durably record status COMPLETED and a non-null completedAt, and every later read of that order must see it.",
+      "violation": "Records completion in a read-time overlay instead of persisting it; workOrderRepository.all() and byRegion() still report the order as open."
     },
     {
       "corpus": "known-false-pass",

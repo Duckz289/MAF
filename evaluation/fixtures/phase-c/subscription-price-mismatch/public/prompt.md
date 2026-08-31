@@ -1,9 +1,14 @@
 # subscription-price-mismatch
 
-New subscriptions sometimes record an earlier plan price after the catalog has changed. A
-subscription opened after a price update must capture the current price for that plan in
-`priceAtSubscription`. Existing subscription records must remain unchanged when prices change
-later, and unknown plans must still be rejected.
+Memberships opened after a price change still record the old price. Run `node bin/demo.mjs`: the
+desk moves the `standard` plan to 39 and enrols Bo immediately afterwards, but Bo's membership is
+recorded at 34.99 — the same figure as Ada's, who enrolled before the change.
 
-Fix the behavior for every plan and for repeated price changes. Preserve the billing-controller
-API, the stored subscription shape, and unrelated reporting behavior.
+A membership must capture the price that is in force for that plan at the moment it is opened, and
+store it as `rateAtEnrolment`. Memberships opened earlier must keep the price they captured when a
+plan's price changes later, and a plan the club does not offer must still be rejected with
+`RangeError`.
+
+Fix this for every plan and for repeated price changes, not just the one in this report. Preserve
+the front-desk and enrolment APIs, the stored membership shape (`memberId`, `planId`,
+`rateAtEnrolment`), and the unrelated roster, statement and access behaviour.

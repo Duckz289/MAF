@@ -75,7 +75,7 @@
       "src/commit-store.mjs": "export function createCommitStore(){const visible=Object.create(null);return{begin(key,value){return Object.freeze({key,value});},commit(transaction){visible[transaction.key]=transaction.value;},read(key){return Object.hasOwn(visible,key)?visible[key]:undefined;}};}\n"
     },
     "notification-settings-regression": {
-      "src/config/config-provider.mjs": "import{DEFAULT_CONFIG}from\"./app-config.mjs\";export function resolveConfig(overrides={}){const resolved={};for(const[key,value]of Object.entries(DEFAULT_CONFIG))resolved[key]=value;for(const[key,value]of Object.entries(overrides))resolved[key]=value;return resolved;}export function getConfigValue(key,overrides={}){return resolveConfig(overrides)[key];}\n"
+      "src/settings/settings-resolver.mjs": "import { WORKSPACE_DEFAULTS } from \"./workspace-defaults.mjs\";\n\nexport function resolveSettings(overrides = {}) {\n  const resolved = Object.assign(Object.create(null), WORKSPACE_DEFAULTS);\n  for (const [key, value] of Object.entries(overrides ?? {})) {\n    if (value !== undefined) resolved[key] = value;\n  }\n  return { ...resolved };\n}\n\nexport function settingValue(key, overrides = {}) {\n  return resolveSettings(overrides)[key];\n}\n"
     }
   }
 }

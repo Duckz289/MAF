@@ -1,3 +1,3 @@
-import { runAssignmentScenario } from "../src/bootstrap.mjs";
+import { runWarehouseConsole } from "../src/app/warehouse-console.mjs";
 
-console.log(runAssignmentScenario("project-1", "Trace assignment", "user-1"));
+for (const line of runWarehouseConsole()) console.log(line);
