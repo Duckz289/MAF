@@ -29,7 +29,7 @@
     "benchmark:fixture": "tsx scripts/benchmark.ts benchmarks/manifest.fixture.json",
     "benchmark:integrated-fixture": "tsx scripts/benchmark.ts benchmarks/manifest.integrated.fixture.json",
     "real-agent:smoke": "tsx scripts/real-agent-smoke.ts",
-    "compose:check": "docker compose config --quiet",
+    "compose:check": "node scripts/compose-check.mjs",
     "validate": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build && npm run compose:check && npm run smoke",
     "test:abi": "node --test evaluation/abi-tests/*.test.mjs",
     "validate:evaluation": "npm run test:abi && node evaluation/run-abi-pilots.mjs && node evaluation/validate-fixtures.mjs && node evaluation/validate-contracts.mjs && node evaluation/validate-reconstruction.mjs",
@@ -40,6 +40,7 @@
     "validate:evaluation:false-fail": "node evaluation/run-curator-matrix.mjs --phase all --candidates reference,alternative,probe --skip-missing true --repetitions 1",
     "validate:evaluation:determinism": "node evaluation/run-determinism-stress.mjs --rounds 14 --concurrency 4",
     "validate:evaluation:cross-suite": "node evaluation/audit-cross-suite.mjs",
+    "validate:evaluation:full": "npm run validate:evaluation && npm run validate:evaluation:phase-b && npm run validate:evaluation:phase-c:band12 && npm run validate:evaluation:phase-c:band3 && npm run validate:evaluation:attacks && npm run validate:evaluation:false-fail && npm run validate:evaluation:determinism && npm run validate:evaluation:cross-suite",
     "validate:fixtures": "node evaluation/validate-fixtures.mjs && node evaluation/validate-reconstruction.mjs"
   },
   "dependencies": {

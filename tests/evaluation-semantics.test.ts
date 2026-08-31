@@ -61,9 +61,8 @@ describe("reconstructed evaluation semantics", () => {
   it("detects a valid false-safe claim without blaming infrastructure failures", () => {
     expect(normalizeEvaluationRun(base({ hiddenGrader: "FAIL" })).falseSafe).toBe(true);
     expect(
-      normalizeEvaluationRun(
-        base({ hiddenGrader: "FAIL", executionStatus: "INFRA_FAILURE" }),
-      ).falseSafe,
+      normalizeEvaluationRun(base({ hiddenGrader: "FAIL", executionStatus: "INFRA_FAILURE" }))
+        .falseSafe,
     ).toBe(false);
   });
 });

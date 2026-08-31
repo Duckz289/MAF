@@ -5,7 +5,11 @@ export function createCommitStore() {
       committed = new Map(committed).set(key, value);
       return { key, value };
     },
-    commit(tx) { committed = new Map(committed).set(tx.key, tx.value); },
-    read(key) { return committed.get(key); }
+    commit(tx) {
+      committed = new Map(committed).set(tx.key, tx.value);
+    },
+    read(key) {
+      return committed.get(key);
+    },
   };
 }

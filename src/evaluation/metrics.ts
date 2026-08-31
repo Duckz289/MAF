@@ -19,10 +19,17 @@ export const summarizeEvaluation = (runs: EvaluationRun[]): EvaluationMetrics =>
     dvs: dvsRuns.length,
     dvsRate: normalized.length === 0 ? 0 : dvsRuns.length / normalized.length,
     falseSafe: normalized.filter((run) => run.falseSafe).length,
-    falseSafeRate: normalized.length === 0 ? 0 : normalized.filter((run) => run.falseSafe).length / normalized.length,
+    falseSafeRate:
+      normalized.length === 0
+        ? 0
+        : normalized.filter((run) => run.falseSafe).length / normalized.length,
     knownCostDvs: costs.length,
-    costPerDvsUsd: costs.length === 0 ? null : costs.reduce((sum, cost) => sum + cost, 0) / costs.length,
-    timeToSafeMs: dvsRuns.length === 0 ? null : dvsRuns.reduce((sum, run) => sum + run.elapsedMs, 0) / dvsRuns.length,
+    costPerDvsUsd:
+      costs.length === 0 ? null : costs.reduce((sum, cost) => sum + cost, 0) / costs.length,
+    timeToSafeMs:
+      dvsRuns.length === 0
+        ? null
+        : dvsRuns.reduce((sum, run) => sum + run.elapsedMs, 0) / dvsRuns.length,
     paired: [],
   };
 };
@@ -46,7 +53,9 @@ export const summarizePairedEvaluation = (runs: EvaluationRun[]): EvaluationMetr
 
 export const assertIndependentDvs = (run: EvaluationRun): void => {
   if (run.claimedDone && isDvs(run) === false && run.runValidity === "VALID" && !isFalseSafe(run)) {
-    throw new Error("A valid unsuccessful run cannot claim trusted completion without false-safe classification");
+    throw new Error(
+      "A valid unsuccessful run cannot claim trusted completion without false-safe classification",
+    );
   }
 };
 

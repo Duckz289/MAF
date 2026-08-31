@@ -1,24 +1,78 @@
-# MAF Post-ed71448 Reconstruction Record
+# MAF post-36791bc benchmark reconstruction
 
-This is an explicit reconstruction from trusted base `ed7144853f5cf08be0d0ae98e676d10bbf95105d`. Historical SHAs were not recreated: `b2a5c31dbe6a4df2d7c1cec4f08d37a71099e788`, `65689daa459a17e8d295ebcd74404fc85d999126`, `187329ed7805750491bb38faff4efc4ab68b5097`. The recovered MAF directory remained read-only and was never executed.
+This branch is a newly authored reconstruction built from trusted checkpoint
+`36791bc296824ff9bdc2d04c1a3bed46b7bd6362`. It is not a byte-for-byte recovery of the
+lost benchmark and does not recreate lost history, results, or historical commit identities.
 
-- Branch: `recovery/full-post-ed71448-reconstruction`
-- Product: `PRODUCT_RECONSTRUCTION_CANDIDATE`; commit `33bebb699eae0c26718799d2788a1b6497855624`.
-- Harness: commit `00c3fcb`; independent DVS, candidate/run validity, false-safe, paired outcomes, and unknown/partial cost semantics in `src/evaluation/`.
-- Protocol: `evaluation/protocol.json`, version `2.0.0-reconstructed`; frontier execution disabled.
-- Phase B: `PHASE_B_RECONSTRUCTION_CANDIDATE`; commit `7822439`; 12 task concepts and 299 coherent public fixture fragments. Completion checkpoint `fe14daa` adds the missing `duration-carry-fix` public fixture, bringing the filesystem to 12 fixture directories.
-- Phase C: completion checkpoint `fe14daa` expands the manifest to Band 1 = 5, Band 2 = 7, Band 3 = 5. The three newly added Band 2 public seeds are `b2-partial-validation-mutation`, `b2-derived-aggregate-consistency`, and `b2-pending-write-visibility`.
-- Final validator fix: commit `c2dfcf4` (`fix(evaluation): resolve Windows validator path`).
+The original post-checkpoint benchmark implementation was lost. A first reconstruction was then
+successfully authored and validated in an ephemeral Linux workspace, but that workspace was lost
+before its commits could be pushed or exported. This persistent Windows branch is therefore a
+second reconstruction. Its behavioral target comes from the recorded validation report of that
+successful first reconstruction, followed by a fresh audit of the actual Windows repository.
 
-## Validation
+The inaccessible Linux SHAs `98e23fc`, `7bf0929`, `8628c6e`, `8cadd74`, `9028cab`, `fa51e22`,
+`19d2044`, `26437cd`, and `9f99713` are forensic references only. None is impersonated or recreated,
+and no SHA or byte equivalence is claimed.
 
-`npm ci` PASS with unchanged lockfile. `node evaluation/validate-reconstruction.mjs` PASS: protocol 2.0.0-reconstructed, Phase B 12, Phase C 5/7/5. `node evaluation/validate-fixtures.mjs` PASS: 29 public materializations, hidden isolation, leakage scan, and deterministic policy checks. Focused product/evaluation tests PASS: 2 files, 14 tests. The post-completion full suite PASS: 83 files passed, 4 skipped; 1094 tests passed, 8 skipped. `npm run typecheck` PASS. `npm run build` PASS. `npm run lint` PASS with 14 existing warnings and 6 infos; no new fixture errors. Repository-wide format check retains pre-existing CRLF/formatter failures; unrelated files were not reformatted. Smoke/compose and independent adversarial/reference grader execution remain unsupported because this reconstructed tree has no curator grader corpus or runner. No Native/MAF frontier benchmark was executed.
+- Branch: `recovery/rebuild-post-36791bc-v2`
+- Protocol: `evaluation/protocol.json`, version `2.0.0-reconstructed`
+- Phase B: 12 executable behavioral tasks
+- Phase C: 17 executable behavioral tasks: Band 1 = 5, Band 2 = 7, Band 3 = 5
+- Frontier execution: prohibited by the reconstructed protocol and not performed
 
-## Context-orientation audit
+## Reconstruction checkpoints
 
-Band 3 review: `b3-config-provider-boundary-trace`, `b3-dead-code-vs-live-discount-path`, `b3-decoy-cache-source-of-truth`, `b3-duplicate-service-owner`, and `b3-event-handler-owner-trace` are `CONTEXT_TEST_STRONG`. Their IDs describe symptoms, public prompts do not name implementation owners, and each seed contains meaningful decoy modules and traversal context. No Band 3 task is `NOT_A_CONTEXT_TEST`.
-## Salvage and uncertainty
+| Commit | Checkpoint |
+| --- | --- |
+| `a209b9c` | Curator ABI, isolation, fail-closed behavior, and pilot cases |
+| `041d01a` | Phase B private corpus and behavioral matrix |
+| `e4fd776` | Phase C Band 1 and Band 2 corpus |
+| `7890a09` | Symptom-only Phase C Band 3 corpus and context audit |
+| `c999e10` | Adversarial and false-fail hardening |
+| `3d4c10a` | Deterministic isolated stress execution |
+| `2f3386c` | Cross-suite distinctness and leakage audit |
 
-Used only coherent public `.mjs` fragments and task names from the salvage reconstruction content. Rejected recovered product source, package metadata, corrupted protocol/manifests/graders, binary/NUL data, logs, private curator/reference/shortcut files, and agent patches as historical commits. No byte-equivalence, historical metrics, or frozen-suite identity is claimed. Complete hidden graders/references for every task, full local validation, and independent adversarial audit remain outstanding.
+Checkpoint 8 is the final validation/documentation commit containing this record. Its SHA is
+reported after creation because a commit cannot contain its own identity.
 
-INDEPENDENT_AUDIT_REQUIRED: YES
+## Final acceptance evidence
+
+The final acceptance run is performed from scratch after the last artifact modification. The
+expected-outcome matrix is:
+
+| Candidate or gate | Cases | Required result |
+| --- | ---: | --- |
+| Curator ABI negatives and pilots | 18 | 18 pass |
+| Pristine workspaces | 29 | 29 correctly fail grading |
+| Reference implementations | 29 | 29 pass grading |
+| Known-wrong implementations | 29 | 29 correctly fail grading |
+| Alternative correct implementations | 29 | 29 pass grading |
+| Second-style attack implementations | 29 | 29 correctly fail grading |
+| Combined false-pass challenge | 58 | 58 wrong or attack candidates rejected |
+| False-fail challenge | 83 | 58 reference/alternative plus 25 probes accepted |
+| Band 3 context orientation | 5 | 5 `CONTEXT_TEST_STRONG`; none weak or invalid |
+| Determinism stress | 2,030 executions | 145 cases x 14 rounds, all stable |
+
+The stress run interleaves rotated and reversed orders at concurrency 4 and splits execution
+between repository and evaluation working directories (1,015 executions each). It checks stale
+module caches, shared temporary state, order sensitivity, current-working-directory dependence,
+synchronization, filename and content leakage, workspace materialization, and hidden-artifact
+isolation.
+
+Repository acceptance is also gated by 84 passing Vitest files and 1,095 passing tests, with the
+existing four skipped files and eight skipped tests, plus separate successful runs of formatting,
+linting, typechecking, building, compose validation, smoke validation, and the complete `npm run
+validate` command.
+
+## Provenance and limits
+
+Only this reconstructed corpus and its local validation results are claimed. No Native or MAF
+frontier condition was run, so this work reports no benchmark performance, DVS, false-safe, cost,
+or comparative condition result. Curator graders, correct overlays, known-wrong overlays, attacks,
+and probes remain local validation instruments and must never be exposed to an evaluated
+condition.
+
+An independent frontier audit is still required before using this reconstruction to make research
+claims.
+
+`INDEPENDENT_FRONTIER_AUDIT_REQUIRED: YES`
