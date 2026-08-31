@@ -1,4 +1,7 @@
 import type { BenchmarkStrategy } from "../benchmark/runner";
+import type { EvidenceSource } from "./independent-verification";
+
+export type { EvidenceSource };
 
 // Evaluation protocol semantics (evaluation/protocol.json, version 2.0.0-reconstructed).
 //
@@ -23,7 +26,12 @@ export type ExecutionStatus =
   | "QUOTA_EXHAUSTED";
 export type CandidateIntegrity = "VALID" | "INVALID" | "MISSING" | "UNKNOWN";
 export type RunValidity = "VALID" | "INVALID";
-export type EvidenceOutcome = "PASS" | "FAIL" | "UNKNOWN";
+/**
+ * PASS/FAIL are verdicts. UNKNOWN means a check ran without reaching one. NOT_CHECKED means no
+ * check ran at all -- the state a run starts in, and the state it stays in when no independent
+ * verifier is configured.
+ */
+export type EvidenceOutcome = "PASS" | "FAIL" | "UNKNOWN" | "NOT_CHECKED";
 export type CostStatus = "KNOWN" | "PARTIAL" | "UNKNOWN";
 export type PairedOutcome =
   | "BOTH_PASS"
@@ -33,6 +41,14 @@ export type PairedOutcome =
   | "INVALID_MAF"
   | "INVALID_NATIVE"
   | "INVALID_BOTH";
+
+/** Participant-reported evidence. Untrusted by construction: recorded, never believed. */
+export interface SelfReportedEvidence {
+  verificationResult?: string;
+  claimedChangedFiles?: string[];
+  verifierFailures?: number;
+  trustState?: string;
+}
 
 export interface EvaluationRun {
   runId: string;
@@ -44,8 +60,19 @@ export interface EvaluationRun {
   candidateExists: boolean;
   candidateIntegrity: CandidateIntegrity;
   runValidity: RunValidity;
+  /**
+   * Where hiddenGrader, regression and candidateIntegrity came from. Only INDEPENDENT evidence --
+   * produced by a controller-side verifier the participant cannot run or observe -- can support a
+   * Durable Verified Success.
+   */
+  evidenceSource: EvidenceSource;
   hiddenGrader: EvidenceOutcome;
   regression: EvidenceOutcome;
+  /**
+   * What the participant said about its own run. Recorded for diagnosis and for false-safe
+   * detection; it never establishes correctness evidence.
+   */
+  selfReported?: SelfReportedEvidence;
   claimedDone: boolean;
   claimedTrusted: boolean;
   elapsedMs: number;
@@ -136,11 +163,22 @@ export const hasValidCandidate = (run: EvaluationRun): boolean =>
 /**
  * Durable Verified Success.
  *
- * An infrastructure failure can never be a success, regardless of what the remaining fields claim:
- * a timed-out or quota-exhausted run did not durably verify anything, and an upstream payload that
- * says otherwise is contradicting itself.
+ * Two things can never be a success, whatever the remaining fields claim:
+ *
+ *  * an infrastructure failure -- a timed-out or quota-exhausted run durably verified nothing;
+ *  * evidence the participant produced about itself. The second independent audit found the
+ *    production path deriving hiddenGrader, regression and candidateIntegrity from the
+ *    participant's own execution report, so asserting `verificationResult: "VERIFIED"` alongside a
+ *    fabricated file list was enough to mint a DVS. `evidenceSource` closes that: only evidence a
+ *    controller-side verifier produced, which the participant can neither run nor observe, counts.
+ *
+ * The participant's own claim is deliberately absent from this predicate. It is neither necessary
+ * nor sufficient (protocol dvs.agentDoneIsSufficient = false): a participant that reports failure
+ * over a candidate the independent grader passes is still a DVS, and a participant that reports
+ * success over a candidate the grader fails is not.
  */
 export const isDvs = (run: EvaluationRun): boolean =>
+  run.evidenceSource === "INDEPENDENT" &&
   !isInfrastructureFailure(run) &&
   run.runValidity === "VALID" &&
   hasValidCandidate(run) &&
@@ -176,6 +214,17 @@ export const evaluationRunIncoherences = (run: EvaluationRun): string[] => {
   }
   if (isInfrastructureFailure(run) && (run.hiddenGrader === "PASS" || run.regression === "PASS")) {
     issues.push("grading cannot report PASS for a run that failed on infrastructure");
+  }
+  if (
+    run.evidenceSource !== "INDEPENDENT" &&
+    (run.hiddenGrader === "PASS" || run.regression === "PASS")
+  ) {
+    issues.push(
+      "correctness evidence cannot report PASS unless it came from an independent verifier",
+    );
+  }
+  if (run.evidenceSource !== "INDEPENDENT" && run.candidateIntegrity === "VALID") {
+    issues.push("candidateIntegrity cannot be VALID unless the controller observed the candidate");
   }
   return issues;
 };

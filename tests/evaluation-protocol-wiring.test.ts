@@ -6,16 +6,21 @@ import {
   type BenchmarkTask,
 } from "../src/benchmark/runner";
 import { evaluationRunFromSample } from "../src/evaluation/benchmark-bridge";
+import {
+  notVerified,
+  type IndependentVerificationResult,
+  type IndependentVerifier,
+} from "../src/evaluation/independent-verification";
 
-// The independent audit of snapshot bb326527 found the protocol semantics reachable only from unit
-// tests: no evaluation flow ever produced an EvaluationRun, so DVS, false-safe, invalid-run
-// separation and cost accounting were never applied to a real comparison.
+// Protocol wiring.
 //
-// These tests exercise the production path end to end:
+// AUDIT #1: the protocol semantics existed but nothing in any evaluation flow produced an
+// EvaluationRun, so DVS and cost accounting were never applied to a comparison.
 //
-//   BenchmarkRunner.compare -> BenchmarkSample -> evaluationRunFromSample -> run validity ->
-//   candidate integrity -> grader -> regression -> infrastructure classification -> DVS ->
-//   paired analysis -> BenchmarkReport.evaluation
+// AUDIT #2: the wiring that fixed that derived its trusted fields from the participant's own
+// report. That defect is covered in depth by tests/production-trust-boundary.test.ts; this file
+// covers the rest of the flow -- identity, cost, infrastructure classification and pairing -- now
+// that correctness evidence arrives from a controller-side verifier instead.
 
 const execution = (overrides: Partial<BenchmarkExecution> = {}): BenchmarkExecution => ({
   agent: "fixture-agent",
@@ -48,12 +53,35 @@ const task: BenchmarkTask = {
   expectedVerification: "npm test",
 };
 
-const compare = async (nativeExecution: BenchmarkExecution, mafExecution: BenchmarkExecution) => {
+/** Stands in for the controller-side grader and regression run. */
+const verifierReturning = (
+  result: Partial<IndependentVerificationResult> = {},
+): IndependentVerifier => ({
+  async verify() {
+    return {
+      source: "INDEPENDENT",
+      candidateIntegrity: "VALID",
+      candidateExists: true,
+      hiddenGrader: "PASS",
+      regression: "PASS",
+      graderStatus: "PASS",
+      regressionStatus: "PASS",
+      notes: [],
+      ...result,
+    };
+  },
+});
+
+const compare = async (
+  nativeExecution: BenchmarkExecution,
+  mafExecution: BenchmarkExecution,
+  verifier: IndependentVerifier = verifierReturning(),
+) => {
   const executors: BenchmarkExecutor[] = [
     { strategy: "NATIVE", execute: async () => nativeExecution },
     { strategy: "MAF_ADAPTIVE", execute: async () => mafExecution },
   ];
-  return await new BenchmarkRunner().compare(task, executors);
+  return await new BenchmarkRunner().compare(task, executors, { verifier });
 };
 
 describe("evaluation protocol wiring", () => {
@@ -82,7 +110,7 @@ describe("evaluation protocol wiring", () => {
     expect(report.evaluation.paired[0]?.outcome).toBe("INVALID_NATIVE");
   });
 
-  it("refuses a provider error even when verification claims success", async () => {
+  it("refuses a provider error even when the verifier passed the candidate", async () => {
     const report = await compare(
       execution({ providerError: "429 rate limited" }),
       execution({ infrastructureError: "sandbox unavailable" }),
@@ -93,34 +121,42 @@ describe("evaluation protocol wiring", () => {
     expect(report.evaluation.paired[0]?.outcome).toBe("INVALID_BOTH");
   });
 
-  it("treats a quarantined candidate as invalid integrity, not a success", async () => {
+  it("carries an invalid candidate through as invalid integrity", async () => {
     const report = await compare(
-      execution({ verificationResult: "QUARANTINED" }),
+      execution(),
       execution({ reportedCost: 0.25 }),
+      verifierReturning({ candidateIntegrity: "INVALID" }),
     );
-    const native = report.evaluation.paired[0]?.native;
-    expect(native?.candidateIntegrity).toBe("INVALID");
-    expect(native?.dvs).toBe(false);
-    expect(report.evaluation.paired[0]?.outcome).toBe("MAF_ONLY_PASS");
+    expect(report.evaluation.paired[0]?.native.candidateIntegrity).toBe("INVALID");
+    expect(report.evaluation.dvs).toBe(0);
   });
 
-  it("treats an execution that changed nothing as a missing candidate", async () => {
+  it("carries a missing candidate through as missing, not as a pass", async () => {
     const report = await compare(
-      execution({ filesChanged: [], modulesTouched: [], verificationResult: "FAILED" }),
+      execution({ filesChanged: [], modulesTouched: [] }),
       execution({ reportedCost: 0.25 }),
+      verifierReturning({
+        candidateIntegrity: "MISSING",
+        candidateExists: false,
+        hiddenGrader: "NOT_CHECKED",
+        regression: "NOT_CHECKED",
+        graderStatus: "NOT_RUN",
+        regressionStatus: "NOT_RUN",
+      }),
     );
     const native = report.evaluation.paired[0]?.native;
     expect(native?.candidateExists).toBe(false);
     expect(native?.candidateIntegrity).toBe("MISSING");
-    expect(native?.hiddenGrader).toBe("UNKNOWN");
+    expect(native?.hiddenGrader).toBe("NOT_CHECKED");
     expect(native?.dvs).toBe(false);
     expect(native?.coherenceIssues).toEqual([]);
   });
 
-  it("treats a verifier failure as a regression signal", async () => {
+  it("keeps a failed independent regression out of DVS", async () => {
     const report = await compare(
-      execution({ verifierFailures: 2, verificationAttempts: 3, verificationResult: "VERIFIED" }),
+      execution(),
       execution({ reportedCost: 0.25 }),
+      verifierReturning({ regression: "FAIL", regressionStatus: "FAIL" }),
     );
     const native = report.evaluation.paired[0]?.native;
     expect(native?.regression).toBe("FAIL");
@@ -140,9 +176,27 @@ describe("evaluation protocol wiring", () => {
   });
 
   it("charges a failed arm's cost against cost per success", async () => {
+    let first = true;
+    const alternating: IndependentVerifier = {
+      async verify() {
+        const failing = first;
+        first = false;
+        return {
+          source: "INDEPENDENT",
+          candidateIntegrity: "VALID",
+          candidateExists: true,
+          hiddenGrader: failing ? "FAIL" : "PASS",
+          regression: failing ? "FAIL" : "PASS",
+          graderStatus: failing ? "FAIL" : "PASS",
+          regressionStatus: failing ? "FAIL" : "PASS",
+          notes: [],
+        };
+      },
+    };
     const report = await compare(
-      execution({ verificationResult: "FAILED", reportedCost: 100 }),
+      execution({ reportedCost: 100 }),
       execution({ reportedCost: 1 }),
+      alternating,
     );
     expect(report.evaluation.dvs).toBe(1);
     expect(report.evaluation.cost.costPerDvsUsd).toBe(101);
@@ -157,12 +211,12 @@ describe("evaluation protocol wiring", () => {
       },
       { strategy: "MAF_ADAPTIVE", execute: async () => execution() },
     ];
-    await expect(new BenchmarkRunner().compare(task, executors)).rejects.toThrow(
-      /invalid execution status/i,
-    );
+    await expect(
+      new BenchmarkRunner().compare(task, executors, { verifier: verifierReturning() }),
+    ).rejects.toThrow(/invalid execution status/i);
   });
 
-  it("maps a sample into a protocol run without inventing a revision", () => {
+  it("maps a sample into a protocol run without inventing evidence", () => {
     const run = evaluationRunFromSample(
       {
         ...execution(),
@@ -172,11 +226,18 @@ describe("evaluation protocol wiring", () => {
         verifiedSuccess: true,
       },
       "UNKNOWN",
+      notVerified("no verifier in this unit"),
     );
     expect(run.condition).toBe("MAF");
     expect(run.taskId).toBe("wiring-task");
     expect(run.sourceRevision).toBe("UNKNOWN");
     expect(run.costUsd).toBe(0.5);
     expect(run.usage).toEqual({ inputTokens: 10, outputTokens: 5, cachedTokens: 0 });
+    // Absent verification never becomes evidence, whatever the sample claimed.
+    expect(run.evidenceSource).toBe("NOT_CHECKED");
+    expect(run.hiddenGrader).toBe("NOT_CHECKED");
+    expect(run.regression).toBe("NOT_CHECKED");
+    expect(run.candidateExists).toBe(false);
+    expect(run.selfReported?.verificationResult).toBe("VERIFIED");
   });
 });

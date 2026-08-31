@@ -21,6 +21,9 @@ const base = (overrides: Partial<EvaluationRun> = {}): EvaluationRun => ({
   candidateExists: true,
   candidateIntegrity: "VALID",
   runValidity: "VALID",
+  // Independently verified by default, so these fixtures describe runs whose evidence a
+  // controller-side verifier actually produced.
+  evidenceSource: "INDEPENDENT",
   hiddenGrader: "PASS",
   regression: "PASS",
   claimedDone: true,
@@ -66,6 +69,43 @@ describe("durable verified success", () => {
       expect(run.infrastructureFailure, JSON.stringify(overrides)).toBe(true);
       expect(run.falseSafe, JSON.stringify(overrides)).toBe(false);
     }
+  });
+
+  // AUDIT #2's root cause: the production path derived correctness evidence from the participant's
+  // own report, so asserting success was enough to mint a DVS. Evidence must now declare that a
+  // controller-side verifier produced it.
+  it("refuses evidence that did not come from an independent verifier", () => {
+    const unverified = normalizeEvaluationRun(base({ evidenceSource: "NOT_CHECKED" }));
+    expect(unverified.dvs).toBe(false);
+    expect(unverified.coherenceIssues).toEqual([
+      "correctness evidence cannot report PASS unless it came from an independent verifier",
+      "candidateIntegrity cannot be VALID unless the controller observed the candidate",
+    ]);
+  });
+
+  it("refuses evidence that was never checked", () => {
+    expect(
+      normalizeEvaluationRun(
+        base({
+          evidenceSource: "NOT_CHECKED",
+          hiddenGrader: "NOT_CHECKED",
+          regression: "NOT_CHECKED",
+          candidateIntegrity: "UNKNOWN",
+        }),
+      ).dvs,
+    ).toBe(false);
+    expect(normalizeEvaluationRun(base({ hiddenGrader: "NOT_CHECKED" })).dvs).toBe(false);
+    expect(normalizeEvaluationRun(base({ regression: "NOT_CHECKED" })).dvs).toBe(false);
+  });
+
+  // The participant's own claim is neither necessary nor sufficient.
+  it("ignores the participant's claim in both directions", () => {
+    expect(normalizeEvaluationRun(base({ claimedDone: false, claimedTrusted: false })).dvs).toBe(
+      true,
+    );
+    expect(normalizeEvaluationRun(base({ claimedDone: true, hiddenGrader: "FAIL" })).dvs).toBe(
+      false,
+    );
   });
 
   it("refuses a missing candidate and a skipped verification", () => {

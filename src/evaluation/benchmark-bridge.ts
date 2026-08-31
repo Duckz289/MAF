@@ -1,27 +1,40 @@
 import type { BenchmarkSample } from "../benchmark/runner";
+import { notVerified, type IndependentVerificationResult } from "./independent-verification";
 import { summarizePairedEvaluation } from "./metrics";
 import type {
-  CandidateIntegrity,
   EvaluationCondition,
   EvaluationMetrics,
   EvaluationRun,
-  EvidenceOutcome,
   ExecutionStatus,
   RunValidity,
 } from "./types";
 
 // Production wiring for the evaluation protocol.
 //
-// The independent audit of snapshot bb326527 found the protocol semantics implemented but reachable
-// only from tests: nothing in the evaluation flow ever produced an EvaluationRun, so DVS, false-safe
-// and cost accounting were never actually applied to a benchmark comparison.
+// AUDIT #1 found the protocol semantics implemented but unreachable: nothing in any evaluation flow
+// produced an EvaluationRun.
 //
-// This module is the trace the protocol requires:
+// AUDIT #2 found the wiring that fixed that was itself unsound. The three trusted fields were
+// derived from the participant's own report:
 //
-//   execution -> run validity -> candidate integrity -> grader result -> regression
-//             -> infrastructure classification -> DVS -> paired analysis
+//     hiddenGrader        <- sample.verificationResult === "VERIFIED"
+//     regression          <- sample.verificationResult === "VERIFIED" && !verifierFailures
+//     candidateIntegrity  <- sample.filesChanged.length > 0
 //
-// Each step is derived from the sample rather than asserted, and every unknown stays unknown.
+// so a participant that returned VERIFIED with a fabricated file list minted a Durable Verified
+// Success with no independent evidence in existence.
+//
+// The boundary this module now enforces:
+//
+//   participant execution          -> self-reported evidence only, recorded and never believed
+//   controller-owned workspace     -> independent candidate-integrity evidence
+//   controller-side hidden grader  -> hiddenGrader
+//   controller-side regression     -> regression
+//   infrastructure classification  -> run validity
+//                                  -> DVS -> paired analysis
+//
+// A sample alone is no longer sufficient to build a run: an IndependentVerificationResult is
+// required, and its absence resolves to NOT_CHECKED, which cannot be a DVS.
 
 export const conditionForStrategy = (strategy: BenchmarkSample["strategy"]): EvaluationCondition =>
   strategy === "NATIVE" ? "NATIVE" : "MAF";
@@ -31,41 +44,18 @@ const executionStatusFor = (sample: BenchmarkSample): ExecutionStatus =>
   sample.executionStatus ?? "COMPLETED";
 
 /**
- * Candidate integrity. A sample that changed no files produced no candidate to grade; a sample that
- * failed on infrastructure has a candidate of unknown integrity rather than a valid one.
+ * Builds a protocol run from a participant sample and the controller's independent verification.
+ *
+ * The sample contributes identity, timing, cost, infrastructure signals and self-reported
+ * diagnostics. It contributes nothing to hiddenGrader, regression, candidateIntegrity or
+ * candidateExists -- those come from `verification` alone.
  */
-const candidateIntegrityFor = (
-  sample: BenchmarkSample,
-  infrastructure: boolean,
-): CandidateIntegrity => {
-  if (sample.filesChanged.length === 0) return "MISSING";
-  if (infrastructure) return "UNKNOWN";
-  return sample.verificationResult === "QUARANTINED" ? "INVALID" : "VALID";
-};
-
-/**
- * Hidden-grader outcome. VERIFIED is the executor's own claim about correctness evidence; it is
- * carried through as the grader result here, and the protocol still refuses to let that claim alone
- * become a DVS because candidate integrity, regression and run validity are separate conditions.
- */
-const graderOutcomeFor = (sample: BenchmarkSample, infrastructure: boolean): EvidenceOutcome => {
-  if (infrastructure || sample.filesChanged.length === 0) return "UNKNOWN";
-  return sample.verificationResult === "VERIFIED" ? "PASS" : "FAIL";
-};
-
-/** Regression evidence. A verifier that failed outright is a regression signal, not a silence. */
-const regressionOutcomeFor = (
-  sample: BenchmarkSample,
-  infrastructure: boolean,
-): EvidenceOutcome => {
-  if (infrastructure || sample.filesChanged.length === 0) return "UNKNOWN";
-  if (sample.verifierFailures > 0) return "FAIL";
-  return sample.verificationResult === "VERIFIED" ? "PASS" : "FAIL";
-};
-
 export const evaluationRunFromSample = (
   sample: BenchmarkSample,
   sourceRevision: string,
+  verification: IndependentVerificationResult = notVerified(
+    "no independent verification was supplied for this sample",
+  ),
 ): EvaluationRun => {
   const executionStatus = executionStatusFor(sample);
   const infrastructureError = sample.infrastructureError;
@@ -73,8 +63,14 @@ export const evaluationRunFromSample = (
     executionStatus !== "COMPLETED" ||
     Boolean(infrastructureError) ||
     Boolean(sample.providerError);
-  const candidateIntegrity = candidateIntegrityFor(sample, infrastructure);
   const runValidity: RunValidity = infrastructure ? "INVALID" : "VALID";
+
+  // An infrastructure failure invalidates correctness evidence even if a verifier managed to run:
+  // whatever it graded was not a completed run of this participant.
+  const hiddenGrader = infrastructure ? "UNKNOWN" : verification.hiddenGrader;
+  const regression = infrastructure ? "UNKNOWN" : verification.regression;
+  const candidateIntegrity = infrastructure ? "UNKNOWN" : verification.candidateIntegrity;
+
   return {
     runId: sample.runId ?? `${sample.task.id}:${sample.strategy}`,
     condition: conditionForStrategy(sample.strategy),
@@ -82,11 +78,18 @@ export const evaluationRunFromSample = (
     provider: sample.provider,
     taskId: sample.task.id,
     executionStatus,
-    candidateExists: sample.filesChanged.length > 0,
+    candidateExists: !infrastructure && verification.candidateExists,
     candidateIntegrity,
     runValidity,
-    hiddenGrader: graderOutcomeFor(sample, infrastructure),
-    regression: regressionOutcomeFor(sample, infrastructure),
+    evidenceSource: infrastructure ? "NOT_CHECKED" : verification.source,
+    hiddenGrader,
+    regression,
+    selfReported: {
+      verificationResult: sample.verificationResult,
+      claimedChangedFiles: [...sample.filesChanged],
+      verifierFailures: sample.verifierFailures,
+      ...(sample.trustState ? { trustState: sample.trustState } : {}),
+    },
     claimedDone: sample.verificationResult !== "FAILED",
     claimedTrusted:
       sample.trustState === "DURABLE_VERIFIED" || sample.trustState === "MERGE_ELIGIBLE",
@@ -106,7 +109,10 @@ export const evaluationRunFromSample = (
 export const evaluateBenchmarkSamples = (
   samples: BenchmarkSample[],
   sourceRevision: string,
+  verifications: ReadonlyMap<BenchmarkSample, IndependentVerificationResult> = new Map(),
 ): EvaluationMetrics =>
   summarizePairedEvaluation(
-    samples.map((sample) => evaluationRunFromSample(sample, sourceRevision)),
+    samples.map((sample) =>
+      evaluationRunFromSample(sample, sourceRevision, verifications.get(sample)),
+    ),
   );

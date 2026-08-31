@@ -14,7 +14,7 @@
     "timeoutPolicy"
   ],
   "dvs": {
-    "definition": "hiddenGrader=PASS AND regression=PASS AND candidateIntegrity=VALID AND candidateExists AND runValidity=VALID AND NOT infrastructureFailure",
+    "definition": "evidenceSource=INDEPENDENT AND hiddenGrader=PASS AND regression=PASS AND candidateIntegrity=VALID AND candidateExists AND runValidity=VALID AND NOT infrastructureFailure",
     "infrastructureFailureCanNeverBeSuccess": true,
     "infrastructureFailureModes": [
       "INFRA_FAILURE",
@@ -27,7 +27,17 @@
     "agentDoneIsSufficient": false,
     "mafInternalTrustIsSufficient": false,
     "incoherentUpstreamStateIsDowngradedNeverUpgraded": true,
-    "implementation": "src/evaluation/types.ts"
+    "implementation": "src/evaluation/types.ts; boundary in src/evaluation/independent-verification.ts; controller-side verifier in src/evaluation/curator-verifier.ts",
+    "participantSelfReportIsNotVerification": true,
+    "evidenceSources": ["INDEPENDENT", "NOT_CHECKED"],
+    "trustedFieldsOwnedByController": [
+      "hiddenGrader",
+      "regression",
+      "candidateIntegrity",
+      "candidateExists"
+    ],
+    "participantClaimIsNeitherNecessaryNorSufficient": "A participant that reports failure over a candidate the independent grader passes is still a DVS; a participant that reports success over a candidate the grader fails is not.",
+    "absentVerificationResolvesTo": "NOT_CHECKED"
   },
   "falseSafe": {
     "definition": "valid run claims DONE or TRUSTED while independent correctness evidence fails",
@@ -90,7 +100,7 @@
     "pairedByTask": true,
     "invalidRunsSeparate": true,
     "historicalResultsAreEvidenceOnly": true,
-    "productionWiring": "src/evaluation/benchmark-bridge.ts; BenchmarkRunner.compare emits BenchmarkReport.evaluation"
+    "productionWiring": "src/evaluation/benchmark-bridge.ts; BenchmarkRunner.compare(task, executors, { verifier }) emits BenchmarkReport.evaluation"
   },
   "historicalEvidence": {
     "status": "HISTORICAL_LOST_IMPLEMENTATION_EVIDENCE",
@@ -100,5 +110,14 @@
     "MEAN_ELAPSED_OF_DVS_RUNS": "Mean elapsed time of DVS runs only. It excludes failures and timeouts and is therefore not a general time-to-safe; it is reported next to MEAN_ELAPSED_OF_VALID_RUNS for contrast.",
     "DVS_RATE_AMONG_VALID_RUNS": "Headline rate. Denominator is valid runs, because analysis.invalidRunsSeparate is true.",
     "INVALID_BOTH": "Both arms of a pair were invalid. Reported distinctly rather than collapsed into INVALID_NATIVE."
+  },
+  "verification": {
+    "owner": "CONTROLLER",
+    "runsAfterParticipantExecution": true,
+    "participantCanObserveGrader": false,
+    "hiddenGrader": "the task's curator grader, invoked in a separate process against a controller-owned workspace",
+    "candidateIntegrity": "computed by diffing the controller-owned workspace against the pristine fixture the controller materialized, then checking containment and parseability",
+    "regression": "every module the candidate ships must load and every public entrypoint must run to a clean exit; this is a smoke regression over the fixture's own program, not a full project test suite",
+    "unavailableVerificationBlocksDvs": true
   }
 }

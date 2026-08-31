@@ -8,6 +8,11 @@ import type {
 import { assertStrategyObservation } from "../domain/strategy";
 import { redactSensitiveData, redactSensitiveText } from "../domain/security";
 import { evaluateBenchmarkSamples } from "../evaluation/benchmark-bridge";
+import {
+  nullIndependentVerifier,
+  type IndependentVerificationResult,
+  type IndependentVerifier,
+} from "../evaluation/independent-verification";
 import type { EvaluationMetrics } from "../evaluation/types";
 
 export type BenchmarkStrategy = "NATIVE" | "MAF_ADAPTIVE";
@@ -28,6 +33,13 @@ export interface BenchmarkTask {
   id: string;
   prompt: string;
   expectedVerification: string;
+  /**
+   * Workspaces the CONTROLLER allocated for each participant, keyed by strategy. The independent
+   * verifier inspects these paths after execution. They are deliberately part of the task rather
+   * than of a participant's execution report: a path a participant could name is a path it could
+   * fabricate.
+   */
+  candidateWorkspaces?: Partial<Record<BenchmarkStrategy, string>>;
   /** Optional M12 scope turns benchmark outcomes into shadow evidence, never global claims. */
   strategyScope?: StrategyScope;
   family?: BenchmarkFamily;
@@ -577,6 +589,7 @@ const safeBenchmarkTask = (task: BenchmarkTask): BenchmarkTask => ({
         },
       }
     : {}),
+  ...(task.candidateWorkspaces ? { candidateWorkspaces: { ...task.candidateWorkspaces } } : {}),
   ...(task.family ? { family: task.family } : {}),
   ...(task.sequence
     ? {
@@ -604,7 +617,19 @@ const sourceRevisionOf = (samples: BenchmarkSample[]): string =>
     ?.baseStateDigest ?? "UNKNOWN";
 
 export class BenchmarkRunner {
-  async compare(task: BenchmarkTask, executors: BenchmarkExecutor[]): Promise<BenchmarkReport> {
+  /**
+   * Compares one NATIVE and one MAF_ADAPTIVE participant on a task.
+   *
+   * `options.verifier` is the controller-side independent verifier. It runs AFTER the participants
+   * have finished, over a workspace the controller owns, and it is the only thing that can
+   * establish correctness evidence. Omitting it does not make runs succeed on the participants'
+   * word: every run then carries NOT_CHECKED evidence and no run can be a Durable Verified Success.
+   */
+  async compare(
+    task: BenchmarkTask,
+    executors: BenchmarkExecutor[],
+    options: { verifier?: IndependentVerifier } = {},
+  ): Promise<BenchmarkReport> {
     const nativeCount = executors.filter((executor) => executor.strategy === "NATIVE").length;
     const adaptiveCount = executors.filter(
       (executor) => executor.strategy === "MAF_ADAPTIVE",
@@ -661,10 +686,27 @@ export class BenchmarkRunner {
       assertStrategyObservation(observation);
       return [observation];
     });
+    // Independent verification runs here: after participant execution, before any accounting. It is
+    // deliberately not given the participant's execution object, so nothing it decides can depend on
+    // what the participant claimed.
+    const verifier = options.verifier ?? nullIndependentVerifier;
+    const verifications = new Map<BenchmarkSample, IndependentVerificationResult>();
+    for (const sample of samples) {
+      verifications.set(
+        sample,
+        await verifier.verify({
+          taskId: projectedTask.id,
+          expectedVerification: projectedTask.expectedVerification,
+          ...(projectedTask.candidateWorkspaces?.[sample.strategy]
+            ? { workspacePath: projectedTask.candidateWorkspaces[sample.strategy] as string }
+            : {}),
+        }),
+      );
+    }
     return {
       generatedAt,
       samples,
-      evaluation: evaluateBenchmarkSamples(samples, sourceRevisionOf(samples)),
+      evaluation: evaluateBenchmarkSamples(samples, sourceRevisionOf(samples), verifications),
       metrics: {
         sampleCount: samples.length,
         verifiedSuccessRate: samples.length === 0 ? 0 : successes.length / samples.length,
@@ -683,9 +725,11 @@ export class BenchmarkRunner {
     return `${JSON.stringify(report, null, 2)}\n`;
   }
 
+  /** Runs a suite. `options.verifier` is threaded to every comparison; see `compare`. */
   async runSuite(
     tasks: BenchmarkTask[],
     executors: BenchmarkExecutor[],
+    options: { verifier?: IndependentVerifier } = {},
   ): Promise<BenchmarkSuiteReport> {
     if (tasks.length === 0) throw new Error("Benchmark suite requires at least one task");
     if (executors.some((executor) => !executor.identity))
@@ -702,7 +746,7 @@ export class BenchmarkRunner {
     >();
     // Deliberately sequential, with a required state chain: labels alone are not long-horizon proof.
     for (const task of tasks) {
-      const report = await this.compare(task, executors);
+      const report = await this.compare(task, executors, options);
       reports.push(report);
       if (!task.sequence) continue;
       const prior = sequenceState.get(task.sequence.id);
