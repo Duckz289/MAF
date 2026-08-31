@@ -184,3 +184,234 @@ part of this repair. The repaired suite still requires a second independent audi
 
 `INDEPENDENT_REAUDIT_REQUIRED: YES`
 `FRONTIER_MODELS_EXECUTED: NO`
+
+---
+
+# Independent Audit #2 repair (`5084aba`)
+
+A **second** independent audit was run against the repaired snapshot at
+`5084aba184f12f420fbcab4b1f9428a8f10988b5` — that is, against the result of the Audit #1 repair
+documented above. It failed too. This section records that failure and its remediation, on branch
+`repair/second-audit-root-causes-v1`.
+
+The history is deliberately kept whole:
+
+> reconstruction → **Audit #1 failed** → repair #1 → **Audit #2 failed** → repair #2 → *third audit
+> still required*
+
+Nothing above this line has been deleted or softened. Two of the "final measured validation" rows in
+the Audit #1 section were later shown to be wrong, and they are corrected here rather than edited
+there: **Band 3 was not 5 STRONG**, and the **DVS wiring was not sound**.
+
+## Root cause 1 — the production trust pipeline verified nothing
+
+The most serious finding. `src/evaluation/benchmark-bridge.ts` derived all three trusted protocol
+fields from the participant's own execution report:
+
+    hiddenGrader        <- sample.verificationResult === "VERIFIED"
+    regression          <- sample.verificationResult === "VERIFIED" && !verifierFailures
+    candidateIntegrity  <- sample.filesChanged.length > 0
+
+Reproduced through the real `BenchmarkRunner.compare` path: a participant returning
+`verificationResult: "VERIFIED"` with the fabricated file list
+`["src/this-file-was-never-written.mjs"]` produced **2/2 DVS**, with `hiddenGrader: PASS`,
+`regression: PASS` and `candidateIntegrity: VALID`. No independent grader ran; none was reachable
+from production. The suite's real hidden graders sat in `evaluation/curator` and were never on the
+DVS path. Audit #1's "32/32 protocol wiring PASS" was measuring a pipeline that trusted its subject.
+
+**Repair.** `src/evaluation/independent-verification.ts` defines a controller-side verifier port.
+Correctness evidence now carries an `evidenceSource`, and `isDvs` requires it to be `INDEPENDENT`.
+Absence of verification resolves to `NOT_CHECKED` — a new `EvidenceOutcome` distinct from `UNKNOWN`,
+meaning "no check ran" rather than "a check reached no verdict" — and cannot be a DVS. The runner's
+default verifier declines, so a benchmark wired without one yields no successes rather than
+unverified ones. Participant claims survive as `selfReported` diagnostics and as `claimedDone` for
+false-safe detection; they establish nothing.
+
+`src/evaluation/curator-verifier.ts` puts the suite's actual graders on the production path. It runs
+after the participant, against a workspace the **controller** allocated
+(`BenchmarkTask.candidateWorkspaces` — part of the task, so a participant cannot name or fabricate
+the path):
+
+| Trusted field | How it is established |
+| --- | --- |
+| `candidateIntegrity` | diff the controller's workspace against the pristine fixture, check containment, parse changed modules with `node --check` |
+| `hiddenGrader` | invoke the task's curator grader out of process |
+| `regression` | load every module the candidate ships and run every public entrypoint to a clean exit |
+
+The regression check is a **smoke regression over the fixture's own program**, not a full project
+test suite. `protocol.json` says so rather than implying more.
+
+Semantics are stated explicitly: the participant's claim is neither necessary nor sufficient. A
+participant reporting failure over a candidate the independent grader passes **is** a DVS; one
+reporting success over a candidate the grader fails is not. Infrastructure failure still precedes
+all of it.
+
+## Root cause 2 — graders observed final state, fixed values, shallow boundaries
+
+Six false-passes, all reproduced first as `evaluation/regression/candidates/audit2-false-pass`:
+
+| Task | Hole |
+| --- | --- |
+| `inventory-orientation-task` | live stored object mutated then restored, never touching `saveItem` |
+| `b2-pending-write-visibility` | defers only the key names the grader uses |
+| `b2-bulk-op-tenant-bypass` | `startsWith` instead of equality on tenants |
+| `b2-derived-aggregate-consistency` | `state.total` written then restored |
+| `b2-partial-validation-mutation` | nested `tags` pushed then popped |
+| `b2-record-shape-migration-loss` | nested `metadata` mutated then restored |
+
+**6/6 graded PASS before; 6/6 FAIL after.**
+
+**Repair, generalized rather than patched six times.** `trackWrites` records writes at any depth with
+the path they happened on; `deepFreeze` gives the same observation where a candidate may legitimately
+`structuredClone` its input; `privateValues` generates deterministic identifiers from a recorded
+seed so graders stop asserting against literals a candidate can special-case. Generalization was
+applied beyond the two flagged graders — refund order identities and the migration's unknown field
+names are private too. The inventory store probe additionally observes writes into the live stored
+object, and — after a round-2 attack found the gap — `defineProperty` as well as assignment.
+
+**Discount rounding, resolved publicly.** The audit found `toFixed` rounding disagreeing with
+`Math.round(x*100)/100`. Measured: **3 of 360** swept combinations land exactly on a half cent
+(9.975, 29.025, 85.785) where both answers are defensible. The grader now checks the property the
+prompt states — at most two decimals, within half a cent of the exact value — and the prompt says so
+explicitly. The reference's floating-point algorithm is not the specification.
+
+## Root cause 3 — Band 3 measured the wrong thing
+
+The repository reported **5 STRONG**; Audit #2 measured **0 STRONG, 5 WEAK**.
+
+The analyzer counted ESM import-graph hops and module out-degree and called them investigation
+difficulty. A coding agent does not breadth-first search an import graph: it reads the symptom, greps
+the vocabulary the report gives it, and opens what matches. A six-hop chain one grep collapses is not
+a context test.
+
+The analyzer now measures whether any realistic search term from the **public prompt** reaches the
+owner (tried against every file, no longer filtered by owner metadata); how far the owner sits from
+the nearest *other* file the symptom vocabulary surfaces; how many steps offer a genuine choice
+between symptom-plausible modules; and whether declared decoys are reachable **and**
+symptom-plausible. Rerun against the pre-repair fixtures it independently reproduced the auditor's
+**0 STRONG, 5 WEAK**. Writing it also exposed a flaw in the new metric itself — symptom terms were
+matched as raw substrings, so `strategy` counted as a mention of `rate`; matching is now word-bounded.
+
+All five fixtures shared one design defect: the vocabulary the prompt hands a reader appeared in the
+defect owner. Each now separates the two — the modules that *exhibit* the symptom keep the report's
+words, and the module that *causes* it speaks a different vocabulary, reached by following behaviour
+rather than by searching. The split differs per task so the five stay structurally distinct.
+
+**Measured result, reported as measured:**
+
+| Task | Class | Depth | Decisions | Credible decoys | Owner grep-surfaced |
+| --- | --- | ---: | ---: | ---: | --- |
+| `notification-settings-regression` | `CONTEXT_TEST_STRONG` | 3 | 2 | 2 | no |
+| `discount-result-regression` | `CONTEXT_TEST_STRONG` | 3 | 4 | 2 | no |
+| `subscription-price-mismatch` | `CONTEXT_TEST_STRONG` | 3 | 3 | 4 | no |
+| `task-update-duplication` | `CONTEXT_TEST_WEAK` | 2 | 3 | 2 | no |
+| `completion-state-regression` | `CONTEXT_TEST_WEAK` | 2 | 3 | 5 | no |
+
+**3 STRONG, 2 WEAK, 0 `NOT_A_CONTEXT_TEST`.** The two weak tasks are one hop below the declared
+depth threshold of 3. They are reported weak rather than repaired by lowering the threshold or by
+renaming a module's honest word — "publish" is the word the `task-update-duplication` prompt itself
+uses, and dodging the metric with a synonym would be the failure this checkpoint exists to fix.
+
+## Root cause 4 — metrics and unmeasured claims
+
+`BenchmarkReport.metrics.costPerVerifiedSuccess` sat beside `evaluation.cost.costPerDvsUsd` and could
+be read as the same quantity. It is not: one is the arithmetic mean over samples that *claimed*
+success, the other is total cost of all runs in scope divided by *independently verified* successes.
+The benchmark fields are renamed to say what they are — `selfReportedVerifiedRate`,
+`meanCostOfVerifiedSuccessesUsd`, `selfReportedSuccessesWithKnownCost` — and both types carry notes
+on which question each answers.
+
+`validate-fixtures.mjs` printed `hiddenIsolation`, `leakage` and `deterministicPolicy` as literal
+`"PASS"`; two were measured but reported as literals and the third was never measured there at all.
+`validate-contracts.mjs` printed an unconditional `status: "PASS"` and carried its own leakage regex
+that matched `solution` inside `resolution-policy`. Both now report scanned/finding counts, state
+`NOT_CHECKED` where nothing was measured, and share the single tokenizing leakage detector.
+`evaluation/phase-c/README.md` claimed all five Band 3 tasks were STRONG; it now states the measured
+result.
+
+Leakage vocabulary was broadened (28 path terms, 14 path phrases, 51 content phrases) while the claim
+stays exactly what it is: **lexical** filename and content matching, not semantic analysis.
+
+## Adversarial rounds after the repair
+
+A second round was authored *after* the repairs, against the surfaces they created, with a recorded
+seed (`evaluation/regression/index.json`, `round2Seed: 0x2a0d17`). Two of its results were findings
+rather than confirmations:
+
+* `inventory-defineproperty-write` found a real gap — the store probe trapped `set` and `delete` but
+  not `defineProperty`. Fixed.
+* `patch-clone-and-return`, a *correct* alternative that validates against `structuredClone(record)`,
+  **failed** — because `structuredClone` cannot clone a proxy and the deep write observer is one.
+  That was a hidden requirement introduced by the repair itself. The grader now runs each
+  invalid-patch case twice: once with a plain record, which holds every candidate to the outcome, and
+  once with the observing record; a candidate that clones is judged on the first pass and the check
+  says so in its message.
+
+One authored attack, `layer-merge-two-layer-assumption`, turned out to be **correct** for every chain
+shape the fixture produces — a bad attack, not a grader hole. It was replaced rather than counted.
+
+## Final measured validation (Audit #2 repair)
+
+| Gate | Result |
+| --- | --- |
+| Audit #2 false-pass retest | 6/6 `FAIL` (were 6/6 `PASS`) |
+| Audit #1 false-pass retest | 15/15 `FAIL` |
+| Audit #1 false-fail retest | 2/2 `PASS` |
+| Fresh attacks (round 1) | 29/29 `FAIL` |
+| Fresh alternatives (round 1) | 13/13 `PASS` |
+| Fresh attacks (round 2) | 12/12 `FAIL` |
+| Fresh alternatives (round 2) | 8/8 `PASS` |
+| Combined regression corpora | **85/85 correct** across seven corpora |
+| Production trust boundary | 17/17 PASS, incl. all seven required cases and five against the real curator verifier |
+| Protocol / DVS semantics | 25 unit + 10 wiring tests PASS |
+| ABI / negative tests | 45/45 PASS |
+| Full 29-task curator matrix | 170/170, deterministic |
+| Determinism stress | 145 cases × 14 rounds = 2,030 executions, 0 failures; 145/145 order-stable; 0 cwd-divergent; 2,030 distinct workspaces, 0 reused; 0 cleanup failures |
+| Band 3 orientation | 3 STRONG, 2 WEAK, 0 `NOT_A_CONTEXT_TEST` — measured, not declared |
+| Cross-suite audit | measured; no reskins, copied graders or grader-aware attacks over limits |
+
+## Repository validation (Audit #2 repair, run after the last modification)
+
+| Command | Result |
+| --- | --- |
+| `npm test` | **PASS** — 1,146 passed, 8 skipped (86 files passed, 4 skipped) |
+| `npm run typecheck` | **PASS** |
+| `npm run lint` | **PASS**, exit code 0 — 21 warnings, 6 infos (intentional unused parameters in adversarial/pristine fixtures, and test string-literal style diagnostics) |
+| `npm run format:check` | **PASS** |
+| `npm run build` | **PASS** |
+| `npm run smoke` | **PASS** |
+| `npm run compose:check` | **ENVIRONMENT_UNAVAILABLE** — Docker Compose is not installed here and no checksum-verified Compose bootstrap is configured, so it was not fabricated |
+| `npm run validate` | **INCOMPLETE_ENVIRONMENT** — `format:check`, `lint`, `typecheck`, `test` and `build` all pass; the chain then stops at `compose:check` for the reason above |
+| `npm run validate:evaluation` | **PASS** — ABI tests, pilots, fixture/contract/reconstruction validation and the 85-candidate audit regression |
+
+Evaluation harnesses, each run directly after the last artifact modification:
+
+| Harness | Result |
+| --- | --- |
+| `node --test evaluation/abi-tests/*.test.mjs` | 45/45 PASS |
+| `evaluation/run-curator-matrix.mjs` (29 tasks, all candidates) | 170/170, 0 failures, deterministic, 0 missing artifacts |
+| `evaluation/run-audit-regression.mjs` (7 corpora) | 85/85 correct |
+| `evaluation/run-determinism-stress.mjs --rounds 14` | 2,030 executions, 0 failures; 145/145 order-stable; 0 cwd-divergent; 2,030 distinct workspaces, 0 reused; 0 materialization or cleanup failures |
+| `evaluation/audit-band3-context.mjs` | 3 STRONG, 2 WEAK, 0 `NOT_A_CONTEXT_TEST` |
+| `evaluation/audit-cross-suite.mjs` | 0 failures |
+| `evaluation/validate-fixtures.mjs` | 235 files scanned, 0 findings; `deterministicPolicy` and `semanticLeakage` reported `NOT_CHECKED` |
+| `evaluation/validate-contracts.mjs` | 29 tasks, 235 files scanned, 0 findings |
+| `evaluation/run-abi-pilots.mjs` | 0 failures |
+
+## Repair #2 checkpoints
+
+| Commit | Checkpoint |
+| --- | --- |
+| `d97f24a` | Enforce independent production verification |
+| `4ee4676` | Strengthen behavioral observation and generalization |
+| `a3301a9` | Redesign Band 3 for real orientation difficulty |
+| `fd1901d` | Unify metrics and validation evidence |
+| `5efdb61` | Second adversarial and false-fail round |
+| *next* | Final repair validation/documentation record (this section) |
+
+No Native or MAF frontier participant, paid benchmark model, or performance comparison was run as
+part of this repair. Two audits have now found this suite unfit to freeze; nothing here should be
+read as evidence that a third will not.
+
+`INDEPENDENT_REAUDIT_REQUIRED: YES`
+`FRONTIER_MODELS_EXECUTED: NO`
