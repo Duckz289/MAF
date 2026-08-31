@@ -1,0 +1,159 @@
+{
+  "source": "independent audit of snapshot bb3265275cd1291e84807c7c453d9bec72229884",
+  "corpora": {
+    "known-false-pass": {
+      "expectedStatus": "FAIL",
+      "note": "Reported by the independent audit as accepted despite violating the public contract. A PASS here is a grader defect."
+    },
+    "known-false-fail": {
+      "expectedStatus": "PASS",
+      "note": "Reported by the independent audit as rejected despite satisfying the public contract. A FAIL here means the grader encodes a hidden requirement."
+    },
+    "fresh-false-pass": {
+      "expectedStatus": "FAIL",
+      "note": "Contract-derived attacks authored during the repair, not copied from the audit."
+    },
+    "fresh-false-fail": {
+      "expectedStatus": "PASS",
+      "note": "Structurally different correct implementations authored during the repair."
+    }
+  },
+  "cases": [
+    {
+      "corpus": "known-false-pass",
+      "id": "path-boundary-leading-dotdot-only",
+      "phase": "phase-b",
+      "taskId": "report-output-path-boundary",
+      "contract": "Reject traversal, sibling-prefix tricks, and every other path that resolves outside outDir with RangeError.",
+      "violation": "Only a leading parent segment is rejected. Nested traversal such as sub/../../PWNED.txt still resolves outside outDir and is written."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "inventory-save-then-restore",
+      "phase": "phase-b",
+      "taskId": "inventory-orientation-task",
+      "contract": "Validation must happen before saveItem, so a rejected adjustment leaves the stored item unchanged.",
+      "violation": "Persists the adjusted item through saveItem, validates afterwards, and restores the previous record on rejection."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "patch-mutate-then-restore",
+      "phase": "phase-c",
+      "taskId": "b2-partial-validation-mutation",
+      "contract": "A missing patch, missing/non-string status, or any other status must throw without changing any property of record.",
+      "violation": "Writes patch.status onto the record before validating it and restores a snapshot on rejection."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "refund-publish-then-rollback",
+      "phase": "phase-c",
+      "taskId": "b2-order-refund-terminal-leak",
+      "contract": "processRefund may set an order to REFUNDED only after the ledger call succeeds.",
+      "violation": "Publishes the REFUNDED terminal state before invoking the ledger and rolls back when the ledger rejects."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "cache-invalidate-only-user-one",
+      "phase": "phase-b",
+      "taskId": "stale-cache-invalidation-bug",
+      "contract": "A successful update must ensure every later read for that user observes the update.",
+      "violation": "Invalidates the cache only when userId === 1; every other user keeps serving a stale cached profile."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "config-special-case-single-key",
+      "phase": "phase-c",
+      "taskId": "notification-settings-regression",
+      "contract": "Restore request-level configuration precedence without changing the default configuration.",
+      "violation": "Restores precedence for notificationDigestBatchSize alone; every other request-level override is still overwritten by the default configuration."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "projection-drop-every-second-write",
+      "phase": "phase-c",
+      "taskId": "task-update-duplication",
+      "contract": "Remove the duplicate effect without suppressing valid later assignments; each transition publishes exactly one observable update.",
+      "violation": "Leaves the duplicate emit in place and discards every second projection write, so three distinct assignment transitions record only two updates."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "completion-synthesized-on-read",
+      "phase": "phase-c",
+      "taskId": "completion-state-regression",
+      "contract": "A successful completion must atomically persist status COMPLETED and a non-null completedAt.",
+      "violation": "Records completion in a read-time overlay instead of persisting it; the stored record and taskRepository.all() remain OPEN."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "pagination-accepts-stale-cursor",
+      "phase": "phase-b",
+      "taskId": "pagination-cursor-feature",
+      "contract": "Reject malformed/stale cursors with RangeError.",
+      "violation": "Rejects only syntactically malformed cursors; a stale cursor whose anchor item no longer exists silently restarts at the first page."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "webhook-408-425-terminal",
+      "phase": "phase-b",
+      "taskId": "webhook-retry-terminal-state",
+      "contract": "Retry 408, 425, 429, and 5xx responses up to five total attempts.",
+      "violation": "Classifies 408 and 425 as terminal and rejects them after a single attempt."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "clamp-unvalidated-bounds",
+      "phase": "phase-b",
+      "taskId": "clamp-number-util",
+      "contract": "Convert all three arguments with Number(...) and reject non-finite converted values with TypeError.",
+      "violation": "Validates only the converted value; non-finite converted bounds fall through and the function returns NaN."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "migration-temporary-input-mutation",
+      "phase": "phase-c",
+      "taskId": "b2-record-shape-migration-loss",
+      "contract": "It must not mutate the input.",
+      "violation": "Writes schemaVersion onto the caller's record, spreads it, then deletes the field again."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "bulk-archive-phantom-not-found-record",
+      "phase": "phase-c",
+      "taskId": "b2-bulk-op-tenant-bypass",
+      "contract": "A missing or foreign item must not be mutated.",
+      "violation": "Seeds a phantom store record under the caller's own tenant for every unknown id."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "reminder-unvalidated-now",
+      "phase": "phase-b",
+      "taskId": "past-due-reminder-handling",
+      "contract": "Require a non-empty string task ID and finite numeric timestamps, throwing TypeError otherwise.",
+      "violation": "Validates remindAt but never now, so a non-finite now is accepted and silently hides every due reminder."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "off-removes-every-listener",
+      "phase": "phase-b",
+      "taskId": "event-emitter-listener-leak",
+      "contract": "off(eventName, listener) must be available and stopping subscribers must not remove unrelated listeners.",
+      "violation": "off drops the entire listener group for the event, removing unrelated subscribers."
+    },
+    {
+      "corpus": "known-false-fail",
+      "id": "inventory-repository-quantity-invariant",
+      "phase": "phase-b",
+      "taskId": "inventory-orientation-task",
+      "contract": "Reject any adjustment whose resulting quantity is negative or non-integer; reuse the repository's quantity invariant where practical. No exception subclass is specified.",
+      "satisfies": "Validates before saveItem by delegating to the repository invariant assertValidQuantity, which reports a fractional result as RangeError."
+    },
+    {
+      "corpus": "known-false-fail",
+      "id": "aggregate-range-error-rejection",
+      "phase": "phase-c",
+      "taskId": "b2-derived-aggregate-consistency",
+      "contract": "Require line.amount to be a finite number and reject invalid input without mutating the original state. No exception subclass is specified.",
+      "satisfies": "Rejects a non-finite amount before building the new state and reports the out-of-domain value as RangeError."
+    }
+  ]
+}
