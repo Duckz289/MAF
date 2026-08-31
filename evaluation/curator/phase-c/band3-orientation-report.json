@@ -2,21 +2,21 @@
   "measuredBy": "evaluation/lib/orientation.mjs",
   "measurementBasis": "static ESM import graph of the public repository, walked from the declared entrypoint",
   "thresholds": {
-    "minReachableModules": 8,
-    "minOwnerPathHops": 3,
+    "searchCollapseFiles": 3,
+    "minInvestigationDepth": 3,
     "minDecisionPoints": 2,
+    "minCredibleDecoys": 2,
     "minReachableFraction": 0.35,
-    "minPromptIdentifierFiles": 3,
-    "minReachableDecoys": 3
+    "minReachableModules": 8
   },
   "classificationCounts": {
-    "CONTEXT_TEST_STRONG": 5,
-    "CONTEXT_TEST_WEAK": 0,
+    "CONTEXT_TEST_STRONG": 3,
+    "CONTEXT_TEST_WEAK": 2,
     "NOT_A_CONTEXT_TEST": 0
   },
-  "minimumOwnerPathHops": 4,
-  "minimumDecisionPoints": 3,
-  "minimumSearchDiscrimination": 3,
+  "minimumInvestigationDepth": 2,
+  "minimumDecisionPoints": 2,
+  "tasksWithACollapsingSearch": 0,
   "anyEntrypointImportsOwner": false,
   "tasks": [
     {
@@ -25,84 +25,216 @@
       "disqualifying": [],
       "weakening": [],
       "evidence": {
-        "totalModules": 26,
-        "reachableModules": 26,
+        "totalModules": 29,
+        "reachableModules": 29,
         "reachableFraction": 1,
-        "unreachableModules": 0,
         "entrypoint": "bin/demo.mjs",
-        "defectOwner": "src/settings/settings-resolver.mjs",
+        "defectOwner": "src/config/layer-merge.mjs",
         "ownerReachable": true,
-        "shortestOwnerPath": [
-          "bin/demo.mjs",
-          "src/app/console.mjs",
-          "src/workflows/escalation-policy.mjs",
-          "src/support/escalation-window.mjs",
-          "src/settings/settings-resolver.mjs"
+        "symptomTerms": [
+          "digest",
+          "Digest",
+          "batch",
+          "Batch",
+          "deliveries",
+          "delivery",
+          "settings",
+          "setting",
+          "override",
+          "overrides",
+          "default",
+          "defaults",
+          "precedence"
         ],
-        "shortestOwnerPathHops": 4,
-        "decisionPoints": 3,
-        "entrypointImportsOwner": false,
-        "promptIdentifiers": [
-          {
-            "identifier": "sendDigest",
-            "files": 2,
-            "ownerAmong": false
-          },
-          {
-            "identifier": "ticketDigestBatchSize",
-            "files": 4,
-            "ownerAmong": false
-          },
-          {
-            "identifier": "runEscalationSweep",
-            "files": 2,
-            "ownerAmong": false
-          },
-          {
-            "identifier": "escalationAfterMinutes",
-            "files": 3,
-            "ownerAmong": false
-          },
-          {
-            "identifier": "settingValue",
-            "files": 3,
-            "ownerAmong": true
-          }
-        ],
-        "searchDiscrimination": 3,
+        "importGraph": {
+          "shortestOwnerPath": [
+            "bin/demo.mjs",
+            "src/app/console.mjs",
+            "src/workflows/escalation-policy.mjs",
+            "src/support/escalation-window.mjs",
+            "src/settings/settings-resolver.mjs",
+            "src/config/resolution-policy.mjs",
+            "src/config/scope-chain.mjs",
+            "src/config/layer-merge.mjs"
+          ],
+          "shortestOwnerPathHops": 7,
+          "entrypointImportsOwner": false,
+          "orphanModules": []
+        },
+        "search": {
+          "termsTried": 9,
+          "searches": [
+            {
+              "term": "escalationAfterMinutes",
+              "files": 3,
+              "ownerAmong": false,
+              "matched": [
+                "src/config/baseline-values.mjs",
+                "src/settings/setting-keys.mjs",
+                "src/support/escalation-window.mjs"
+              ]
+            },
+            {
+              "term": "node bin/demo.mjs",
+              "files": 0,
+              "ownerAmong": false,
+              "matched": []
+            },
+            {
+              "term": "runEscalationSweep",
+              "files": 2,
+              "ownerAmong": false,
+              "matched": ["src/app/console.mjs", "src/workflows/escalation-policy.mjs"]
+            },
+            {
+              "term": "runEscalationSweep(settings)",
+              "files": 0,
+              "ownerAmong": false,
+              "matched": []
+            },
+            {
+              "term": "sendDigest",
+              "files": 2,
+              "ownerAmong": false,
+              "matched": ["src/app/console.mjs", "src/workflows/daily-digest.mjs"]
+            },
+            {
+              "term": "sendDigest(agent, subjects, settings)",
+              "files": 0,
+              "ownerAmong": false,
+              "matched": []
+            },
+            {
+              "term": "settingValue",
+              "files": 3,
+              "ownerAmong": false,
+              "matched": [
+                "src/delivery/batch-planner.mjs",
+                "src/settings/settings-resolver.mjs",
+                "src/support/escalation-window.mjs"
+              ]
+            },
+            {
+              "term": "settingValue(key, overrides)",
+              "files": 0,
+              "ownerAmong": false,
+              "matched": []
+            },
+            {
+              "term": "ticketDigestBatchSize",
+              "files": 4,
+              "ownerAmong": false,
+              "matched": [
+                "src/app/console.mjs",
+                "src/config/baseline-values.mjs",
+                "src/delivery/batch-planner.mjs",
+                "src/settings/setting-keys.mjs"
+              ]
+            }
+          ],
+          "collapsingSearches": [],
+          "minimumFilesForAnOwnerRevealingSearch": null
+        },
+        "investigation": {
+          "hypothesisBreadth": 11,
+          "ownerSurfacedBySymptomVocabulary": false,
+          "investigationDepth": 3,
+          "steps": [
+            {
+              "module": "bin/demo.mjs",
+              "next": "src/app/console.mjs",
+              "neighbours": 1,
+              "symptomPlausibleNeighbours": 1,
+              "alternatives": []
+            },
+            {
+              "module": "src/app/console.mjs",
+              "next": "src/workflows/escalation-policy.mjs",
+              "neighbours": 4,
+              "symptomPlausibleNeighbours": 3,
+              "alternatives": ["src/workflows/daily-digest.mjs", "src/workflows/audit-sweep.mjs"]
+            },
+            {
+              "module": "src/workflows/escalation-policy.mjs",
+              "next": "src/support/escalation-window.mjs",
+              "neighbours": 3,
+              "symptomPlausibleNeighbours": 1,
+              "alternatives": []
+            },
+            {
+              "module": "src/support/escalation-window.mjs",
+              "next": "src/settings/settings-resolver.mjs",
+              "neighbours": 2,
+              "symptomPlausibleNeighbours": 2,
+              "alternatives": ["src/settings/setting-keys.mjs"]
+            },
+            {
+              "module": "src/settings/settings-resolver.mjs",
+              "next": "src/config/resolution-policy.mjs",
+              "neighbours": 1,
+              "symptomPlausibleNeighbours": 0,
+              "alternatives": []
+            },
+            {
+              "module": "src/config/resolution-policy.mjs",
+              "next": "src/config/scope-chain.mjs",
+              "neighbours": 1,
+              "symptomPlausibleNeighbours": 0,
+              "alternatives": []
+            },
+            {
+              "module": "src/config/scope-chain.mjs",
+              "next": "src/config/layer-merge.mjs",
+              "neighbours": 2,
+              "symptomPlausibleNeighbours": 0,
+              "alternatives": []
+            }
+          ],
+          "decisionPoints": 2
+        },
         "decoys": [
+          {
+            "module": "src/config/resolution-policy.mjs",
+            "exists": true,
+            "reachable": true,
+            "symptomPlausible": false,
+            "onOwnerPath": true,
+            "importedBy": 1
+          },
+          {
+            "module": "src/config/scope-chain.mjs",
+            "exists": true,
+            "reachable": true,
+            "symptomPlausible": false,
+            "onOwnerPath": true,
+            "importedBy": 1
+          },
+          {
+            "module": "src/delivery/batch-planner.mjs",
+            "exists": true,
+            "reachable": true,
+            "symptomPlausible": true,
+            "onOwnerPath": false,
+            "importedBy": 1
+          },
           {
             "module": "src/delivery/channel-adapters.mjs",
             "exists": true,
             "reachable": true,
-            "importedBy": 1,
-            "onOwnerPath": false
+            "symptomPlausible": false,
+            "onOwnerPath": false,
+            "importedBy": 1
           },
           {
             "module": "src/render/digest-template.mjs",
             "exists": true,
             "reachable": true,
-            "importedBy": 1,
-            "onOwnerPath": false
-          },
-          {
-            "module": "src/directory/agent-directory.mjs",
-            "exists": true,
-            "reachable": true,
-            "importedBy": 2,
-            "onOwnerPath": false
-          },
-          {
-            "module": "src/util/ordering.mjs",
-            "exists": true,
-            "reachable": true,
-            "importedBy": 1,
-            "onOwnerPath": false
+            "symptomPlausible": true,
+            "onOwnerPath": false,
+            "importedBy": 1
           }
         ],
-        "reachableDecoys": 4,
-        "decoysOnOwnerPath": [],
-        "orphanModules": []
+        "credibleDecoys": 2
       }
     },
     {
@@ -111,85 +243,225 @@
       "disqualifying": [],
       "weakening": [],
       "evidence": {
-        "totalModules": 26,
-        "reachableModules": 26,
+        "totalModules": 30,
+        "reachableModules": 30,
         "reachableFraction": 1,
-        "unreachableModules": 0,
         "entrypoint": "bin/demo.mjs",
-        "defectOwner": "src/pricing/adjustment-rules.mjs",
+        "defectOwner": "src/pricing/measurement-basis.mjs",
         "ownerReachable": true,
-        "shortestOwnerPath": [
-          "bin/demo.mjs",
-          "src/app/terminal.mjs",
-          "src/quoting/quote-service.mjs",
-          "src/pricing/charge-builder.mjs",
-          "src/pricing/adjustment-engine.mjs",
-          "src/pricing/adjustment-rules.mjs"
+        "symptomTerms": [
+          "quote",
+          "Quote",
+          "adjustment",
+          "Adjustment",
+          "tax",
+          "Tax",
+          "PERCENT",
+          "FLAT",
+          "total",
+          "round",
+          "rounded"
         ],
-        "shortestOwnerPathHops": 5,
-        "decisionPoints": 4,
-        "entrypointImportsOwner": false,
-        "promptIdentifiers": [
-          {
-            "identifier": "PERCENT",
-            "files": 4,
-            "ownerAmong": false
-          },
-          {
-            "identifier": "FLAT",
-            "files": 5,
-            "ownerAmong": true
-          },
-          {
-            "identifier": "quoteShipment",
-            "files": 2,
-            "ownerAmong": false
-          },
-          {
-            "identifier": "basePrice",
-            "files": 5,
-            "ownerAmong": true
-          },
-          {
-            "identifier": "taxRate",
-            "files": 6,
-            "ownerAmong": true
-          }
-        ],
-        "searchDiscrimination": 5,
+        "importGraph": {
+          "shortestOwnerPath": [
+            "bin/demo.mjs",
+            "src/app/terminal.mjs",
+            "src/quoting/quote-service.mjs",
+            "src/pricing/charge-builder.mjs",
+            "src/pricing/adjustment-engine.mjs",
+            "src/pricing/adjustment-rules.mjs",
+            "src/pricing/reduction-plan.mjs",
+            "src/pricing/proportion-basis.mjs",
+            "src/pricing/measurement-basis.mjs"
+          ],
+          "shortestOwnerPathHops": 8,
+          "entrypointImportsOwner": false,
+          "orphanModules": []
+        },
+        "search": {
+          "termsTried": 7,
+          "searches": [
+            {
+              "term": "FLAT",
+              "files": 5,
+              "ownerAmong": false,
+              "matched": [
+                "src/app/terminal.mjs",
+                "src/pricing/adjustment-kinds.mjs",
+                "src/pricing/adjustment-rules.mjs",
+                "src/promotions/promo-codes.mjs",
+                "src/promotions/promo-registry.mjs"
+              ]
+            },
+            {
+              "term": "PERCENT",
+              "files": 5,
+              "ownerAmong": false,
+              "matched": [
+                "src/app/terminal.mjs",
+                "src/pricing/adjustment-kinds.mjs",
+                "src/pricing/adjustment-rules.mjs",
+                "src/promotions/promo-registry.mjs",
+                "src/quoting/quote-request.mjs"
+              ]
+            },
+            {
+              "term": "basePrice",
+              "files": 5,
+              "ownerAmong": false,
+              "matched": [
+                "src/pricing/adjustment-engine.mjs",
+                "src/pricing/adjustment-rules.mjs",
+                "src/pricing/charge-builder.mjs",
+                "src/quoting/quote-request.mjs",
+                "src/quoting/quote-service.mjs"
+              ]
+            },
+            {
+              "term": "node bin/demo.mjs",
+              "files": 0,
+              "ownerAmong": false,
+              "matched": []
+            },
+            {
+              "term": "quoteShipment",
+              "files": 2,
+              "ownerAmong": false,
+              "matched": ["src/app/terminal.mjs", "src/quoting/quote-service.mjs"]
+            },
+            {
+              "term": "quoteShipment(basePrice, adjustment, taxRate)",
+              "files": 1,
+              "ownerAmong": false,
+              "matched": ["src/quoting/quote-service.mjs"]
+            },
+            {
+              "term": "taxRate",
+              "files": 6,
+              "ownerAmong": false,
+              "matched": [
+                "src/pricing/adjustment-engine.mjs",
+                "src/pricing/adjustment-rules.mjs",
+                "src/pricing/charge-builder.mjs",
+                "src/pricing/tax-schedule.mjs",
+                "src/quoting/quote-request.mjs",
+                "src/quoting/quote-service.mjs"
+              ]
+            }
+          ],
+          "collapsingSearches": [],
+          "minimumFilesForAnOwnerRevealingSearch": null
+        },
+        "investigation": {
+          "hypothesisBreadth": 13,
+          "ownerSurfacedBySymptomVocabulary": false,
+          "investigationDepth": 3,
+          "steps": [
+            {
+              "module": "bin/demo.mjs",
+              "next": "src/app/terminal.mjs",
+              "neighbours": 1,
+              "symptomPlausibleNeighbours": 1,
+              "alternatives": []
+            },
+            {
+              "module": "src/app/terminal.mjs",
+              "next": "src/quoting/quote-service.mjs",
+              "neighbours": 5,
+              "symptomPlausibleNeighbours": 3,
+              "alternatives": [
+                "src/promotions/promo-codes.mjs",
+                "src/invoicing/invoice-builder.mjs"
+              ]
+            },
+            {
+              "module": "src/quoting/quote-service.mjs",
+              "next": "src/pricing/charge-builder.mjs",
+              "neighbours": 4,
+              "symptomPlausibleNeighbours": 2,
+              "alternatives": ["src/quoting/quote-request.mjs"]
+            },
+            {
+              "module": "src/pricing/charge-builder.mjs",
+              "next": "src/pricing/adjustment-engine.mjs",
+              "neighbours": 3,
+              "symptomPlausibleNeighbours": 3,
+              "alternatives": ["src/pricing/money.mjs", "src/catalog/lane-catalog.mjs"]
+            },
+            {
+              "module": "src/pricing/adjustment-engine.mjs",
+              "next": "src/pricing/adjustment-rules.mjs",
+              "neighbours": 3,
+              "symptomPlausibleNeighbours": 2,
+              "alternatives": ["src/pricing/rounding.mjs"]
+            },
+            {
+              "module": "src/pricing/adjustment-rules.mjs",
+              "next": "src/pricing/reduction-plan.mjs",
+              "neighbours": 2,
+              "symptomPlausibleNeighbours": 1,
+              "alternatives": ["src/pricing/adjustment-kinds.mjs"]
+            },
+            {
+              "module": "src/pricing/reduction-plan.mjs",
+              "next": "src/pricing/proportion-basis.mjs",
+              "neighbours": 1,
+              "symptomPlausibleNeighbours": 0,
+              "alternatives": []
+            },
+            {
+              "module": "src/pricing/proportion-basis.mjs",
+              "next": "src/pricing/measurement-basis.mjs",
+              "neighbours": 2,
+              "symptomPlausibleNeighbours": 0,
+              "alternatives": []
+            }
+          ],
+          "decisionPoints": 4
+        },
         "decoys": [
+          {
+            "module": "src/pricing/reduction-plan.mjs",
+            "exists": true,
+            "reachable": true,
+            "symptomPlausible": false,
+            "onOwnerPath": true,
+            "importedBy": 1
+          },
+          {
+            "module": "src/pricing/proportion-basis.mjs",
+            "exists": true,
+            "reachable": true,
+            "symptomPlausible": false,
+            "onOwnerPath": true,
+            "importedBy": 1
+          },
+          {
+            "module": "src/pricing/adjustment-engine.mjs",
+            "exists": true,
+            "reachable": true,
+            "symptomPlausible": true,
+            "onOwnerPath": true,
+            "importedBy": 1
+          },
           {
             "module": "src/promotions/promo-codes.mjs",
             "exists": true,
             "reachable": true,
-            "importedBy": 1,
-            "onOwnerPath": false
-          },
-          {
-            "module": "src/manifest/shipment-manifest.mjs",
-            "exists": true,
-            "reachable": true,
-            "importedBy": 1,
-            "onOwnerPath": false
-          },
-          {
-            "module": "src/invoicing/invoice-builder.mjs",
-            "exists": true,
-            "reachable": true,
-            "importedBy": 1,
-            "onOwnerPath": false
+            "symptomPlausible": true,
+            "onOwnerPath": false,
+            "importedBy": 1
           },
           {
             "module": "src/pricing/rounding.mjs",
             "exists": true,
             "reachable": true,
-            "importedBy": 2,
-            "onOwnerPath": false
+            "symptomPlausible": true,
+            "onOwnerPath": false,
+            "importedBy": 2
           }
         ],
-        "reachableDecoys": 4,
-        "decoysOnOwnerPath": [],
-        "orphanModules": []
+        "credibleDecoys": 2
       }
     },
     {
@@ -198,238 +470,650 @@
       "disqualifying": [],
       "weakening": [],
       "evidence": {
-        "totalModules": 22,
-        "reachableModules": 22,
+        "totalModules": 27,
+        "reachableModules": 27,
         "reachableFraction": 1,
-        "unreachableModules": 0,
         "entrypoint": "bin/demo.mjs",
-        "defectOwner": "src/pricing/price-lookup.mjs",
+        "defectOwner": "src/catalog/lookup-strategy.mjs",
         "ownerReachable": true,
-        "shortestOwnerPath": [
-          "bin/demo.mjs",
-          "src/app/front-desk.mjs",
-          "src/app/desk-operations.mjs",
-          "src/enrolment/enrol-member.mjs",
-          "src/enrolment/enrolment-service.mjs",
-          "src/pricing/rate-quote.mjs",
-          "src/pricing/price-lookup.mjs"
+        "symptomTerms": [
+          "membership",
+          "Membership",
+          "price",
+          "Price",
+          "plan",
+          "Plan",
+          "enrol",
+          "Enrol",
+          "rate",
+          "Rate",
+          "capture",
+          "captured"
         ],
-        "shortestOwnerPathHops": 6,
-        "decisionPoints": 5,
-        "entrypointImportsOwner": false,
-        "promptIdentifiers": [
-          {
-            "identifier": "rateAtEnrolment",
-            "files": 3,
-            "ownerAmong": false
-          },
-          {
-            "identifier": "memberId",
-            "files": 2,
-            "ownerAmong": false
-          },
-          {
-            "identifier": "planId",
-            "files": 10,
-            "ownerAmong": true
-          }
-        ],
-        "searchDiscrimination": 10,
+        "importGraph": {
+          "shortestOwnerPath": [
+            "bin/demo.mjs",
+            "src/app/front-desk.mjs",
+            "src/app/desk-operations.mjs",
+            "src/enrolment/enrol-member.mjs",
+            "src/enrolment/enrolment-service.mjs",
+            "src/pricing/rate-quote.mjs",
+            "src/pricing/price-lookup.mjs",
+            "src/catalog/register-chain.mjs",
+            "src/catalog/store-selection.mjs",
+            "src/catalog/lookup-strategy.mjs"
+          ],
+          "shortestOwnerPathHops": 9,
+          "entrypointImportsOwner": false,
+          "orphanModules": []
+        },
+        "search": {
+          "termsTried": 5,
+          "searches": [
+            {
+              "term": "memberId",
+              "files": 2,
+              "ownerAmong": false,
+              "matched": [
+                "src/enrolment/membership-record.mjs",
+                "src/statements/statement-builder.mjs"
+              ]
+            },
+            {
+              "term": "node bin/demo.mjs",
+              "files": 0,
+              "ownerAmong": false,
+              "matched": []
+            },
+            {
+              "term": "planId",
+              "files": 10,
+              "ownerAmong": false,
+              "matched": [
+                "src/app/desk-operations.mjs",
+                "src/enrolment/enrol-member.mjs",
+                "src/enrolment/enrolment-service.mjs",
+                "src/enrolment/membership-ledger.mjs",
+                "src/enrolment/membership-record.mjs",
+                "src/plans/plan-catalog.mjs"
+              ]
+            },
+            {
+              "term": "rateAtEnrolment",
+              "files": 3,
+              "ownerAmong": false,
+              "matched": [
+                "src/app/front-desk.mjs",
+                "src/enrolment/membership-record.mjs",
+                "src/statements/statement-lines.mjs"
+              ]
+            },
+            {
+              "term": "standard",
+              "files": 3,
+              "ownerAmong": false,
+              "matched": [
+                "src/app/front-desk.mjs",
+                "src/plans/plan-catalog.mjs",
+                "src/pricing/published-rates.mjs"
+              ]
+            }
+          ],
+          "collapsingSearches": [],
+          "minimumFilesForAnOwnerRevealingSearch": null
+        },
+        "investigation": {
+          "hypothesisBreadth": 12,
+          "ownerSurfacedBySymptomVocabulary": false,
+          "investigationDepth": 3,
+          "steps": [
+            {
+              "module": "bin/demo.mjs",
+              "next": "src/app/front-desk.mjs",
+              "neighbours": 1,
+              "symptomPlausibleNeighbours": 1,
+              "alternatives": []
+            },
+            {
+              "module": "src/app/front-desk.mjs",
+              "next": "src/app/desk-operations.mjs",
+              "neighbours": 3,
+              "symptomPlausibleNeighbours": 2,
+              "alternatives": ["src/statements/statement-builder.mjs"]
+            },
+            {
+              "module": "src/app/desk-operations.mjs",
+              "next": "src/enrolment/enrol-member.mjs",
+              "neighbours": 4,
+              "symptomPlausibleNeighbours": 2,
+              "alternatives": ["src/pricing/price-book.mjs", "src/plans/plan-catalog.mjs"]
+            },
+            {
+              "module": "src/enrolment/enrol-member.mjs",
+              "next": "src/enrolment/enrolment-service.mjs",
+              "neighbours": 2,
+              "symptomPlausibleNeighbours": 1,
+              "alternatives": []
+            },
+            {
+              "module": "src/enrolment/enrolment-service.mjs",
+              "next": "src/pricing/rate-quote.mjs",
+              "neighbours": 4,
+              "symptomPlausibleNeighbours": 3,
+              "alternatives": ["src/enrolment/membership-ledger.mjs", "src/plans/plan-catalog.mjs"]
+            },
+            {
+              "module": "src/pricing/rate-quote.mjs",
+              "next": "src/pricing/price-lookup.mjs",
+              "neighbours": 2,
+              "symptomPlausibleNeighbours": 1,
+              "alternatives": []
+            },
+            {
+              "module": "src/pricing/price-lookup.mjs",
+              "next": "src/catalog/register-chain.mjs",
+              "neighbours": 2,
+              "symptomPlausibleNeighbours": 1,
+              "alternatives": ["src/plans/plan-catalog.mjs"]
+            },
+            {
+              "module": "src/catalog/register-chain.mjs",
+              "next": "src/catalog/store-selection.mjs",
+              "neighbours": 3,
+              "symptomPlausibleNeighbours": 1,
+              "alternatives": ["src/catalog/live-register.mjs"]
+            },
+            {
+              "module": "src/catalog/store-selection.mjs",
+              "next": "src/catalog/lookup-strategy.mjs",
+              "neighbours": 1,
+              "symptomPlausibleNeighbours": 0,
+              "alternatives": []
+            }
+          ],
+          "decisionPoints": 3
+        },
         "decoys": [
           {
-            "module": "src/roster/member-directory.mjs",
+            "module": "src/catalog/live-register.mjs",
             "exists": true,
             "reachable": true,
-            "importedBy": 2,
-            "onOwnerPath": false
+            "symptomPlausible": true,
+            "onOwnerPath": false,
+            "importedBy": 1
           },
           {
-            "module": "src/statements/statement-builder.mjs",
+            "module": "src/catalog/archived-register.mjs",
             "exists": true,
             "reachable": true,
-            "importedBy": 1,
-            "onOwnerPath": false
+            "symptomPlausible": false,
+            "onOwnerPath": false,
+            "importedBy": 1
+          },
+          {
+            "module": "src/pricing/price-book.mjs",
+            "exists": true,
+            "reachable": true,
+            "symptomPlausible": true,
+            "onOwnerPath": false,
+            "importedBy": 2
+          },
+          {
+            "module": "src/pricing/published-rates.mjs",
+            "exists": true,
+            "reachable": true,
+            "symptomPlausible": true,
+            "onOwnerPath": false,
+            "importedBy": 1
           },
           {
             "module": "src/statements/statement-lines.mjs",
             "exists": true,
             "reachable": true,
-            "importedBy": 1,
-            "onOwnerPath": false
-          },
-          {
-            "module": "src/access/entry-log.mjs",
-            "exists": true,
-            "reachable": true,
-            "importedBy": 1,
-            "onOwnerPath": false
+            "symptomPlausible": true,
+            "onOwnerPath": false,
+            "importedBy": 1
           }
         ],
-        "reachableDecoys": 4,
-        "decoysOnOwnerPath": [],
-        "orphanModules": []
+        "credibleDecoys": 4
       }
     },
     {
       "id": "task-update-duplication",
-      "classification": "CONTEXT_TEST_STRONG",
+      "classification": "CONTEXT_TEST_WEAK",
       "disqualifying": [],
-      "weakening": [],
+      "weakening": [
+        "only 2 hop(s) separate the nearest other symptom-bearing file from the owner (threshold 3)"
+      ],
       "evidence": {
-        "totalModules": 23,
-        "reachableModules": 23,
+        "totalModules": 27,
+        "reachableModules": 27,
         "reachableFraction": 1,
-        "unreachableModules": 0,
         "entrypoint": "bin/demo.mjs",
-        "defectOwner": "src/picking/pick-service.mjs",
+        "defectOwner": "src/events/delivery-plan.mjs",
         "ownerReachable": true,
-        "shortestOwnerPath": [
-          "bin/demo.mjs",
-          "src/app/warehouse-console.mjs",
-          "src/app/floor-operations.mjs",
-          "src/picking/assign-picker-command.mjs",
-          "src/picking/pick-service.mjs"
+        "symptomTerms": [
+          "assignment",
+          "assign",
+          "assigned",
+          "update",
+          "updates",
+          "picker",
+          "pickList",
+          "PICKER_ASSIGNED",
+          "publish",
+          "published",
+          "summary",
+          "transition"
         ],
-        "shortestOwnerPathHops": 4,
-        "decisionPoints": 3,
-        "entrypointImportsOwner": false,
-        "promptIdentifiers": [
-          {
-            "identifier": "assignPickerCommand",
-            "files": 2,
-            "ownerAmong": false
-          },
-          {
-            "identifier": "pickListId",
-            "files": 6,
-            "ownerAmong": true
-          },
-          {
-            "identifier": "pickerId",
-            "files": 10,
-            "ownerAmong": true
-          },
-          {
-            "identifier": "PICKER_ASSIGNED",
-            "files": 4,
-            "ownerAmong": true
-          }
-        ],
-        "searchDiscrimination": 4,
+        "importGraph": {
+          "shortestOwnerPath": [
+            "bin/demo.mjs",
+            "src/app/warehouse-console.mjs",
+            "src/app/floor-operations.mjs",
+            "src/picking/assign-picker-command.mjs",
+            "src/picking/pick-service.mjs",
+            "src/events/signal-relay.mjs",
+            "src/events/channel-registry.mjs",
+            "src/events/delivery-plan.mjs"
+          ],
+          "shortestOwnerPathHops": 7,
+          "entrypointImportsOwner": false,
+          "orphanModules": []
+        },
+        "search": {
+          "termsTried": 6,
+          "searches": [
+            {
+              "term": "PICKER_ASSIGNED",
+              "files": 3,
+              "ownerAmong": false,
+              "matched": [
+                "src/events/event-types.mjs",
+                "src/events/register-listeners.mjs",
+                "src/picking/pick-service.mjs"
+              ]
+            },
+            {
+              "term": "assignPickerCommand",
+              "files": 2,
+              "ownerAmong": false,
+              "matched": ["src/app/floor-operations.mjs", "src/picking/assign-picker-command.mjs"]
+            },
+            {
+              "term": "assignPickerCommand(pickListId, pickerId)",
+              "files": 1,
+              "ownerAmong": false,
+              "matched": ["src/picking/assign-picker-command.mjs"]
+            },
+            {
+              "term": "node bin/demo.mjs",
+              "files": 0,
+              "ownerAmong": false,
+              "matched": []
+            },
+            {
+              "term": "pickListId",
+              "files": 6,
+              "ownerAmong": false,
+              "matched": [
+                "src/listeners/pick-completed-listener.mjs",
+                "src/listeners/picker-assigned-listener.mjs",
+                "src/picking/assign-picker-command.mjs",
+                "src/picking/complete-pick-command.mjs",
+                "src/picking/pick-service.mjs",
+                "src/projections/floor-summary.mjs"
+              ]
+            },
+            {
+              "term": "pickerId",
+              "files": 9,
+              "ownerAmong": false,
+              "matched": [
+                "src/listeners/pick-completed-listener.mjs",
+                "src/listeners/picker-assigned-listener.mjs",
+                "src/picking/assign-picker-command.mjs",
+                "src/picking/pick-list-record.mjs",
+                "src/picking/pick-service.mjs",
+                "src/projections/floor-summary.mjs"
+              ]
+            }
+          ],
+          "collapsingSearches": [],
+          "minimumFilesForAnOwnerRevealingSearch": null
+        },
+        "investigation": {
+          "hypothesisBreadth": 11,
+          "ownerSurfacedBySymptomVocabulary": false,
+          "investigationDepth": 2,
+          "steps": [
+            {
+              "module": "bin/demo.mjs",
+              "next": "src/app/warehouse-console.mjs",
+              "neighbours": 1,
+              "symptomPlausibleNeighbours": 1,
+              "alternatives": []
+            },
+            {
+              "module": "src/app/warehouse-console.mjs",
+              "next": "src/app/floor-operations.mjs",
+              "neighbours": 2,
+              "symptomPlausibleNeighbours": 2,
+              "alternatives": ["src/reporting/shift-report.mjs"]
+            },
+            {
+              "module": "src/app/floor-operations.mjs",
+              "next": "src/picking/assign-picker-command.mjs",
+              "neighbours": 6,
+              "symptomPlausibleNeighbours": 3,
+              "alternatives": [
+                "src/picking/pick-list-store.mjs",
+                "src/staff/picker-directory.mjs",
+                "src/events/register-listeners.mjs"
+              ]
+            },
+            {
+              "module": "src/picking/assign-picker-command.mjs",
+              "next": "src/picking/pick-service.mjs",
+              "neighbours": 1,
+              "symptomPlausibleNeighbours": 1,
+              "alternatives": []
+            },
+            {
+              "module": "src/picking/pick-service.mjs",
+              "next": "src/events/signal-relay.mjs",
+              "neighbours": 4,
+              "symptomPlausibleNeighbours": 3,
+              "alternatives": ["src/picking/pick-list-store.mjs", "src/events/event-types.mjs"]
+            },
+            {
+              "module": "src/events/signal-relay.mjs",
+              "next": "src/events/channel-registry.mjs",
+              "neighbours": 2,
+              "symptomPlausibleNeighbours": 0,
+              "alternatives": []
+            },
+            {
+              "module": "src/events/channel-registry.mjs",
+              "next": "src/events/delivery-plan.mjs",
+              "neighbours": 3,
+              "symptomPlausibleNeighbours": 0,
+              "alternatives": []
+            }
+          ],
+          "decisionPoints": 3
+        },
         "decoys": [
           {
-            "module": "src/projections/shift-totals.mjs",
+            "module": "src/events/channel-registry.mjs",
             "exists": true,
             "reachable": true,
-            "importedBy": 2,
-            "onOwnerPath": false
+            "symptomPlausible": false,
+            "onOwnerPath": true,
+            "importedBy": 1
           },
           {
-            "module": "src/reporting/shift-report.mjs",
+            "module": "src/events/direct-routes.mjs",
             "exists": true,
             "reachable": true,
-            "importedBy": 1,
-            "onOwnerPath": false
+            "symptomPlausible": false,
+            "onOwnerPath": false,
+            "importedBy": 2
           },
           {
-            "module": "src/staff/picker-directory.mjs",
+            "module": "src/events/register-listeners.mjs",
             "exists": true,
             "reachable": true,
-            "importedBy": 2,
-            "onOwnerPath": false
+            "symptomPlausible": true,
+            "onOwnerPath": false,
+            "importedBy": 1
           },
           {
-            "module": "src/inventory/bin-locations.mjs",
+            "module": "src/projections/floor-summary.mjs",
             "exists": true,
             "reachable": true,
-            "importedBy": 1,
-            "onOwnerPath": false
+            "symptomPlausible": false,
+            "onOwnerPath": false,
+            "importedBy": 3
+          },
+          {
+            "module": "src/listeners/picker-assigned-listener.mjs",
+            "exists": true,
+            "reachable": true,
+            "symptomPlausible": true,
+            "onOwnerPath": false,
+            "importedBy": 1
           }
         ],
-        "reachableDecoys": 4,
-        "decoysOnOwnerPath": [],
-        "orphanModules": []
+        "credibleDecoys": 2
       }
     },
     {
       "id": "completion-state-regression",
-      "classification": "CONTEXT_TEST_STRONG",
+      "classification": "CONTEXT_TEST_WEAK",
       "disqualifying": [],
-      "weakening": [],
+      "weakening": [
+        "only 2 hop(s) separate the nearest other symptom-bearing file from the owner (threshold 3)"
+      ],
       "evidence": {
-        "totalModules": 23,
-        "reachableModules": 23,
+        "totalModules": 26,
+        "reachableModules": 26,
         "reachableFraction": 1,
-        "unreachableModules": 0,
         "entrypoint": "bin/demo.mjs",
-        "defectOwner": "src/workorders/work-order-service.mjs",
+        "defectOwner": "src/workorders/persistence-policy.mjs",
         "ownerReachable": true,
-        "shortestOwnerPath": [
-          "bin/demo.mjs",
-          "src/app/dispatch-console.mjs",
-          "src/app/dispatch-operations.mjs",
-          "src/workorders/complete-order-command.mjs",
-          "src/workorders/work-order-service.mjs"
+        "symptomTerms": [
+          "completion",
+          "complete",
+          "completed",
+          "COMPLETED",
+          "completedAt",
+          "order",
+          "orders",
+          "board",
+          "record",
+          "recorded",
+          "publish",
+          "update"
         ],
-        "shortestOwnerPathHops": 4,
-        "decisionPoints": 3,
-        "entrypointImportsOwner": false,
-        "promptIdentifiers": [
-          {
-            "identifier": "COMPLETED",
-            "files": 5,
-            "ownerAmong": false
-          },
-          {
-            "identifier": "completedAt",
-            "files": 2,
-            "ownerAmong": false
-          },
-          {
-            "identifier": "orderId",
-            "files": 5,
-            "ownerAmong": true
-          },
-          {
-            "identifier": "technicianId",
-            "files": 10,
-            "ownerAmong": true
-          }
-        ],
-        "searchDiscrimination": 5,
+        "importGraph": {
+          "shortestOwnerPath": [
+            "bin/demo.mjs",
+            "src/app/dispatch-console.mjs",
+            "src/app/dispatch-operations.mjs",
+            "src/workorders/complete-order-command.mjs",
+            "src/workorders/work-order-service.mjs",
+            "src/workorders/store-gateway.mjs",
+            "src/workorders/persistence-policy.mjs"
+          ],
+          "shortestOwnerPathHops": 6,
+          "entrypointImportsOwner": false,
+          "orphanModules": []
+        },
+        "search": {
+          "termsTried": 7,
+          "searches": [
+            {
+              "term": "COMPLETED",
+              "files": 6,
+              "ownerAmong": false,
+              "matched": [
+                "src/events/event-types.mjs",
+                "src/events/register-listeners.mjs",
+                "src/projections/completion-board.mjs",
+                "src/workorders/complete-order-command.mjs",
+                "src/workorders/entry-lifecycle.mjs",
+                "src/workorders/work-order-transitions.mjs"
+              ]
+            },
+            {
+              "term": "completedAt",
+              "files": 2,
+              "ownerAmong": false,
+              "matched": [
+                "src/workorders/work-order-record.mjs",
+                "src/workorders/work-order-transitions.mjs"
+              ]
+            },
+            {
+              "term": "node bin/demo.mjs",
+              "files": 0,
+              "ownerAmong": false,
+              "matched": []
+            },
+            {
+              "term": "orderId",
+              "files": 5,
+              "ownerAmong": false,
+              "matched": [
+                "src/listeners/order-completed-listener.mjs",
+                "src/projections/completion-board.mjs",
+                "src/workorders/assign-order-command.mjs",
+                "src/workorders/complete-order-command.mjs",
+                "src/workorders/work-order-service.mjs"
+              ]
+            },
+            {
+              "term": "region",
+              "files": 7,
+              "ownerAmong": false,
+              "matched": [
+                "src/app/dispatch-operations.mjs",
+                "src/listeners/order-completed-listener.mjs",
+                "src/scheduling/appointment-slots.mjs",
+                "src/scheduling/route-plan.mjs",
+                "src/workorders/complete-order-command.mjs",
+                "src/workorders/work-order-record.mjs"
+              ]
+            },
+            {
+              "term": "status: \"COMPLETED\"",
+              "files": 1,
+              "ownerAmong": false,
+              "matched": ["src/workorders/work-order-transitions.mjs"]
+            },
+            {
+              "term": "technicianId",
+              "files": 10,
+              "ownerAmong": false,
+              "matched": [
+                "src/listeners/order-assigned-listener.mjs",
+                "src/listeners/order-completed-listener.mjs",
+                "src/projections/completion-board.mjs",
+                "src/projections/technician-load.mjs",
+                "src/technicians/technician-directory.mjs",
+                "src/workorders/assign-order-command.mjs"
+              ]
+            }
+          ],
+          "collapsingSearches": [],
+          "minimumFilesForAnOwnerRevealingSearch": null
+        },
+        "investigation": {
+          "hypothesisBreadth": 14,
+          "ownerSurfacedBySymptomVocabulary": false,
+          "investigationDepth": 2,
+          "steps": [
+            {
+              "module": "bin/demo.mjs",
+              "next": "src/app/dispatch-console.mjs",
+              "neighbours": 1,
+              "symptomPlausibleNeighbours": 1,
+              "alternatives": []
+            },
+            {
+              "module": "src/app/dispatch-console.mjs",
+              "next": "src/app/dispatch-operations.mjs",
+              "neighbours": 3,
+              "symptomPlausibleNeighbours": 3,
+              "alternatives": [
+                "src/projections/completion-board.mjs",
+                "src/projections/technician-load.mjs"
+              ]
+            },
+            {
+              "module": "src/app/dispatch-operations.mjs",
+              "next": "src/workorders/complete-order-command.mjs",
+              "neighbours": 6,
+              "symptomPlausibleNeighbours": 6,
+              "alternatives": [
+                "src/workorders/assign-order-command.mjs",
+                "src/workorders/work-order-repository.mjs",
+                "src/technicians/technician-directory.mjs",
+                "src/events/register-listeners.mjs",
+                "src/projections/completion-board.mjs"
+              ]
+            },
+            {
+              "module": "src/workorders/complete-order-command.mjs",
+              "next": "src/workorders/work-order-service.mjs",
+              "neighbours": 3,
+              "symptomPlausibleNeighbours": 1,
+              "alternatives": []
+            },
+            {
+              "module": "src/workorders/work-order-service.mjs",
+              "next": "src/workorders/store-gateway.mjs",
+              "neighbours": 3,
+              "symptomPlausibleNeighbours": 2,
+              "alternatives": [
+                "src/workorders/work-order-repository.mjs",
+                "src/workorders/work-order-transitions.mjs"
+              ]
+            },
+            {
+              "module": "src/workorders/store-gateway.mjs",
+              "next": "src/workorders/persistence-policy.mjs",
+              "neighbours": 1,
+              "symptomPlausibleNeighbours": 0,
+              "alternatives": []
+            }
+          ],
+          "decisionPoints": 3
+        },
         "decoys": [
           {
-            "module": "src/projections/technician-load.mjs",
+            "module": "src/workorders/entry-lifecycle.mjs",
             "exists": true,
             "reachable": true,
-            "importedBy": 2,
-            "onOwnerPath": false
+            "symptomPlausible": true,
+            "onOwnerPath": false,
+            "importedBy": 1
           },
           {
-            "module": "src/scheduling/appointment-slots.mjs",
+            "module": "src/workorders/work-order-transitions.mjs",
             "exists": true,
             "reachable": true,
-            "importedBy": 1,
-            "onOwnerPath": false
+            "symptomPlausible": true,
+            "onOwnerPath": false,
+            "importedBy": 1
           },
           {
-            "module": "src/scheduling/route-plan.mjs",
+            "module": "src/workorders/work-order-repository.mjs",
             "exists": true,
             "reachable": true,
-            "importedBy": 1,
-            "onOwnerPath": false
+            "symptomPlausible": true,
+            "onOwnerPath": false,
+            "importedBy": 3
           },
           {
-            "module": "src/technicians/technician-directory.mjs",
+            "module": "src/projections/completion-board.mjs",
             "exists": true,
             "reachable": true,
-            "importedBy": 1,
-            "onOwnerPath": false
+            "symptomPlausible": true,
+            "onOwnerPath": false,
+            "importedBy": 3
+          },
+          {
+            "module": "src/listeners/order-completed-listener.mjs",
+            "exists": true,
+            "reachable": true,
+            "symptomPlausible": true,
+            "onOwnerPath": false,
+            "importedBy": 1
           }
         ],
-        "reachableDecoys": 4,
-        "decoysOnOwnerPath": [],
-        "orphanModules": []
+        "credibleDecoys": 5
       }
     }
   ],

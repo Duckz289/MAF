@@ -1,5 +1,7 @@
+import { grossOf } from "./gross-basis.mjs";
+
 export function taxedAmount(amount, taxRate) {
-  return amount * (1 + taxRate);
+  return grossOf(amount, taxRate);
 }
 
 export function taxComponent(amount, taxRate) {

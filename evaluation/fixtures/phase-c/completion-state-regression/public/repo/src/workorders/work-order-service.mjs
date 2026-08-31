@@ -1,22 +1,19 @@
 import { workOrderRepository } from "./work-order-repository.mjs";
 import { markAssigned, markCompleted, markReopened } from "./work-order-transitions.mjs";
+import { save } from "./store-gateway.mjs";
 
 // Domain service for work orders. Each operation resolves the order, applies a transition, and
-// hands back the order the caller should use.
+// hands the result to the store gateway.
 export function assignOrder(orderId, technicianId) {
-  return persist(markAssigned(requireOrder(orderId), technicianId));
+  return save(markAssigned(requireOrder(orderId), technicianId), workOrderRepository);
 }
 
 export function completeOrder(orderId) {
-  return markCompleted(requireOrder(orderId));
+  return save(markCompleted(requireOrder(orderId)), workOrderRepository);
 }
 
 export function reopenOrder(orderId) {
-  return persist(markReopened(requireOrder(orderId)));
-}
-
-function persist(order) {
-  return workOrderRepository.save(order);
+  return save(markReopened(requireOrder(orderId)), workOrderRepository);
 }
 
 function requireOrder(orderId) {

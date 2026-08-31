@@ -1,42 +1,55 @@
 // Measured orientation analysis for Band 3 context tasks.
 //
-// The independent audit of snapshot bb326527 found the previous Band 3 audit circular: it read a
-// `classification` field out of a JSON file, asserted that field equalled CONTEXT_TEST_STRONG, and
-// then printed `{ CONTEXT_TEST_STRONG: 5 }`. It also treated a hand-authored `behaviorPath` as if
-// it were measured, and reported `ownerLeakage: "PASS"` as a literal.
+// AUDIT #1 found the previous audit circular: it read a `classification` field out of a JSON file,
+// asserted it equalled CONTEXT_TEST_STRONG, and printed `{ CONTEXT_TEST_STRONG: 5 }`.
 //
-// This module measures the repository instead. It parses the ESM import graph, walks it from the
-// declared entrypoint, and derives every property from the files on disk. The only inputs taken on
-// trust are which file is the entrypoint and which file owns the defect; everything else --
-// reachability, path length, branching, search discrimination, decoy reachability -- is computed.
+// AUDIT #2 found the replacement measured the wrong thing. It counted ESM import-graph hops and
+// module out-degree and called them investigation difficulty. A coding agent does not breadth-first
+// search an import graph: it reads the symptom, greps the vocabulary the symptom gives it, opens the
+// two or three files that match, and reads. A six-hop import chain that one grep collapses is not a
+// context test, and a module that imports two unrelated helpers is not a decision point.
 //
-// Classification is DERIVED from the measurements by declared thresholds. The thresholds are a
-// judgement an independent auditor may disagree with; the measurements are not.
+// What this module measures now:
+//
+//   searchCollapse       for every realistic search term the PUBLIC prompt hands a reader, how many
+//                        files match and whether the defect owner is among them. One search that
+//                        returns a handful of files including the owner collapses the whole task.
+//   competingHypotheses  at each step toward the owner, how many reachable neighbours could
+//                        plausibly explain the symptom -- measured by whether they mention the
+//                        task's declared symptom vocabulary, not by out-degree.
+//   investigationDepth   how many files a reader must open and reject before reaching the owner,
+//                        along the shortest route the symptom vocabulary actually supports.
+//   decoyStrength        whether declared decoys are reachable AND mention the symptom vocabulary,
+//                        i.e. whether they can hold a reader's attention at all.
+//
+// Import-graph facts are still reported, because they are true and useful context. They no longer
+// drive the classification on their own.
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 // Declared thresholds. Changing these changes classifications, so they live in one place and are
 // echoed into every report.
 export const THRESHOLDS = {
-  // Below this, the repository is too small for the investigation to be about orientation at all.
-  minReachableModules: 8,
-  // A defect the entrypoint reaches in fewer hops than this is a local bug, not a context test.
-  minOwnerPathHops: 3,
-  // A straight-line chain offers no choice; a context test needs somewhere to go wrong.
+  // A search returning at most this many files, with the owner among them, collapses orientation.
+  searchCollapseFiles: 3,
+  // Files a reader must open and reject before the owner, for the task to be about orientation.
+  minInvestigationDepth: 3,
+  // Steps toward the owner that offer a genuine choice between symptom-plausible candidates.
   minDecisionPoints: 2,
+  // Decoys that are both reachable and symptom-plausible.
+  minCredibleDecoys: 2,
   // A repository whose modules are mostly unreachable is padding, not context.
   minReachableFraction: 0.35,
-  // If a prompt identifier occurs in this few reachable files, grep goes straight to the owner.
-  minPromptIdentifierFiles: 3,
-  // Decoys must be real code the investigation can actually walk into.
-  minReachableDecoys: 3,
+  minReachableModules: 8,
 };
 
 const IMPORT_PATTERN =
   /(?:^|[\s;])(?:import|export)\s+(?:[^'"]*?\sfrom\s+)?["']([^"']+)["']|\bimport\s*\(\s*["']([^"']+)["']\s*\)/g;
 
-// An identifier in the prompt is only interesting if it looks like code rather than prose.
+// Terms a reader would actually type. Code-shaped identifiers from the prompt, plus quoted strings
+// and backticked names, which is how prompts usually surface a symptom's vocabulary.
 const CODE_IDENTIFIER = /\b(?:[a-z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9]*|[A-Z][A-Z0-9_]{3,})\b/g;
+const BACKTICKED = /`([^`\n]{2,60})`/g;
 const PROSE_IDENTIFIERS = new Set(["JavaScript", "TypeError", "RangeError", "JSON", "UTF"]);
 
 export async function analyzeOrientation({
@@ -45,6 +58,9 @@ export async function analyzeOrientation({
   defectOwner,
   decoys = [],
   prompt,
+  // Vocabulary that describes the OBSERVABLE symptom, taken from the public prompt. A neighbour that
+  // mentions it is a module a reader could plausibly suspect.
+  symptomTerms = [],
 }) {
   const modules = await listModules(repoRoot);
   const graph = new Map();
@@ -57,77 +73,132 @@ export async function analyzeOrientation({
 
   const reachable = walk(graph, entrypoint);
   const ownerPath = shortestPath(graph, entrypoint, defectOwner);
-  const ownerHops = ownerPath === null ? null : ownerPath.length - 1;
+  // Symptom vocabulary is matched on word boundaries, not as raw substrings. A module that happens
+  // to contain "strategy" is not talking about a "rate", and counting it as symptom-plausible
+  // silently inflated both the hypothesis space and the measured investigation depth.
+  const mentions = (relative, terms) => {
+    const source = sources.get(relative) ?? "";
+    return terms.some((term) => wordBoundaryPattern(term).test(source));
+  };
 
-  // Decision points: nodes on the shortest owner path that lead somewhere other than the next step
-  // on that path. A chain with no alternatives has none, and an investigator following it cannot go
-  // wrong -- which is what makes such a fixture a poor context test.
-  const decisionPoints =
-    ownerPath === null
-      ? 0
-      : ownerPath.slice(0, -1).filter((node, index) => {
-          const next = ownerPath[index + 1];
-          return (graph.get(node) ?? []).filter((edge) => edge !== next).length > 0;
-        }).length;
-
-  const identifiers = extractPromptIdentifiers(prompt ?? "");
-  const identifierDiscrimination = identifiers.map((identifier) => {
-    const files = [...reachable].filter((relative) => sources.get(relative)?.includes(identifier));
-    return { identifier, files: files.length, ownerAmong: files.includes(defectOwner) };
+  // --- search collapse ---------------------------------------------------------------------------
+  // Every realistic term the prompt gives a reader is tried against every file, regardless of
+  // whether the term appears in the declared owner metadata.
+  const searchTerms = extractSearchTerms(prompt ?? "");
+  const searches = searchTerms.map((term) => {
+    const files = modules.filter((relative) => (sources.get(relative) ?? "").includes(term));
+    return {
+      term,
+      files: files.length,
+      ownerAmong: files.includes(defectOwner),
+      matched: files.slice(0, 6),
+    };
   });
-  // The worst case is the identifier that narrows the search most while still pointing at the owner.
-  const ownerRevealing = identifierDiscrimination.filter((entry) => entry.ownerAmong);
-  const searchDiscrimination =
-    ownerRevealing.length === 0 ? null : Math.min(...ownerRevealing.map((entry) => entry.files));
+  const collapsingSearches = searches.filter(
+    (search) =>
+      search.ownerAmong && search.files > 0 && search.files <= THRESHOLDS.searchCollapseFiles,
+  );
 
+  // --- competing hypotheses along the route to the owner -----------------------------------------
+  // A step is a decision point only when more than one reachable neighbour mentions the symptom
+  // vocabulary, i.e. when a reader genuinely has to choose which one to open.
+  const steps = (ownerPath ?? []).slice(0, -1).map((node, index) => {
+    const next = ownerPath[index + 1];
+    const neighbours = graph.get(node) ?? [];
+    const plausible = neighbours.filter((edge) => mentions(edge, symptomTerms));
+    return {
+      module: node,
+      next,
+      neighbours: neighbours.length,
+      symptomPlausibleNeighbours: plausible.length,
+      alternatives: plausible.filter((edge) => edge !== next),
+    };
+  });
+  const decisionPoints = steps.filter((step) => step.symptomPlausibleNeighbours >= 2).length;
+
+  // --- investigation depth ------------------------------------------------------------------------
+  // A reader starts wherever the symptom vocabulary leads. The question is how far they must then
+  // travel to reach the owner -- and, separately, whether the vocabulary lands on the owner itself,
+  // which is the case that ends the investigation before it starts.
+  const symptomBearingFiles = [...reachable].filter((relative) => mentions(relative, symptomTerms));
+  const ownerSurfacedBySymptomVocabulary = mentions(defectOwner, symptomTerms);
+  const distances = symptomBearingFiles
+    .filter((relative) => relative !== defectOwner)
+    .map((start) => shortestPath(graph, start, defectOwner))
+    .filter((route) => route !== null)
+    .map((route) => route.length - 1);
+  const investigationDepth =
+    distances.length === 0 ? (ownerPath?.length ?? 1) - 1 : Math.min(...distances);
+
+  // --- decoys -------------------------------------------------------------------------------------
   const decoyEvidence = decoys.map((relative) => ({
     module: relative,
     exists: modules.includes(relative),
     reachable: reachable.has(relative),
-    importedBy: [...graph.entries()]
-      .filter(([, edges]) => edges.includes(relative))
-      .map(([node]) => node).length,
+    symptomPlausible: modules.includes(relative) && mentions(relative, symptomTerms),
     onOwnerPath: ownerPath?.includes(relative) ?? false,
+    importedBy: [...graph.entries()].filter(([, edges]) => edges.includes(relative)).length,
   }));
+  const credibleDecoys = decoyEvidence.filter(
+    (entry) => entry.reachable && entry.symptomPlausible && !entry.onOwnerPath,
+  ).length;
 
   const orphans = [...reachable].filter(
     (relative) =>
       relative !== entrypoint && [...graph.values()].every((edges) => !edges.includes(relative)),
   );
-  const unreachable = modules.filter((relative) => !reachable.has(relative));
 
   const evidence = {
     totalModules: modules.length,
     reachableModules: reachable.size,
     reachableFraction:
       modules.length === 0 ? 0 : Number((reachable.size / modules.length).toFixed(3)),
-    unreachableModules: unreachable.length,
     entrypoint,
     defectOwner,
     ownerReachable: reachable.has(defectOwner),
-    shortestOwnerPath: ownerPath,
-    shortestOwnerPathHops: ownerHops,
-    decisionPoints,
-    entrypointImportsOwner: (graph.get(entrypoint) ?? []).includes(defectOwner),
-    promptIdentifiers: identifierDiscrimination,
-    searchDiscrimination,
+    symptomTerms,
+    // Import-graph facts, reported but no longer the basis of the verdict.
+    importGraph: {
+      shortestOwnerPath: ownerPath,
+      shortestOwnerPathHops: ownerPath === null ? null : ownerPath.length - 1,
+      entrypointImportsOwner: (graph.get(entrypoint) ?? []).includes(defectOwner),
+      orphanModules: orphans,
+    },
+    search: {
+      termsTried: searches.length,
+      searches,
+      collapsingSearches,
+      minimumFilesForAnOwnerRevealingSearch:
+        searches.filter((s) => s.ownerAmong).length === 0
+          ? null
+          : Math.min(...searches.filter((s) => s.ownerAmong).map((s) => s.files)),
+    },
+    investigation: {
+      // How many files a grep for the symptom vocabulary surfaces: the reader's hypothesis space.
+      hypothesisBreadth: symptomBearingFiles.length,
+      // Whether that grep lands on the defect owner itself.
+      ownerSurfacedBySymptomVocabulary,
+      // Edges from the nearest OTHER symptom-bearing file to the owner.
+      investigationDepth,
+      steps,
+      decisionPoints,
+    },
     decoys: decoyEvidence,
-    reachableDecoys: decoyEvidence.filter((entry) => entry.reachable).length,
-    decoysOnOwnerPath: decoyEvidence
-      .filter((entry) => entry.onOwnerPath)
-      .map((entry) => entry.module),
-    orphanModules: orphans,
+    credibleDecoys,
   };
   return { evidence, ...classify(evidence) };
 }
 
-// Derives a classification from measured evidence. Every reason names the measurement that produced
-// it, so an auditor can re-derive the verdict or reject the threshold without re-running anything.
+/**
+ * Derives a classification from measured evidence. Every reason names the measurement that produced
+ * it, so an auditor can re-derive the verdict or reject the threshold without re-running anything.
+ */
 export function classify(evidence) {
   const disqualifying = [];
   const weakening = [];
+  const { search, investigation, importGraph } = evidence;
 
-  if (evidence.shortestOwnerPath === null) {
+  if (importGraph.shortestOwnerPath === null) {
     disqualifying.push("the defect owner is not reachable from the entrypoint");
   }
   if (evidence.reachableModules < THRESHOLDS.minReachableModules) {
@@ -135,24 +206,42 @@ export function classify(evidence) {
       `only ${evidence.reachableModules} modules are reachable (threshold ${THRESHOLDS.minReachableModules})`,
     );
   }
-  if (
-    evidence.shortestOwnerPathHops !== null &&
-    evidence.shortestOwnerPathHops < THRESHOLDS.minOwnerPathHops
-  ) {
-    disqualifying.push(
-      `the owner is ${evidence.shortestOwnerPathHops} hop(s) from the entrypoint (threshold ${THRESHOLDS.minOwnerPathHops})`,
-    );
-  }
-  if (evidence.decisionPoints === 0) {
-    disqualifying.push("the path to the owner is a straight line with no decision points");
-  }
-  if (evidence.entrypointImportsOwner) {
+  if (importGraph.entrypointImportsOwner) {
     disqualifying.push("the entrypoint imports the defect owner directly");
   }
+  if (evidence.symptomTerms.length === 0) {
+    disqualifying.push("no symptom vocabulary was declared, so orientation cannot be measured");
+  }
 
-  if (evidence.decisionPoints < THRESHOLDS.minDecisionPoints) {
+  // The finding that matters: one realistic search that lands on the owner ends the investigation.
+  if (search.collapsingSearches.length > 0) {
+    const worst = search.collapsingSearches
+      .map((entry) => `"${entry.term}" -> ${entry.files} file(s)`)
+      .join(", ");
     weakening.push(
-      `only ${evidence.decisionPoints} decision point(s) on the owner path (threshold ${THRESHOLDS.minDecisionPoints})`,
+      `a realistic search from the public prompt reaches the defect owner directly: ${worst} (threshold more than ${THRESHOLDS.searchCollapseFiles} files)`,
+    );
+  }
+  // The decisive case: the vocabulary the prompt hands the reader appears in the defect owner, so
+  // grepping the symptom lands on the culprit rather than on the places that exhibit it.
+  if (investigation.ownerSurfacedBySymptomVocabulary) {
+    weakening.push(
+      "the defect owner itself contains the symptom vocabulary, so a search for the reported symptom surfaces it directly",
+    );
+  }
+  if (investigation.investigationDepth < THRESHOLDS.minInvestigationDepth) {
+    weakening.push(
+      `only ${investigation.investigationDepth} hop(s) separate the nearest other symptom-bearing file from the owner (threshold ${THRESHOLDS.minInvestigationDepth})`,
+    );
+  }
+  if (investigation.decisionPoints < THRESHOLDS.minDecisionPoints) {
+    weakening.push(
+      `only ${investigation.decisionPoints} step(s) toward the owner offer a choice between symptom-plausible modules (threshold ${THRESHOLDS.minDecisionPoints})`,
+    );
+  }
+  if (evidence.credibleDecoys < THRESHOLDS.minCredibleDecoys) {
+    weakening.push(
+      `only ${evidence.credibleDecoys} decoy(s) are both reachable and symptom-plausible (threshold ${THRESHOLDS.minCredibleDecoys})`,
     );
   }
   if (evidence.reachableFraction < THRESHOLDS.minReachableFraction) {
@@ -160,30 +249,9 @@ export function classify(evidence) {
       `only ${(evidence.reachableFraction * 100).toFixed(1)}% of modules are reachable (threshold ${(THRESHOLDS.minReachableFraction * 100).toFixed(0)}%)`,
     );
   }
-  if (
-    evidence.searchDiscrimination !== null &&
-    evidence.searchDiscrimination < THRESHOLDS.minPromptIdentifierFiles
-  ) {
-    const worst = evidence.promptIdentifiers
-      .filter((entry) => entry.ownerAmong && entry.files === evidence.searchDiscrimination)
-      .map((entry) => entry.identifier);
+  if (importGraph.orphanModules.length > 0) {
     weakening.push(
-      `prompt identifier(s) ${worst.join(", ")} occur in only ${evidence.searchDiscrimination} reachable file(s), so a search reaches the owner directly (threshold ${THRESHOLDS.minPromptIdentifierFiles})`,
-    );
-  }
-  if (evidence.reachableDecoys < THRESHOLDS.minReachableDecoys) {
-    weakening.push(
-      `only ${evidence.reachableDecoys} declared decoy(s) are reachable (threshold ${THRESHOLDS.minReachableDecoys})`,
-    );
-  }
-  if (evidence.decoysOnOwnerPath.length > 0) {
-    weakening.push(
-      `declared decoys sit on the owner path: ${evidence.decoysOnOwnerPath.join(", ")}`,
-    );
-  }
-  if (evidence.orphanModules.length > 0) {
-    weakening.push(
-      `${evidence.orphanModules.length} reachable module(s) are imported by nothing: ${evidence.orphanModules.slice(0, 4).join(", ")}`,
+      `${importGraph.orphanModules.length} reachable module(s) are imported by nothing: ${importGraph.orphanModules.slice(0, 4).join(", ")}`,
     );
   }
 
@@ -194,6 +262,20 @@ export function classify(evidence) {
         ? "CONTEXT_TEST_WEAK"
         : "CONTEXT_TEST_STRONG";
   return { classification, disqualifying, weakening };
+}
+
+/**
+ * Search terms a reader would realistically try, taken from the public prompt alone: code-shaped
+ * identifiers and anything the prompt puts in backticks. Deliberately not filtered by whether the
+ * term appears in the declared owner -- that filter is what let a revealing term go unnoticed.
+ */
+export function extractSearchTerms(prompt) {
+  const identifiers = [...prompt.matchAll(CODE_IDENTIFIER)].map((match) => match[0]);
+  const quoted = [...prompt.matchAll(BACKTICKED)].map((match) => match[1]);
+  return [...new Set([...identifiers, ...quoted])]
+    .filter((term) => !PROSE_IDENTIFIERS.has(term))
+    .filter((term) => term.trim().length >= 3)
+    .toSorted();
 }
 
 async function listModules(repoRoot) {
@@ -221,6 +303,17 @@ function resolveImports(from, source, modules) {
     if (modules.includes(resolved)) edges.add(resolved);
   }
   return [...edges];
+}
+
+const BOUNDARY_CACHE = new Map();
+function wordBoundaryPattern(term) {
+  let pattern = BOUNDARY_CACHE.get(term);
+  if (!pattern) {
+    const escaped = term.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
+    pattern = new RegExp(`(?<![A-Za-z0-9_])${escaped}(?![A-Za-z0-9_])`);
+    BOUNDARY_CACHE.set(term, pattern);
+  }
+  return pattern;
 }
 
 function walk(graph, entrypoint) {
@@ -253,10 +346,4 @@ function shortestPath(graph, from, to) {
     }
   }
   return null;
-}
-
-function extractPromptIdentifiers(prompt) {
-  return [...new Set([...prompt.matchAll(CODE_IDENTIFIER)].map((match) => match[0]))].filter(
-    (identifier) => !PROSE_IDENTIFIERS.has(identifier),
-  );
 }

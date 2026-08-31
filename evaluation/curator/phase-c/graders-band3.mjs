@@ -16,7 +16,7 @@ export const phaseCBand3Graders = {
     const { sendDigest } = await importModule("src/workflows/daily-digest.mjs");
     const { runEscalationSweep } = await importModule("src/workflows/escalation-policy.mjs");
     const { settingValue } = await importModule("src/settings/settings-resolver.mjs");
-    const { WORKSPACE_DEFAULTS } = await importModule("src/settings/workspace-defaults.mjs");
+    const { BASELINE_VALUES } = await importModule("src/config/baseline-values.mjs");
 
     const agent = registerAgent("Ada", "ada@example.com");
     const subjects = ["a", "b", "c", "d", "e", "f", "g"];
@@ -98,16 +98,16 @@ export const phaseCBand3Graders = {
     ]) {
       equal(`an override wins for ${key}`, settingValue(key, { [key]: override }), override);
     }
-    for (const key of Object.keys(WORKSPACE_DEFAULTS)) {
+    for (const key of Object.keys(BASELINE_VALUES)) {
       equal(
         `${key} keeps its default when it is not overridden`,
         settingValue(key, { unrelatedKey: 1 }),
-        WORKSPACE_DEFAULTS[key],
+        BASELINE_VALUES[key],
       );
       equal(
         `${key} keeps its default with no overrides at all`,
         settingValue(key),
-        WORKSPACE_DEFAULTS[key],
+        BASELINE_VALUES[key],
       );
     }
     equal(
@@ -120,10 +120,10 @@ export const phaseCBand3Graders = {
     );
     equal(
       "the workspace defaults themselves are unchanged",
-      WORKSPACE_DEFAULTS.ticketDigestBatchSize,
+      BASELINE_VALUES.ticketDigestBatchSize,
       10,
     );
-    equal("every workspace default is unchanged", WORKSPACE_DEFAULTS, {
+    equal("every workspace default is unchanged", BASELINE_VALUES, {
       ticketDigestBatchSize: 10,
       escalationAfterMinutes: 60,
       auditRetentionDays: 30,
@@ -377,7 +377,28 @@ export const phaseCBand3Graders = {
     const { registerPicker } = await importModule("src/staff/picker-directory.mjs");
     const { eventBus } = await importModule("src/events/event-bus.mjs");
     const { EVENT_TYPES } = await importModule("src/events/event-types.mjs");
+    const { registerDirect } = await importModule("src/events/direct-routes.mjs");
+    const { channelsFor } = await importModule("src/events/channel-registry.mjs");
     initFloor();
+
+    // "Publish exactly one observable update" is a statement about every route a signal travels,
+    // not only about the bus. A probe signal is wired to both routes and delivered once, so a
+    // candidate that publishes twice and compensates downstream is still publishing twice. The
+    // probe uses its own signal type, so the application's own wiring is untouched.
+    const probeSignal = "__probe-signal";
+    let probeDeliveries = 0;
+    eventBus.on(probeSignal, () => {
+      probeDeliveries += 1;
+    });
+    registerDirect(probeSignal, () => {
+      probeDeliveries += 1;
+    });
+    for (const channel of channelsFor(probeSignal)) channel.deliver({ probe: true });
+    check(
+      "a signal wired to more than one route is still carried exactly once",
+      probeDeliveries === 1,
+      `a single publication reached ${probeDeliveries} subscriber deliveries`,
+    );
 
     // An independent subscriber sees what the application actually publishes. This says nothing
     // about WHERE the duplicate effect is removed -- dropping either emit satisfies it -- but a

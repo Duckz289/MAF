@@ -43,6 +43,7 @@ for (const item of declared) {
     defectOwner: item.defectOwner,
     decoys: item.decoys ?? [],
     prompt,
+    symptomTerms: item.symptomTerms ?? [],
   });
 
   // The prompt must not name the owner module or its basename. This is measured against the file
@@ -87,12 +88,16 @@ const report = {
     "static ESM import graph of the public repository, walked from the declared entrypoint",
   thresholds: THRESHOLDS,
   classificationCounts: counts,
-  minimumOwnerPathHops: Math.min(...tasks.map((task) => task.evidence.shortestOwnerPathHops ?? 0)),
-  minimumDecisionPoints: Math.min(...tasks.map((task) => task.evidence.decisionPoints)),
-  minimumSearchDiscrimination: Math.min(
-    ...tasks.map((task) => task.evidence.searchDiscrimination ?? Number.POSITIVE_INFINITY),
+  minimumInvestigationDepth: Math.min(
+    ...tasks.map((task) => task.evidence.investigation.investigationDepth),
   ),
-  anyEntrypointImportsOwner: tasks.some((task) => task.evidence.entrypointImportsOwner),
+  minimumDecisionPoints: Math.min(
+    ...tasks.map((task) => task.evidence.investigation.decisionPoints),
+  ),
+  tasksWithACollapsingSearch: tasks.filter(
+    (task) => task.evidence.search.collapsingSearches.length > 0,
+  ).length,
+  anyEntrypointImportsOwner: tasks.some((task) => task.evidence.importGraph.entrypointImportsOwner),
   tasks: tasks.map((task) => ({
     id: task.id,
     classification: task.classification,

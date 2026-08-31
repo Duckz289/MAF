@@ -75,7 +75,7 @@
       "src/commit-store.mjs": "export function createCommitStore(){const visible=Object.create(null);return{begin(key,value){return Object.freeze({key,value});},commit(transaction){visible[transaction.key]=transaction.value;},read(key){return Object.hasOwn(visible,key)?visible[key]:undefined;}};}\n"
     },
     "notification-settings-regression": {
-      "src/settings/settings-resolver.mjs": "import { WORKSPACE_DEFAULTS } from \"./workspace-defaults.mjs\";\n\nexport function resolveSettings(overrides = {}) {\n  const resolved = Object.assign(Object.create(null), WORKSPACE_DEFAULTS);\n  for (const [key, value] of Object.entries(overrides ?? {})) {\n    if (value !== undefined) resolved[key] = value;\n  }\n  return { ...resolved };\n}\n\nexport function settingValue(key, overrides = {}) {\n  return resolveSettings(overrides)[key];\n}\n"
+      "src/config/layer-merge.mjs": "// Most-specific-first layers, folded with a reducer that keeps the first answer it sees.\nexport function combine(layers) {\n  return layers.reduce((combined, layer) => {\n    for (const [key, value] of Object.entries(layer.values ?? {})) {\n      if (!Object.hasOwn(combined, key) && value !== undefined) combined[key] = value;\n    }\n    return combined;\n  }, {});\n}\n\nexport function layerNames(layers) {\n  return layers.map((layer) => layer.name);\n}\n"
     }
   }
 }

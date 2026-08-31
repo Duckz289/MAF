@@ -5,6 +5,6 @@ import { taxedAmount } from "./tax-schedule.mjs";
 // roundings of the exact value; they differ only where the exact value lands on a half cent, which
 // the public contract says either neighbouring cent satisfies.
 export function priceQuote(basePrice, adjustment, taxRate) {
-  const subtotal = Math.max(0, basePrice - reductionFor(basePrice, adjustment));
+  const subtotal = Math.max(0, basePrice - reductionFor(basePrice, adjustment, taxRate));
   return Number(taxedAmount(subtotal, taxRate).toFixed(2));
 }

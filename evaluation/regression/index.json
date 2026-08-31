@@ -382,7 +382,7 @@
       "taskId": "notification-settings-regression",
       "attackClass": "falsy-value bug",
       "contract": "A per-request override must win over the workspace default for any setting a caller overrides.",
-      "violation": "Uses a truthiness test to decide whether an override was supplied, so a legitimate falsy override silently falls back to the workspace default."
+      "violation": "Precedence is restored, but a layer value counts only when truthy, so a legitimate falsy override silently falls through to the workspace baseline."
     },
     {
       "corpus": "fresh-false-pass",
@@ -508,7 +508,7 @@
       "taskId": "notification-settings-regression",
       "freedom": "different validation architecture",
       "contract": "A per-request override must win over the workspace default for any key; unoverridden keys keep their default; the caller's object is not modified.",
-      "satisfies": "Resolves each key through a descriptor built from the defaults and the overrides, rather than by spread ordering or a per-key branch."
+      "satisfies": "Resolves each key through a descriptor naming the layer that answers for it, rather than folding layers into one object."
     },
     {
       "corpus": "fresh-false-fail",

@@ -241,6 +241,7 @@ for (const item of band3Declared) {
     defectOwner: item.defectOwner,
     decoys: item.decoys ?? [],
     prompt: await readFile(path.join(publicRoot, "prompt.md"), "utf8"),
+    symptomTerms: item.symptomTerms ?? [],
   });
   band3Counts[analysis.classification] += 1;
   band3Tasks.push({ id: item.id, classification: analysis.classification });
