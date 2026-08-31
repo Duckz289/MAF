@@ -16,6 +16,10 @@
     "fresh-false-fail": {
       "expectedStatus": "PASS",
       "note": "Structurally different correct implementations authored during the repair."
+    },
+    "audit2-false-pass": {
+      "expectedStatus": "FAIL",
+      "note": "Reported by the SECOND independent audit as accepted despite violating the public contract. A PASS here is a grader observation defect."
     }
   },
   "cases": [
@@ -523,6 +527,69 @@
       "freedom": "different normalization strategy",
       "contract": "Cursors must continue from the item after the last item previously returned and must not duplicate or skip items; reject malformed/stale cursors with RangeError.",
       "satisfies": "Encodes the anchor as a checksummed token rather than a bare id, and validates the checksum before resolving the anchor."
+    },
+    {
+      "corpus": "audit2-false-pass",
+      "id": "inventory-live-object-mutate-restore",
+      "phase": "phase-b",
+      "taskId": "inventory-orientation-task",
+      "hole": "final-state observation",
+      "contract": "Validation must happen before saveItem, so a rejected adjustment leaves the stored item unchanged.",
+      "violation": "getItem hands back the live stored object, so the adjustment is written straight into the store without ever calling saveItem, then restored on rejection. The store is transiently wrong and no persistence call is recorded."
+    },
+    {
+      "corpus": "audit2-false-pass",
+      "id": "pending-write-known-key-allowlist",
+      "phase": "phase-c",
+      "taskId": "b2-pending-write-visibility",
+      "hole": "fixed grader values",
+      "contract": "begin(key, value) creates a transaction but must not change what read(key) returns.",
+      "violation": "Hides a pending write only for a fixed set of key names and publishes every other pending write immediately."
+    },
+    {
+      "corpus": "audit2-false-pass",
+      "id": "bulk-archive-startswith-tenant",
+      "phase": "phase-c",
+      "taskId": "b2-bulk-op-tenant-bypass",
+      "hole": "fixed grader values",
+      "contract": "bulkArchiveItems may archive only items whose stored tenantId exactly matches the caller tenant.",
+      "violation": "Compares tenants with startsWith, so any tenant whose id begins with the caller's id is treated as the caller's own."
+    },
+    {
+      "corpus": "audit2-false-pass",
+      "id": "cart-total-mutate-restore",
+      "phase": "phase-c",
+      "taskId": "b2-derived-aggregate-consistency",
+      "hole": "final-state observation",
+      "contract": "Reject invalid input without mutating the original state.",
+      "violation": "Writes to the caller's state.total before validating the line and restores it on rejection, so the original state is transiently wrong."
+    },
+    {
+      "corpus": "audit2-false-pass",
+      "id": "patch-nested-tags-push-pop",
+      "phase": "phase-c",
+      "taskId": "b2-partial-validation-mutation",
+      "hole": "shallow mutation boundary",
+      "contract": "An invalid patch must throw without changing any property of record.",
+      "violation": "Pushes onto the record's nested tags array before validating and pops it back on rejection, so only a shallow write observer misses it."
+    },
+    {
+      "corpus": "audit2-false-pass",
+      "id": "migration-nested-metadata-mutation",
+      "phase": "phase-c",
+      "taskId": "b2-record-shape-migration-loss",
+      "hole": "shallow mutation boundary",
+      "contract": "It must not mutate the input.",
+      "violation": "Mutates the input's nested metadata array during the migration and restores it afterwards, which a shallow freeze cannot see."
+    },
+    {
+      "corpus": "fresh-false-fail",
+      "id": "quote-tofixed-rounding",
+      "phase": "phase-c",
+      "taskId": "discount-result-regression",
+      "freedom": "different rounding implementation",
+      "contract": "The quoted total is rounded to two decimal places; any standard rounding of the exact value to the nearest cent is acceptable.",
+      "satisfies": "Rounds with Number(x.toFixed(2)) instead of Math.round(x*100)/100. The two disagree by one cent on the three half-cent combinations in the grader sweep, and both are correct roundings of the exact value."
     }
   ]
 }

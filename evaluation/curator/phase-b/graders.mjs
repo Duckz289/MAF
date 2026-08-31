@@ -422,14 +422,36 @@ export const phaseBGraders = {
       "src/inventory-store.mjs",
       `import * as origin from "./inventory-store.__origin.mjs";
 
+// Pass-through probe. It changes no behavior; it records how the store was reached.
+//
+// __saveCalls answers "did a rejected adjustment persist?". __storeWrites answers the question the
+// second independent audit showed that was not enough for: getItem hands back the LIVE stored
+// object, so a candidate can write the adjustment straight into the store and restore it on
+// rejection without ever calling saveItem. Every read is wrapped so such a write is observed.
 export const __saveCalls = [];
+export const __storeWrites = [];
+
+const track = (item) =>
+  item && typeof item === "object"
+    ? new Proxy(item, {
+        set(target, property, value, receiver) {
+          __storeWrites.push({ kind: "set", property: String(property), value });
+          return Reflect.set(target, property, value, receiver);
+        },
+        deleteProperty(target, property) {
+          __storeWrites.push({ kind: "delete", property: String(property) });
+          return Reflect.deleteProperty(target, property);
+        },
+      })
+    : item;
 
 export function saveItem(item) {
-  __saveCalls.push(item && typeof item === "object" ? { ...item } : item);
-  return origin.saveItem(item);
+  const plain = item && typeof item === "object" ? { ...item } : item;
+  __saveCalls.push(plain);
+  return origin.saveItem(plain);
 }
 export function getItem(sku) {
-  return origin.getItem(sku);
+  return track(origin.getItem(sku));
 }
 export function allItems() {
   return origin.allItems();
@@ -463,11 +485,17 @@ export function allItems() {
     ];
     for (const [label, adjustment] of rejections) {
       store.__saveCalls.length = 0;
+      store.__storeWrites.length = 0;
       await throws(`rejects ${label}`, () => restockItem("sku-a", adjustment), REJECTION);
       check(
         `rejected adjustment (${label}) never reaches saveItem`,
         store.__saveCalls.length === 0,
         `saveItem was called ${store.__saveCalls.length} time(s) for a rejected adjustment: ${JSON.stringify(store.__saveCalls)}`,
+      );
+      check(
+        `rejected adjustment (${label}) never writes into the stored item`,
+        store.__storeWrites.length === 0,
+        `the stored item was written ${store.__storeWrites.length} time(s) during a rejected adjustment: ${JSON.stringify(store.__storeWrites.slice(0, 4))}`,
       );
       equal(`rejected adjustment (${label}) is atomic`, store.getItem("sku-a").quantity, 12);
     }

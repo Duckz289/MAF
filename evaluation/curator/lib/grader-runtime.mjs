@@ -108,32 +108,71 @@ export async function runBehavioralGrader(taskId, grader) {
       return thrown;
     },
 
-    // Returns a proxy that records every write, delete and redefinition applied to `source`, along
-    // with the value observed at that moment. Lets a grader distinguish "validated before mutating"
-    // from "mutated, then restored", which final-state equality cannot see.
+    // Records every write applied to `source` AT ANY DEPTH, with the path it happened on.
+    //
+    // The second independent audit found graders observing only the top level of a value, so a
+    // candidate could push onto a nested array (or write a nested field) and pop it back before
+    // returning. Shallow observation and final-state equality both miss that; this does not.
+    //
+    // Wrappers are cached per target so object identity is stable across reads, and only plain
+    // objects and arrays are wrapped -- wrapping a Date or a class instance would change behavior
+    // rather than observe it.
     trackWrites(source) {
       const writes = [];
-      const value = new Proxy(source, {
-        set(target, property, next, receiver) {
-          writes.push({ kind: "set", property: String(property), value: next });
-          return Reflect.set(target, property, next, receiver);
-        },
-        deleteProperty(target, property) {
-          writes.push({ kind: "delete", property: String(property) });
-          return Reflect.deleteProperty(target, property);
-        },
-        defineProperty(target, property, descriptor) {
-          writes.push({ kind: "define", property: String(property), value: descriptor.value });
-          return Reflect.defineProperty(target, property, descriptor);
-        },
-      });
+      const wrappers = new WeakMap();
+      const wrap = (target, prefix) => {
+        const cached = wrappers.get(target);
+        if (cached) return cached;
+        const proxy = new Proxy(target, {
+          get(inner, property, receiver) {
+            const value = Reflect.get(inner, property, receiver);
+            return isPlainContainer(value) ? wrap(value, `${prefix}${String(property)}.`) : value;
+          },
+          set(inner, property, next, receiver) {
+            writes.push({ kind: "set", path: `${prefix}${String(property)}`, value: next });
+            return Reflect.set(inner, property, next, receiver);
+          },
+          deleteProperty(inner, property) {
+            writes.push({ kind: "delete", path: `${prefix}${String(property)}` });
+            return Reflect.deleteProperty(inner, property);
+          },
+          defineProperty(inner, property, descriptor) {
+            writes.push({
+              kind: "define",
+              path: `${prefix}${String(property)}`,
+              value: descriptor.value,
+            });
+            return Reflect.defineProperty(inner, property, descriptor);
+          },
+        });
+        wrappers.set(target, proxy);
+        return proxy;
+      };
       return {
-        value,
+        value: wrap(source, ""),
         writes,
         get target() {
           return source;
         },
       };
+    },
+
+    // A deeply frozen structural copy. Any write at any depth throws, which makes a transient
+    // nested mutation observable without a proxy -- useful where a candidate may legitimately want
+    // to structuredClone its input, which a proxy would break.
+    deepFreeze(source) {
+      return freezeDeep(structuredClone(source));
+    },
+
+    // Deterministic private values.
+    //
+    // Graders that assert against a handful of memorable literals ("first"/"second"/"third",
+    // "tenant-a"/"tenant-b") can be satisfied by a candidate that special-cases exactly those
+    // literals. These values are generated from a fixed seed the grader records, so runs stay
+    // reproducible while the values themselves are not guessable from the public prompt.
+    privateValues(seed, count, prefix = "v") {
+      const next = seededGenerator(seed);
+      return Array.from({ length: count }, () => `${prefix}-${next().toString(36).slice(2, 10)}`);
     },
   };
 
@@ -144,6 +183,33 @@ export async function runBehavioralGrader(taskId, grader) {
   }
   const status = checks.length > 0 && checks.every((check) => check.passed) ? "PASS" : "FAIL";
   emit(status, checks, `${taskId}: ${status}`);
+}
+
+// A container whose mutation is worth observing. Class instances, dates, maps and functions are
+// left alone: wrapping them would change behavior rather than watch it.
+function isPlainContainer(value) {
+  if (value === null || typeof value !== "object") return false;
+  if (Array.isArray(value)) return true;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function freezeDeep(value) {
+  if (value === null || typeof value !== "object") return value;
+  for (const key of Object.getOwnPropertyNames(value)) freezeDeep(value[key]);
+  return Object.freeze(value);
+}
+
+// mulberry32: small, fast, and fully determined by its seed.
+function seededGenerator(seed) {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 function readWorkspaceArgument() {

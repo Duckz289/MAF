@@ -147,11 +147,26 @@ export const phaseCBand3Graders = {
   "discount-result-regression": async ({ importModule, equal, check, throws }) => {
     const { quoteShipment } = await importModule("src/quoting/quote-service.mjs");
     const { adjustmentForCode } = await importModule("src/promotions/promo-codes.mjs");
-    const expected = (base, adjustment, taxRate) => {
+    // The exact, unrounded quote. The contract is "rounded to two decimal places", so the grader
+    // checks that property directly rather than a particular rounding algorithm: the answer must
+    // carry at most two decimals and sit within half a cent of the exact value.
+    //
+    // The second independent audit found this mattered. Three of the 360 combinations below land
+    // exactly on a half cent (9.975, 29.025, 85.785), where Math.round(x * 100) / 100 and
+    // Number(x.toFixed(2)) disagree by one cent and both are defensible. Requiring one of them
+    // would have made the reference's floating-point algorithm the specification.
+    const exactTotal = (base, adjustment, taxRate) => {
       const reduction =
         adjustment.kind === "PERCENT" ? (base * adjustment.value) / 100 : adjustment.value;
-      return Math.round(Math.max(0, base - reduction) * (1 + taxRate) * 100) / 100;
+      return Math.max(0, base - reduction) * (1 + taxRate);
     };
+    const HALF_CENT = 0.005 + 1e-9;
+    const roundedToCents = (value) =>
+      Number.isFinite(value) && Math.abs(value * 100 - Math.round(value * 100)) < 1e-9;
+    const satisfiesContract = (actual, exact) =>
+      roundedToCents(actual) && Math.abs(actual - exact) <= HALF_CENT;
+    const expected = (base, adjustment, taxRate) =>
+      Math.round(exactTotal(base, adjustment, taxRate) * 100) / 100;
 
     equal(
       "the reported case is corrected",
@@ -196,10 +211,10 @@ export const phaseCBand3Graders = {
       ]) {
         for (const taxRate of [0, 0.05, 0.075, 0.08, 0.2]) {
           const actual = quoteShipment(base, adjustment, taxRate);
-          const want = expected(base, adjustment, taxRate);
-          if (actual !== want) {
+          const exact = exactTotal(base, adjustment, taxRate);
+          if (!satisfiesContract(actual, exact)) {
             disagreements.push(
-              `base=${base} ${adjustment.kind}:${adjustment.value} tax=${taxRate} -> ${actual}, expected ${want}`,
+              `base=${base} ${adjustment.kind}:${adjustment.value} tax=${taxRate} -> ${actual}, exact ${exact.toFixed(6)}`,
             );
           }
         }

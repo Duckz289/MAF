@@ -11,7 +11,9 @@ The quoting contract is:
 - a `PERCENT` adjustment is that percentage **of the base price**, and a `FLAT` adjustment is a
   currency amount;
 - an adjustment may bring the subtotal down to zero but never below it;
-- the quoted total is rounded to two decimal places.
+- the quoted total is rounded to two decimal places. Any standard rounding of the exact value to
+  the nearest cent is acceptable — where the exact value falls exactly on a half cent, either
+  neighbouring cent is correct.
 
 Fix `quoteShipment(basePrice, adjustment, taxRate)` so it satisfies that contract for arbitrary
 valid base prices, adjustments and non-negative tax rates — not only for the numbers in this

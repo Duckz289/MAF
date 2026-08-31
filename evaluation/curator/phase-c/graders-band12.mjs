@@ -128,40 +128,68 @@ export const phaseCBand12Graders = {
 
   // Prompt: "A missing or foreign item must not be mutated" -- checked by reading the store back,
   // not only by reading the returned report.
-  "b2-bulk-op-tenant-bypass": async ({ importModule, equal, check }) => {
+  "b2-bulk-op-tenant-bypass": async ({ importModule, equal, check, privateValues }) => {
     const store = await importModule("src/item-store.mjs");
     const { bulkArchiveItems } = await importModule("src/bulk-archive.mjs");
-    store.seedItem("a-1", "tenant-a");
-    store.seedItem("b-1", "tenant-b");
-    store.seedItem("a-2", "tenant-a");
-    store.seedItem("c-1", "tenant-c");
 
-    const results = bulkArchiveItems("tenant-a", [
-      "a-1",
-      "missing",
-      "b-1",
-      "a-2",
-      "c-1",
-      "also-missing",
+    // Private, deterministic tenant identities (seed 0x5eed_1). Grading against a handful of
+    // memorable literals lets a candidate special-case exactly those literals; and because one
+    // tenant id here is a strict PREFIX of another, a substring comparison such as startsWith is
+    // not equality and is caught.
+    const [alpha, beta] = privateValues(0x5eed1, 2, "t");
+    const alphaExtended = `${alpha}-eu`;
+    const gamma = `${beta}-apac`;
+    check(
+      "the private tenant identities include a prefix relationship",
+      alphaExtended.startsWith(alpha) && alphaExtended !== alpha,
+      `expected a prefix pair, got ${alpha} and ${alphaExtended}`,
+    );
+
+    const [own1, own2, foreignExtended, foreignOther, absent1, absent2] = privateValues(
+      0x5eed2,
+      6,
+      "item",
+    );
+    store.seedItem(own1, alpha);
+    store.seedItem(own2, alpha);
+    store.seedItem(foreignExtended, alphaExtended);
+    store.seedItem(foreignOther, beta);
+    store.seedItem(gamma, gamma);
+
+    const results = bulkArchiveItems(alpha, [
+      own1,
+      absent1,
+      foreignExtended,
+      own2,
+      foreignOther,
+      absent2,
     ]);
     equal("reports every requested item in input order", results, [
-      { id: "a-1", archived: true },
-      { id: "missing", archived: false, reason: "NOT_FOUND" },
-      { id: "b-1", archived: false, reason: "TENANT_MISMATCH" },
-      { id: "a-2", archived: true },
-      { id: "c-1", archived: false, reason: "TENANT_MISMATCH" },
-      { id: "also-missing", archived: false, reason: "NOT_FOUND" },
+      { id: own1, archived: true },
+      { id: absent1, archived: false, reason: "NOT_FOUND" },
+      { id: foreignExtended, archived: false, reason: "TENANT_MISMATCH" },
+      { id: own2, archived: true },
+      { id: foreignOther, archived: false, reason: "TENANT_MISMATCH" },
+      { id: absent2, archived: false, reason: "NOT_FOUND" },
     ]);
     equal(
       "eligible items archive",
-      [store.getItem("a-1").status, store.getItem("a-2").status],
+      [store.getItem(own1).status, store.getItem(own2).status],
       ["ARCHIVED", "ARCHIVED"],
     );
-    equal("foreign item remains unchanged", store.getItem("b-1").status, "ACTIVE");
-    equal("second foreign item remains unchanged", store.getItem("c-1").status, "ACTIVE");
+    check(
+      "a tenant whose id merely extends the caller's is still foreign",
+      store.getItem(foreignExtended).status === "ACTIVE",
+      `tenant ${alphaExtended} was archived by ${alpha}`,
+    );
+    equal(
+      "an unrelated foreign item remains unchanged",
+      store.getItem(foreignOther).status,
+      "ACTIVE",
+    );
 
     // An unknown id must stay unknown: reporting NOT_FOUND may not create a record for it.
-    for (const id of ["missing", "also-missing"]) {
+    for (const id of [absent1, absent2]) {
       check(
         `unknown id ${id} is not created in the store`,
         store.getItem(id) === null || store.getItem(id) === undefined,
@@ -170,18 +198,27 @@ export const phaseCBand12Graders = {
     }
 
     // The behavior must generalize to another tenant rather than special-casing one.
-    const foreign = bulkArchiveItems("tenant-b", ["b-1", "a-1"]);
-    equal("another tenant archives only its own item", foreign, [
-      { id: "b-1", archived: true },
-      { id: "a-1", archived: false, reason: "TENANT_MISMATCH" },
+    const foreignBatch = bulkArchiveItems(beta, [foreignOther, own1]);
+    equal("another tenant archives only its own item", foreignBatch, [
+      { id: foreignOther, archived: true },
+      { id: own1, archived: false, reason: "TENANT_MISMATCH" },
     ]);
-    equal("the other tenant's item is now archived", store.getItem("b-1").status, "ARCHIVED");
     equal(
-      "an already-archived foreign item is not re-touched",
-      store.getItem("a-1").status,
+      "the other tenant's item is now archived",
+      store.getItem(foreignOther).status,
       "ARCHIVED",
     );
-    equal("an empty batch is accepted", bulkArchiveItems("tenant-a", []), []);
+    equal(
+      "an already-archived foreign item is not re-touched",
+      store.getItem(own1).status,
+      "ARCHIVED",
+    );
+    equal("an empty batch is accepted", bulkArchiveItems(alpha, []), []);
+    equal(
+      "a caller whose id extends another tenant's does not inherit it",
+      bulkArchiveItems(alphaExtended, [own2]),
+      [{ id: own2, archived: false, reason: "TENANT_MISMATCH" }],
+    );
   },
 
   // Prompt: never more successful bookings than available seats, and available/bookedBy must agree.
@@ -259,7 +296,13 @@ export const phaseCBand12Graders = {
 
   // Prompt: "may set an order to REFUNDED only after the ledger call succeeds". The injected ledger
   // hook is the observation point: at the moment it runs, the order must not yet be terminal.
-  "b2-order-refund-terminal-leak": async ({ importModule, equal, check, throws }) => {
+  "b2-order-refund-terminal-leak": async ({
+    importModule,
+    equal,
+    check,
+    throws,
+    privateValues,
+  }) => {
     const store = await importModule("src/order-store.mjs");
     const { processRefund } = await importModule("src/refund-service.mjs");
 
@@ -276,10 +319,17 @@ export const phaseCBand12Graders = {
       throw new Error("ledger unavailable");
     };
 
+    // Private, deterministic order identities (seed 0x5eed_6): a candidate cannot special-case the
+    // orders a grader is known to use if it cannot know them.
+    const [okA, okB, okC, failA, failB, invalidOrder, missingOrder] = privateValues(
+      0x5eed6,
+      7,
+      "order",
+    );
     for (const [id, total] of [
-      ["ok-1", 100],
-      ["ok-2", 60],
-      ["ok-3", 25],
+      [okA, 100],
+      [okB, 60],
+      [okC, 25],
     ]) {
       store.createOrder(id, total);
       const result = await processRefund(id, 5, observingLedger(id));
@@ -287,8 +337,8 @@ export const phaseCBand12Graders = {
       equal(`successful refund ${id} persists`, store.getOrder(id).status, "REFUNDED");
     }
     for (const [id, total] of [
-      ["fail-1", 100],
-      ["fail-2", 80],
+      [failA, 100],
+      [failB, 80],
     ]) {
       store.createOrder(id, total);
       await throws(
@@ -316,37 +366,48 @@ export const phaseCBand12Graders = {
     // The set is limited to non-positive amounts, which is the notion of "invalid" the public
     // repository already encodes; requiring NaN to reject would be a requirement the prompt and the
     // visible ledger never state.
-    store.createOrder("invalid", 100);
+    store.createOrder(invalidOrder, 100);
     for (const amount of [-5, 0, -0.01, null]) {
       await throws(
         `invalid amount ${String(amount)} rejects`,
-        () => processRefund("invalid", amount),
+        () => processRefund(invalidOrder, amount),
         Error,
       );
       equal(
         `invalid amount ${String(amount)} leaves order paid`,
-        store.getOrder("invalid").status,
+        store.getOrder(invalidOrder).status,
         "PAID",
       );
     }
-    await throws("missing order rejects", () => processRefund("no-such-order", 5), Error);
+    await throws("missing order rejects", () => processRefund(missingOrder, 5), Error);
     equal(
       "a valid refund still succeeds after rejections",
-      (await processRefund("invalid", 10)).status,
+      (await processRefund(invalidOrder, 10)).status,
       "REFUNDED",
     );
   },
 
   // Prompt: "It must not mutate the input" and extensions must survive. Mutation is observed while
   // the call runs, so temporarily writing to the caller's record and restoring it is not a pass.
-  "b2-record-shape-migration-loss": async ({ importModule, equal, check }) => {
+  "b2-record-shape-migration-loss": async ({
+    importModule,
+    equal,
+    check,
+    deepFreeze,
+    privateValues,
+  }) => {
     const { migrateRecordV1toV2 } = await importModule("src/migrate-record.mjs");
+    // Private, deterministic names for the fields the migration is not supposed to know about
+    // (seed 0x5eed_4). A candidate cannot carry an allowlist of unknown fields it cannot enumerate.
+    const [unknownA, unknownB, unknownC] = privateValues(0x5eed4, 3, "f");
     const input = {
       id: "r1",
       name: "Widget",
       createdAt: 100,
       metadata: { tags: ["a"] },
-      extension: { color: "blue" },
+      [unknownA]: { color: "blue" },
+      [unknownB]: [1, 2, 3],
+      [unknownC]: "carried",
     };
     const before = structuredClone(input);
     const output = migrateRecordV1toV2(input);
@@ -358,14 +419,17 @@ export const phaseCBand12Graders = {
       { id: "r1", name: "Widget", createdAt: 100 },
     );
     equal("metadata preserved", output.metadata, input.metadata);
-    equal("unknown extension preserved", output.extension, input.extension);
+    equal("unknown object field preserved", output[unknownA], input[unknownA]);
+    equal("unknown array field preserved", output[unknownB], input[unknownB]);
+    equal("unknown scalar field preserved", output[unknownC], input[unknownC]);
     equal("input is not mutated", input, before);
     check("returns a new record", output !== input, "migration must not return the input object");
 
     // "Must not mutate the input" is a statement about the whole call, not only about the state
-    // afterwards. A frozen input makes any write observable, and an implementation that never
-    // writes cannot tell the difference. Reading, spreading and structuredClone all still work.
-    const frozen = Object.freeze(structuredClone(input));
+    // afterwards. A DEEPLY frozen input makes a write observable at any depth -- a shallow freeze
+    // misses a candidate that mutates input.metadata and restores it. An implementation that never
+    // writes cannot tell the difference: reading, spreading and structuredClone all still work.
+    const frozen = deepFreeze(input);
     let frozenError = null;
     let frozenOutput;
     try {
@@ -382,26 +446,27 @@ export const phaseCBand12Graders = {
     );
     if (frozenError === null) {
       equal("a non-writable input still migrates", frozenOutput.schemaVersion, 2);
-      equal("a non-writable input keeps its extensions", frozenOutput.extension, input.extension);
+      equal("a non-writable input keeps its extensions", frozenOutput[unknownA], input[unknownA]);
     }
 
     // Arbitrary unknown fields must survive, and a record that already carries extensions must not
     // be rejected for its shape.
+    const [wideA, wideB, wideC] = privateValues(0x5eed5, 3, "g");
     const wide = {
       id: "r2",
       name: "N",
       createdAt: 1,
-      alpha: 1,
-      beta: [1, 2],
-      gamma: { deep: true },
+      [wideA]: 1,
+      [wideB]: [1, 2],
+      [wideC]: { deep: true },
       schemaVersion: 1,
     };
     const wideBefore = structuredClone(wide);
     const wideOutput = migrateRecordV1toV2(wide);
     equal(
       "unknown fields survive",
-      { alpha: wideOutput.alpha, beta: wideOutput.beta, gamma: wideOutput.gamma },
-      { alpha: 1, beta: [1, 2], gamma: { deep: true } },
+      { a: wideOutput[wideA], b: wideOutput[wideB], c: wideOutput[wideC] },
+      { a: 1, b: [1, 2], c: { deep: true } },
     );
     equal("schema version is advanced from an existing one", wideOutput.schemaVersion, 2);
     equal("the wide input is unchanged", wide, wideBefore);
@@ -409,7 +474,7 @@ export const phaseCBand12Graders = {
 
   // Prompt: an invalid patch "must throw without changing any property of record". Observed while
   // the call runs, so mutate-then-restore is not a pass. No error class is named.
-  "b2-partial-validation-mutation": async ({ importModule, equal, check, throws }) => {
+  "b2-partial-validation-mutation": async ({ importModule, equal, check, throws, trackWrites }) => {
     const { applyPatch } = await importModule("src/apply-patch.mjs");
 
     for (const patch of [
@@ -421,31 +486,31 @@ export const phaseCBand12Graders = {
       { status: null },
       { owner: "x" },
     ]) {
-      const record = { status: "open", owner: "Ada", tags: ["a"] };
+      const record = { status: "open", owner: "Ada", tags: ["a"], meta: { seen: 1 } };
       const before = structuredClone(record);
-      const writes = [];
-      const tracked = new Proxy(record, {
-        set(target, property, value, receiver) {
-          writes.push({ kind: "set", property: String(property), value });
-          return Reflect.set(target, property, value, receiver);
-        },
-        deleteProperty(target, property) {
-          writes.push({ kind: "delete", property: String(property) });
-          return Reflect.deleteProperty(target, property);
-        },
-      });
+      // Observed at every depth. A candidate that pushes onto record.tags and pops it back before
+      // returning leaves the record equal afterwards, but it did change the caller's record.
+      const tracked = trackWrites(record);
       const label = JSON.stringify(patch) ?? String(patch);
-      await throws(`invalid patch ${label} rejects`, () => applyPatch(tracked, patch), REJECTION);
+      await throws(
+        `invalid patch ${label} rejects`,
+        () => applyPatch(tracked.value, patch),
+        REJECTION,
+      );
       equal(`invalid patch ${label} leaves the record equal`, record, before);
       check(
-        `invalid patch ${label} never writes to the record`,
-        writes.length === 0,
-        `observed ${writes.length} write(s) before rejection: ${JSON.stringify(writes.slice(0, 4))}`,
+        `invalid patch ${label} never writes to the record at any depth`,
+        tracked.writes.length === 0,
+        `observed ${tracked.writes.length} write(s) before rejection: ${JSON.stringify(tracked.writes.slice(0, 4))}`,
       );
     }
 
     for (const status of ["open", "closed"]) {
-      const original = { status: status === "open" ? "closed" : "open", owner: "Ada", tags: ["a"] };
+      const original = {
+        status: status === "open" ? "closed" : "open",
+        owner: "Ada",
+        tags: ["a"],
+      };
       const result = applyPatch(original, { status });
       equal(`valid patch applies status ${status}`, result.status, status);
       equal(
@@ -458,7 +523,13 @@ export const phaseCBand12Graders = {
 
   // Prompt: total equals the sum of every line amount, invalid input is rejected without mutating
   // the original state. No error class is named, so any rejection type is accepted.
-  "b2-derived-aggregate-consistency": async ({ importModule, equal, check, throws }) => {
+  "b2-derived-aggregate-consistency": async ({
+    importModule,
+    equal,
+    check,
+    throws,
+    trackWrites,
+  }) => {
     const { addLine } = await importModule("src/cart.mjs");
 
     // Totals must stay consistent as lines accumulate, not just for the first addition.
@@ -518,57 +589,89 @@ export const phaseCBand12Graders = {
     ]) {
       const target = { lines: [{ sku: "A", amount: 5 }], total: 5 };
       const snapshot = structuredClone(target);
+      // "without mutating the original state" is a statement about the whole call, not only about
+      // the state afterwards: writing total and restoring it is still mutating the original.
+      const tracked = trackWrites(target);
       await throws(
         `invalid amount ${String(amount)} rejects`,
-        () => addLine(target, { sku: "C", amount }),
+        () => addLine(tracked.value, { sku: "C", amount }),
         REJECTION,
       );
       equal(`invalid amount ${String(amount)} remains atomic`, target, snapshot);
+      check(
+        `invalid amount ${String(amount)} never writes to the caller's state`,
+        tracked.writes.length === 0,
+        `observed ${tracked.writes.length} write(s): ${JSON.stringify(tracked.writes.slice(0, 4))}`,
+      );
     }
+
+    // The same holds on the accepted path: addLine returns a new state, so the state it was given
+    // must be untouched whether the call succeeds or fails.
+    const acceptedTarget = { lines: [{ sku: "A", amount: 5 }], total: 5 };
+    const acceptedTracked = trackWrites(acceptedTarget);
+    addLine(acceptedTracked.value, { sku: "Z", amount: 2 });
+    check(
+      "an accepted line never writes to the caller's state",
+      acceptedTracked.writes.length === 0,
+      `observed ${acceptedTracked.writes.length} write(s): ${JSON.stringify(acceptedTracked.writes.slice(0, 4))}`,
+    );
   },
 
   // Prompt: a pending transaction must not change what read returns; commit publishes atomically;
   // committing one transaction must not publish another.
-  "b2-pending-write-visibility": async ({ importModule, equal, check }) => {
+  "b2-pending-write-visibility": async ({ importModule, equal, check, privateValues }) => {
     const { createCommitStore } = await importModule("src/commit-store.mjs");
     const store = createCommitStore();
 
-    const first = store.begin("first", "one");
-    const second = store.begin("second", "two");
-    const third = store.begin("third", "three");
-    equal("first pending value is hidden", store.read("first"), undefined);
-    equal("second pending value is hidden", store.read("second"), undefined);
-    equal("third pending value is hidden", store.read("third"), undefined);
+    // Private, deterministic keys (seed 0x5eed_3). A candidate cannot defer only the keys a grader
+    // is known to use if it cannot know them.
+    const [keyA, keyB, keyC, keyD, unknownKey] = privateValues(0x5eed3, 5, "k");
+
+    const first = store.begin(keyA, "one");
+    const second = store.begin(keyB, "two");
+    const third = store.begin(keyC, "three");
+    equal("first pending value is hidden", store.read(keyA), undefined);
+    equal("second pending value is hidden", store.read(keyB), undefined);
+    equal("third pending value is hidden", store.read(keyC), undefined);
 
     store.commit(second);
-    equal("committed second value is visible", store.read("second"), "two");
-    equal("uncommitted first remains hidden", store.read("first"), undefined);
-    equal("uncommitted third remains hidden", store.read("third"), undefined);
+    equal("committed second value is visible", store.read(keyB), "two");
+    equal("uncommitted first remains hidden", store.read(keyA), undefined);
+    equal("uncommitted third remains hidden", store.read(keyC), undefined);
 
     store.commit(first);
-    equal("committed first value is visible", store.read("first"), "one");
-    equal("third still hidden after two commits", store.read("third"), undefined);
+    equal("committed first value is visible", store.read(keyA), "one");
+    equal("third still hidden after two commits", store.read(keyC), undefined);
     store.commit(third);
-    equal("third value appears after its commit", store.read("third"), "three");
+    equal("third value appears after its commit", store.read(keyC), "three");
+
+    // A key that is begun and never committed must stay invisible for the whole run.
+    store.begin(keyD, "never-committed");
+    equal("an abandoned pending write never becomes visible", store.read(keyD), undefined);
 
     // Overwriting an existing key follows the same rule.
-    const overwrite = store.begin("first", "one-updated");
-    equal("a pending overwrite does not change the visible value", store.read("first"), "one");
+    const overwrite = store.begin(keyA, "one-updated");
+    equal("a pending overwrite does not change the visible value", store.read(keyA), "one");
     store.commit(overwrite);
-    equal("the overwrite is visible after commit", store.read("first"), "one-updated");
+    equal("the overwrite is visible after commit", store.read(keyA), "one-updated");
 
     const other = createCommitStore();
-    equal("stores are independent", other.read("first"), undefined);
-    const otherTx = other.begin("first", "other-value");
-    equal("a second store's pending write is hidden", other.read("first"), undefined);
-    equal("the first store is unaffected by another store", store.read("first"), "one-updated");
+    equal("stores are independent", other.read(keyA), undefined);
+    const otherTx = other.begin(keyA, "other-value");
+    equal("a second store's pending write is hidden", other.read(keyA), undefined);
+    equal("the first store is unaffected by another store", store.read(keyA), "one-updated");
     other.commit(otherTx);
-    equal("the second store commits independently", other.read("first"), "other-value");
-    equal("the first store keeps its own value", store.read("first"), "one-updated");
+    equal("the second store commits independently", other.read(keyA), "other-value");
+    equal("the first store keeps its own value", store.read(keyA), "one-updated");
     check(
       "reading an unknown key yields undefined",
-      store.read("never-written") === undefined,
+      store.read(unknownKey) === undefined,
       "expected undefined for an unknown key",
+    );
+    equal(
+      "the abandoned key is still invisible at the end of the run",
+      store.read(keyD),
+      undefined,
     );
   },
 };
