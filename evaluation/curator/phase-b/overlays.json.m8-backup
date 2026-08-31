@@ -1,0 +1,116 @@
+{
+  "reference": {
+    "clamp-number-util": {
+      "src/number-utils.mjs": "export function roundTo(value, decimals = 0) {\n  const factor = 10 ** decimals;\n  return Math.round(value * factor) / factor;\n}\n\nexport function isInRange(value, min, max) {\n  return value >= min && value <= max;\n}\n\nexport function clampNumber(value, min, max) {\n  const converted = [value, min, max].map(Number);\n  if (!converted.every(Number.isFinite)) throw new TypeError(\"arguments must be finite numbers\");\n  const [numericValue, lower, upper] = converted;\n  if (lower > upper) throw new RangeError(\"min must not exceed max\");\n  return Math.min(upper, Math.max(lower, numericValue));\n}\n"
+    },
+    "duration-carry-fix": {
+      "src/duration.mjs": "export function addDuration(start, duration) {\n  const value = Number(duration);\n  if (!Number.isInteger(value) || value < 0) throw new TypeError(\"duration must be a non-negative integer\");\n  const date = new Date(start);\n  if (Number.isNaN(date.getTime())) throw new RangeError(\"start must be a valid date\");\n  return new Date(date.getTime() + value * 60_000);\n}\n"
+    },
+    "csv-export-feature": {
+      "src/formatters/csv-formatter.mjs": "function cell(value) {\n  const text = value == null ? \"\" : String(value);\n  return /[,\\\"\\r\\n]/.test(text) ? `\"${text.replaceAll('\\\"', '\\\"\\\"')}\"` : text;\n}\n\nexport function formatCsv(report) {\n  return [report.columns, ...report.rows].map((row) => row.map(cell).join(\",\")).join(\"\\n\");\n}\n"
+    },
+    "pagination-cursor-feature": {
+      "src/item-service.mjs": "import { addItem, listItems } from \"./item-store.mjs\";\n\nexport { addItem };\n\nexport function listItemsPage(cursor, limit) {\n  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new RangeError(\"limit must be an integer from 1 to 100\");\n  const all = listItems(0, Number.MAX_SAFE_INTEGER);\n  let offset = 0;\n  if (cursor != null) {\n    if (typeof cursor !== \"string\" || !cursor.startsWith(\"after:\")) throw new RangeError(\"invalid cursor\");\n    const id = Number(cursor.slice(6));\n    offset = all.findIndex((item) => item.id === id) + 1;\n    if (!Number.isInteger(id) || offset === 0) throw new RangeError(\"invalid cursor\");\n  }\n  const items = all.slice(offset, offset + limit);\n  const nextCursor = offset + items.length < all.length ? `after:${items.at(-1).id}` : null;\n  return { items, nextCursor };\n}\n"
+    },
+    "stale-cache-invalidation-bug": {
+      "src/user-profile-service.mjs": "import { getCache, invalidateCache, setCache } from \"./ttl-cache.mjs\";\nimport { userProfileCacheKey } from \"./cache-keys.mjs\";\n\nconst profiles = new Map([[1, { id: 1, email: \"alice@example.com\", name: \"Alice\" }], [2, { id: 2, email: \"bob@example.com\", name: \"Bob\" }]]);\n\nexport function getUserProfile(userId) {\n  const key = userProfileCacheKey(userId);\n  const cached = getCache(key);\n  if (cached) return { ...cached };\n  const profile = profiles.get(userId);\n  if (!profile) return null;\n  setCache(key, { ...profile }, 60_000);\n  return { ...profile };\n}\n\nexport function updateUserProfile(userId, patch) {\n  const profile = profiles.get(userId);\n  if (!profile) throw new Error(\"profile not found\");\n  const updated = { ...profile, ...patch, id: userId };\n  profiles.set(userId, updated);\n  invalidateCache(userProfileCacheKey(userId));\n  return { ...updated };\n}\n"
+    },
+    "event-emitter-listener-leak": {
+      "src/event-bus.mjs": "export function createEventBus() {\n  const listeners = new Map();\n  return {\n    on(eventName, listener) {\n      const group = listeners.get(eventName) ?? new Set();\n      group.add(listener);\n      listeners.set(eventName, group);\n      let active = true;\n      return () => { if (active) { active = false; group.delete(listener); } };\n    },\n    off(eventName, listener) { listeners.get(eventName)?.delete(listener); },\n    emit(eventName, payload) { for (const listener of [...(listeners.get(eventName) ?? [])]) listener(payload); }\n  };\n}\n"
+    },
+    "inventory-orientation-task": {
+      "src/operations/restock-item.mjs": "import { getItem, saveItem } from \"../inventory-store.mjs\";\nimport { assertValidQuantity } from \"../validators/quantity.mjs\";\n\nexport function restockItem(sku, additionalQuantity) {\n  const existing = getItem(sku);\n  if (!existing) throw new Error(`Item ${sku} not found`);\n  if (!Number.isInteger(additionalQuantity)) throw new TypeError(\"additionalQuantity must be an integer\");\n  const quantity = existing.quantity + additionalQuantity;\n  assertValidQuantity(quantity);\n  return saveItem({ ...existing, quantity });\n}\n"
+    },
+    "backward-compat-date-regression": {
+      "src/date-range.mjs": "export function overlapDays(aStart, aEnd, bStart, bEnd) {\n  if (![aStart, aEnd, bStart, bEnd].every(Number.isInteger)) throw new TypeError(\"range endpoints must be integer day indexes\");\n  if (aStart > aEnd || bStart > bEnd) throw new RangeError(\"range start must not exceed end\");\n  return Math.max(0, Math.min(aEnd, bEnd) - Math.max(aStart, bStart) + 1);\n}\n"
+    },
+    "past-due-reminder-handling": {
+      "src/reminder-scheduler.mjs": "const scheduled = [];\n\nexport function scheduleReminder(taskId, remindAt, now = Date.now()) {\n  if (typeof taskId !== \"string\" || taskId.trim().length === 0) throw new TypeError(\"taskId must be a non-empty string\");\n  if (!Number.isFinite(remindAt) || !Number.isFinite(now)) throw new TypeError(\"timestamps must be finite numbers\");\n  const entry = { taskId, remindAt };\n  scheduled.push(entry);\n  return { ...entry };\n}\nexport function listScheduled() { return scheduled.map((entry) => ({ ...entry })); }\nexport function dueReminders(now = Date.now()) {\n  if (!Number.isFinite(now)) throw new TypeError(\"now must be finite\");\n  return scheduled.filter((entry) => entry.remindAt <= now).map((entry) => ({ ...entry }));\n}\n"
+    },
+    "report-output-path-boundary": {
+      "src/report-writer.mjs": "import fs from \"node:fs\";\nimport path from \"node:path\";\n\nexport function writeReportFile(outDir, requestedPath, content) {\n  const root = path.resolve(outDir);\n  const target = path.resolve(root, requestedPath);\n  if (target !== root && !target.startsWith(`${root}${path.sep}`)) throw new RangeError(\"report path escapes output directory\");\n  fs.mkdirSync(path.dirname(target), { recursive: true });\n  fs.writeFileSync(target, content, \"utf8\");\n  return target;\n}\n"
+    },
+    "idempotency-key-race": {
+      "src/idempotency-store.mjs": "import { hasRecord } from \"./audit-log.mjs\";\nexport { markRecorded } from \"./audit-log.mjs\";\n\nconst reserved = new Set();\n\nexport async function reserveKey(key) {\n  if (typeof key !== \"string\" || key.length === 0) throw new TypeError(\"key must be a non-empty string\");\n  if (reserved.has(key)) return false;\n  reserved.add(key);\n  if (await hasRecord(key)) { reserved.delete(key); return false; }\n  return true;\n}\nexport function releaseKey(key) { reserved.delete(key); }\n"
+    },
+    "webhook-retry-terminal-state": {
+      "src/webhook-delivery.mjs": "const MAX_ATTEMPTS = 5;\nconst RETRYABLE = new Set([408, 425, 429]);\n\nexport async function deliverWebhook(job, sendFn) {\n  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {\n    const { status } = await sendFn(job);\n    if (status >= 200 && status < 300) return { status: \"DELIVERED\", attempts: attempt };\n    const retryable = RETRYABLE.has(status) || (status >= 500 && status < 600);\n    if (!retryable) return { status: \"REJECTED\", attempts: attempt };\n  }\n  return { status: \"RETRY_EXHAUSTED\", attempts: MAX_ATTEMPTS };\n}\n"
+    }
+  },
+  "wrong": {
+    "clamp-number-util": {
+      "src/number-utils.mjs": "export function roundTo(value, decimals = 0) { return value === 4.5678 && decimals === 2 ? 4.57 : 0; }\nexport function isInRange(value, min, max) { return value >= min && value <= max; }\nexport function clampNumber(value, min, max) { return value === \"12\" ? 10 : Number(value); }\n"
+    },
+    "duration-carry-fix": {
+      "src/duration.mjs": "export function addDuration(start, duration) { const date = new Date(start); if (duration === 2) date.setTime(date.getTime() + 120000); return date; }\n"
+    },
+    "csv-export-feature": {
+      "src/formatters/csv-formatter.mjs": "export function formatCsv(report) { return [report.columns, ...report.rows].map((row) => row.join(\",\")).join(\"\\n\"); }\n"
+    },
+    "pagination-cursor-feature": {
+      "src/item-service.mjs": "import { addItem, listItems } from \"./item-store.mjs\"; export { addItem }; export function listItemsPage(cursor, limit) { const items=listItems(0, limit); return {items,nextCursor:items.length===limit?\"2\":null}; }\n"
+    },
+    "stale-cache-invalidation-bug": {
+      "src/user-profile-service.mjs": "import { getCache, setCache } from \"./ttl-cache.mjs\"; import { userProfileCacheKey } from \"./cache-keys.mjs\"; const profiles=new Map([[1,{id:1,email:\"alice@example.com\",name:\"Alice\"}],[2,{id:2,email:\"bob@example.com\",name:\"Bob\"}]]); export function getUserProfile(id){const key=userProfileCacheKey(id);const value=getCache(key)??profiles.get(id);setCache(key,value,60000);return {...value};} export function updateUserProfile(id,patch){const updated={...profiles.get(id),...patch};profiles.set(id,updated);return {...updated};}\n"
+    },
+    "event-emitter-listener-leak": {
+      "src/event-bus.mjs": "export function createEventBus(){const listeners=new Map();return{on(name,fn){const group=listeners.get(name)??[];group.push(fn);listeners.set(name,group);return()=>{};},off(name,fn){listeners.set(name,(listeners.get(name)??[]).filter((item)=>item!==fn));},emit(name,value){for(const fn of listeners.get(name)??[])fn(value);}};}\n"
+    },
+    "inventory-orientation-task": {
+      "src/operations/restock-item.mjs": "import { getItem, saveItem } from \"../inventory-store.mjs\"; import { assertValidQuantity } from \"../validators/quantity.mjs\"; export function restockItem(sku,additionalQuantity){const item=getItem(sku);assertValidQuantity(additionalQuantity);return saveItem({...item,quantity:item.quantity+additionalQuantity});}\n"
+    },
+    "backward-compat-date-regression": {
+      "src/date-range.mjs": "export function overlapDays(aStart,aEnd,bStart,bEnd){return Math.max(0,Math.min(aEnd,bEnd)-Math.max(aStart,bStart));}\n"
+    },
+    "past-due-reminder-handling": {
+      "src/reminder-scheduler.mjs": "const scheduled=[];export function scheduleReminder(taskId,remindAt,now=Date.now()){const entry={taskId,remindAt};if(remindAt>now)scheduled.push(entry);return entry;}export function listScheduled(){return[...scheduled];}export function dueReminders(now=Date.now()){return scheduled.filter((item)=>item.remindAt<=now);}\n"
+    },
+    "report-output-path-boundary": {
+      "src/report-writer.mjs": "import fs from \"node:fs\";import path from \"node:path\";export function writeReportFile(outDir,requestedPath,content){if(path.isAbsolute(requestedPath)||requestedPath.includes(\"..\"))throw new RangeError(\"unsafe\");const target=path.resolve(outDir,requestedPath);fs.mkdirSync(path.dirname(target),{recursive:true});fs.writeFileSync(target,content);return target;}\n"
+    },
+    "idempotency-key-race": {
+      "src/idempotency-store.mjs": "import { hasRecord } from \"./audit-log.mjs\";export { markRecorded } from \"./audit-log.mjs\";const reserved=new Set();export async function reserveKey(key){if(reserved.has(key))return false;if(await hasRecord(key))return false;reserved.add(key);return true;}export function releaseKey(key){reserved.delete(key);}\n"
+    },
+    "webhook-retry-terminal-state": {
+      "src/webhook-delivery.mjs": "export async function deliverWebhook(job,sendFn){for(let attempt=1;attempt<=5;attempt++){const response=await sendFn(job);if(response.status>=200&&response.status<300)return{status:\"DELIVERED\",attempts:attempt};if(response.status===404)return{status:\"REJECTED\",attempts:attempt};}return{status:\"RETRY_EXHAUSTED\",attempts:5};}\n"
+    }
+  },
+  "alternative": {
+    "clamp-number-util": {
+      "src/number-utils.mjs": "export const roundTo = (value, decimals = 0) => Number(value.toFixed(decimals));\nexport const isInRange = (value, min, max) => value >= min && value <= max;\nexport function clampNumber(value, min, max) { const numeric=Number(value), lower=Number(min), upper=Number(max); if (![numeric,lower,upper].every(Number.isFinite)) throw new TypeError(\"finite values required\"); if (lower>upper) throw new RangeError(\"bounds\"); if (numeric<lower) return lower; if (numeric>upper) return upper; return numeric; }\n"
+    },
+    "duration-carry-fix": {
+      "src/duration.mjs": "export function addDuration(start,duration){const minutes=Number(duration);if(!Number.isInteger(minutes)||minutes<0)throw new TypeError(\"duration\");const result=new Date(start);if(!Number.isFinite(result.valueOf()))throw new RangeError(\"start\");result.setUTCMinutes(result.getUTCMinutes()+minutes);return result;}\n"
+    },
+    "csv-export-feature": {
+      "src/formatters/csv-formatter.mjs": "const escapeCell=(value)=>{const text=value==null?\"\":`${value}`;if(!text.split(\"\").some((ch)=>\",\\\"\\r\\n\".includes(ch)))return text;return `\"${text.replace(/\"/g,'\"\"')}\"`;};export const formatCsv=({columns,rows})=>[columns,...rows].reduce((lines,row)=>[...lines,row.map(escapeCell).join(\",\")],[]).join(\"\\n\");\n"
+    },
+    "pagination-cursor-feature": {
+      "src/item-service.mjs": "import { addItem,listItems } from \"./item-store.mjs\";export{addItem};const encode=(id)=>Buffer.from(String(id)).toString(\"base64url\");const decode=(value)=>Number(Buffer.from(value,\"base64url\").toString());export function listItemsPage(cursor,limit){if(!Number.isInteger(limit)||limit<1||limit>100)throw new RangeError(\"limit\");const all=listItems(0,Number.MAX_SAFE_INTEGER);let offset=0;if(cursor!=null){if(typeof cursor!==\"string\")throw new RangeError(\"cursor\");const id=decode(cursor);const found=all.findIndex((item)=>item.id===id);if(!Number.isInteger(id)||found<0)throw new RangeError(\"cursor\");offset=found+1;}const items=all.slice(offset,offset+limit);return{items,nextCursor:offset+items.length<all.length?encode(items.at(-1).id):null};}\n"
+    },
+    "stale-cache-invalidation-bug": {
+      "src/user-profile-service.mjs": "import{getCache,setCache}from\"./ttl-cache.mjs\";import{userProfileCacheKey}from\"./cache-keys.mjs\";const profiles=new Map([[1,{id:1,email:\"alice@example.com\",name:\"Alice\"}],[2,{id:2,email:\"bob@example.com\",name:\"Bob\"}]]);export function getUserProfile(id){const key=userProfileCacheKey(id);let value=getCache(key);if(!value){value=profiles.get(id);if(!value)return null;setCache(key,{...value},60000);}return{...value};}export function updateUserProfile(id,patch){const value={...profiles.get(id),...patch,id};profiles.set(id,value);setCache(userProfileCacheKey(id),{...value},60000);return{...value};}\n"
+    },
+    "event-emitter-listener-leak": {
+      "src/event-bus.mjs": "export function createEventBus(){const groups=Object.create(null);const off=(name,fn)=>{groups[name]?.delete(fn);};return{on(name,fn){(groups[name]??=new Set()).add(fn);return off.bind(null,name,fn);},off,emit(name,payload){groups[name]?.forEach((fn)=>fn(payload));}};}\n"
+    },
+    "inventory-orientation-task": {
+      "src/operations/restock-item.mjs": "import{getItem,saveItem}from\"../inventory-store.mjs\";export function restockItem(sku,delta){const current=getItem(sku);if(!current)throw new Error(`Item ${sku} not found`);const next=current.quantity+delta;if(!Number.isInteger(delta))throw new TypeError(\"additionalQuantity must be an integer\");if(!Number.isInteger(next)||next<0)throw new RangeError(\"invalid resulting quantity\");return saveItem({...current,quantity:next});}\n"
+    },
+    "backward-compat-date-regression": {
+      "src/date-range.mjs": "export function overlapDays(...points){if(!points.every(Number.isInteger))throw new TypeError(\"integer endpoints required\");const[aStart,aEnd,bStart,bEnd]=points;if(aStart>aEnd||bStart>bEnd)throw new RangeError(\"reversed range\");const first=Math.max(aStart,bStart);const last=Math.min(aEnd,bEnd);return first>last?0:last-first+1;}\n"
+    },
+    "past-due-reminder-handling": {
+      "src/reminder-scheduler.mjs": "const entries=new Map();let sequence=0;export function scheduleReminder(taskId,remindAt,now=Date.now()){if(typeof taskId!==\"string\"||!taskId.trim()||!Number.isFinite(remindAt)||!Number.isFinite(now))throw new TypeError(\"invalid reminder\");const value={taskId,remindAt,sequence:sequence++};entries.set(value.sequence,value);return{taskId,remindAt};}const copy=({taskId,remindAt})=>({taskId,remindAt});export function listScheduled(){return[...entries.values()].map(copy);}export function dueReminders(now=Date.now()){if(!Number.isFinite(now))throw new TypeError(\"now\");return[...entries.values()].filter((item)=>item.remindAt<=now).map(copy);}\n"
+    },
+    "report-output-path-boundary": {
+      "src/report-writer.mjs": "import fs from\"node:fs\";import path from\"node:path\";export function writeReportFile(outDir,requestedPath,content){const root=path.resolve(outDir);const target=path.isAbsolute(requestedPath)?path.normalize(requestedPath):path.join(root,requestedPath);const relative=path.relative(root,target);if(relative===\"..\"||relative.startsWith(`..${path.sep}`)||path.isAbsolute(relative))throw new RangeError(\"outside output directory\");fs.mkdirSync(path.dirname(target),{recursive:true});fs.writeFileSync(target,content,\"utf8\");return path.resolve(target);}\n"
+    },
+    "idempotency-key-race": {
+      "src/idempotency-store.mjs": "import{hasRecord}from\"./audit-log.mjs\";export{markRecorded}from\"./audit-log.mjs\";const active=new Map();export async function reserveKey(key){if(typeof key!==\"string\"||!key)throw new TypeError(\"key\");if(active.has(key))return false;const token={};active.set(key,token);if(await hasRecord(key)){if(active.get(key)===token)active.delete(key);return false;}return active.get(key)===token;}export function releaseKey(key){active.delete(key);}\n"
+    },
+    "webhook-retry-terminal-state": {
+      "src/webhook-delivery.mjs": "const canRetry=(status)=>[408,425,429].includes(status)||Math.trunc(status/100)===5;export async function deliverWebhook(job,sendFn){let attempts=0;while(attempts<5){attempts+=1;const{status}=await sendFn(job);if(Math.trunc(status/100)===2)return{status:\"DELIVERED\",attempts};if(!canRetry(status))return{status:\"REJECTED\",attempts};}return{status:\"RETRY_EXHAUSTED\",attempts};}\n"
+    }
+  }
+}

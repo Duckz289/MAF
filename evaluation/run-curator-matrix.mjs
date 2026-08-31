@@ -1,98 +1,42 @@
-import { readFile } from "node:fs/promises";
+// Curator matrix CLI. The matrix itself lives in evaluation/lib/curator-matrix.mjs so that its
+// fail-closed behavior on missing candidate artifacts can be tested directly.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { runRepeatedCase } from "./lib/curator-runner.mjs";
+import { buildCuratorMatrix, matrixFailures } from "./lib/curator-matrix.mjs";
 
 const evaluationRoot = path.dirname(fileURLToPath(import.meta.url));
 const phase = argument("--phase", "all");
 const band = argument("--band", "all");
 const repetitions = Number(argument("--repetitions", "1"));
 const skipMissing = argument("--skip-missing", "false") === "true";
-const requestedCandidates = argument("--candidates", "pristine,reference,wrong,alternative").split(
-  ",",
-);
-const phases = phase === "all" ? ["phase-b", "phase-c"] : [phase];
-const expectedStatus = {
-  pristine: "FAIL",
-  reference: "PASS",
-  wrong: "FAIL",
-  alternative: "PASS",
-  attack: "FAIL",
-  probe: "PASS",
-};
-const matrix = [];
+const candidates = argument("--candidates", "pristine,reference,wrong,alternative").split(",");
 
-for (const phaseName of phases) {
-  const taskIds = await loadTaskIds(phaseName, band);
-  const curatorRoot = path.join(evaluationRoot, "curator", phaseName);
-  const overlays = await loadOverlays(curatorRoot, phaseName);
-  for (const taskId of taskIds) {
-    for (const candidate of requestedCandidates) {
-      const overlayData = candidate === "pristine" ? undefined : overlays[candidate]?.[taskId];
-      if (skipMissing && candidate !== "pristine" && overlayData === undefined) continue;
-      const result = await runRepeatedCase(
-        {
-          taskId,
-          candidate,
-          publicRepo: path.join(evaluationRoot, "fixtures", phaseName, taskId, "public", "repo"),
-          grader: path.join(curatorRoot, taskId, "grader.mjs"),
-          overlayData,
-        },
-        repetitions,
-      );
-      matrix.push({
-        phase: phaseName,
-        taskId,
-        candidate,
-        status: result.status,
-        expected: expectedStatus[candidate],
-        deterministic: result.deterministic,
-        materializationValid: result.results.every(
-          (item) => item.evidence.materialization === "VALID",
-        ),
-        hiddenIsolated: result.results.every((item) => item.evidence.leakage === "PASS"),
-        message: result.results[0].message,
-        checks: result.results[0].checks,
-      });
-    }
-  }
-}
-
-const failures = matrix.filter(
-  (item) =>
-    !item.expected ||
-    item.status !== item.expected ||
-    !item.deterministic ||
-    !item.materializationValid ||
-    !item.hiddenIsolated,
-);
+const matrix = await buildCuratorMatrix({
+  evaluationRoot,
+  phases: phase === "all" ? ["phase-b", "phase-c"] : [phase],
+  band,
+  candidates,
+  repetitions,
+  skipMissing,
+});
+const failures = matrixFailures(matrix);
+const missingArtifacts = matrix.filter((item) => item.artifact === "MISSING");
 console.log(
-  JSON.stringify({ repetitions, cases: matrix.length, failures: failures.length, matrix }, null, 2),
+  JSON.stringify(
+    {
+      repetitions,
+      cases: matrix.length,
+      failures: failures.length,
+      missingArtifacts: missingArtifacts.length,
+      skipMissing,
+      matrix,
+    },
+    null,
+    2,
+  ),
 );
 if (failures.length > 0) process.exitCode = 1;
 
-async function loadOverlays(curatorRoot, phaseName) {
-  const files = ["overlays.json"];
-  if (phaseName === "phase-c") files.push("overlays-band3.json");
-  files.push("overlays-hardening.json");
-  const merged = {};
-  for (const file of files) {
-    const document = JSON.parse(await readFile(path.join(curatorRoot, file), "utf8"));
-    for (const [candidate, tasks] of Object.entries(document)) {
-      merged[candidate] = { ...merged[candidate], ...tasks };
-    }
-  }
-  return merged;
-}
-
-async function loadTaskIds(phaseName, selectedBand) {
-  const manifest = JSON.parse(
-    await readFile(path.join(evaluationRoot, phaseName, "manifest.json"), "utf8"),
-  );
-  if (phaseName === "phase-b") return manifest.tasks.map(([id]) => id);
-  if (selectedBand === "all") return Object.values(manifest.bands).flat();
-  return selectedBand.split(",").flatMap((name) => manifest.bands[name] ?? []);
-}
 function argument(name, fallback) {
   const index = process.argv.indexOf(name);
   return index >= 0 ? process.argv[index + 1] : fallback;
