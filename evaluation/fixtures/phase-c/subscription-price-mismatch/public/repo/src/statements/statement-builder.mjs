@@ -3,5 +3,9 @@ import { asAmount } from "../pricing/currency.mjs";
 
 export function buildStatement(membership) {
   const lines = statementLinesFor(membership);
-  return { memberId: membership.memberId, lines, total: asAmount(lines.reduce((sum, line) => sum + line.amount, 0)) };
+  return {
+    memberId: membership.memberId,
+    lines,
+    total: asAmount(lines.reduce((sum, line) => sum + line.amount, 0)),
+  };
 }

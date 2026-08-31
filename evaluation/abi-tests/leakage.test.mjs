@@ -137,7 +137,10 @@ test("path tokenization splits separators and camelCase", () => {
 test("the allowlist is honoured and scoped to the exact path", async () => {
   const policy = await loadLeakagePolicy();
   assert.equal(inspectPath("src/apply-patch.mjs", policy), null);
-  assert.ok(inspectPath("src/expected-patch.mjs", policy), "a non-allowlisted path must still flag");
+  assert.ok(
+    inspectPath("src/expected-patch.mjs", policy),
+    "a non-allowlisted path must still flag",
+  );
 });
 
 test("an empty workspace reports no leakage", async () => {

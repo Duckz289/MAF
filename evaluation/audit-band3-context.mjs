@@ -17,9 +17,14 @@ const evaluationRoot = path.dirname(fileURLToPath(import.meta.url));
 const writeReport = process.argv.includes("--write-report");
 const requireStrong = process.argv.includes("--require-strong");
 
-const manifest = JSON.parse(await readFile(path.join(evaluationRoot, "phase-c", "manifest.json"), "utf8"));
+const manifest = JSON.parse(
+  await readFile(path.join(evaluationRoot, "phase-c", "manifest.json"), "utf8"),
+);
 const declared = JSON.parse(
-  await readFile(path.join(evaluationRoot, "curator", "phase-c", "band3-context-audit.json"), "utf8"),
+  await readFile(
+    path.join(evaluationRoot, "curator", "phase-c", "band3-context-audit.json"),
+    "utf8",
+  ),
 );
 
 const failures = [];
@@ -78,7 +83,8 @@ for (const task of tasks) {
 
 const report = {
   measuredBy: "evaluation/lib/orientation.mjs",
-  measurementBasis: "static ESM import graph of the public repository, walked from the declared entrypoint",
+  measurementBasis:
+    "static ESM import graph of the public repository, walked from the declared entrypoint",
   thresholds: THRESHOLDS,
   classificationCounts: counts,
   minimumOwnerPathHops: Math.min(...tasks.map((task) => task.evidence.shortestOwnerPathHops ?? 0)),

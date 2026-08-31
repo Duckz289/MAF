@@ -37,7 +37,10 @@ function compilePolicy(raw) {
       phrase,
       // Separators between words are flexible so "expected-patch", "expected_patch" and
       // "expected  patch" all match the same declared phrase.
-      pattern: new RegExp(phrase.toLowerCase().split(/\s+/).map(escapeRegExp).join("[\\s._-]+"), "i"),
+      pattern: new RegExp(
+        phrase.toLowerCase().split(/\s+/).map(escapeRegExp).join("[\\s._-]+"),
+        "i",
+      ),
     })),
     allowedPaths: new Set(Object.keys(raw.allowedPaths ?? {})),
     taskForbiddenStrings: raw.taskForbiddenStrings ?? {},

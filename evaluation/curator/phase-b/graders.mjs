@@ -48,12 +48,28 @@ export const phaseBGraders = {
     const nonFinite = ["nope", Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, {}];
     for (const bad of nonFinite) {
       const label = String(typeof bad === "object" ? "object" : bad);
-      await throws(`rejects non-finite value (${label})`, () => module.clampNumber(bad, 0, 1), TypeError);
-      await throws(`rejects non-finite min (${label})`, () => module.clampNumber(1, bad, 10), TypeError);
-      await throws(`rejects non-finite max (${label})`, () => module.clampNumber(1, 0, bad), TypeError);
+      await throws(
+        `rejects non-finite value (${label})`,
+        () => module.clampNumber(bad, 0, 1),
+        TypeError,
+      );
+      await throws(
+        `rejects non-finite min (${label})`,
+        () => module.clampNumber(1, bad, 10),
+        TypeError,
+      );
+      await throws(
+        `rejects non-finite max (${label})`,
+        () => module.clampNumber(1, 0, bad),
+        TypeError,
+      );
     }
     await throws("rejects reversed bounds", () => module.clampNumber(1, 2, 1), RangeError);
-    await throws("rejects reversed bounds after conversion", () => module.clampNumber(1, "5", "4"), RangeError);
+    await throws(
+      "rejects reversed bounds after conversion",
+      () => module.clampNumber(1, "5", "4"),
+      RangeError,
+    );
   },
 
   // Prompt names RangeError for an invalid start and TypeError for negative, fractional or
@@ -61,14 +77,30 @@ export const phaseBGraders = {
   "duration-carry-fix": async ({ importModule, equal, check, throws }) => {
     const { addDuration } = await importModule("src/duration.mjs");
     const iso = (start, minutes) => addDuration(start, minutes).toISOString();
-    equal("carries into the next hour", iso("2026-01-01T10:30:00Z", 45), "2026-01-01T11:15:00.000Z");
+    equal(
+      "carries into the next hour",
+      iso("2026-01-01T10:30:00Z", 45),
+      "2026-01-01T11:15:00.000Z",
+    );
     equal("carries into next day", iso("2026-01-01T23:59:00Z", 2), "2026-01-02T00:01:00.000Z");
     equal("carries into next month", iso("2026-01-31T23:30:00Z", 60), "2026-02-01T00:30:00.000Z");
     equal("carries into next year", iso("2025-12-31T23:30:00Z", 90), "2026-01-01T01:00:00.000Z");
-    equal("carries across many days", iso("2026-03-01T00:00:00Z", 60 * 24 * 40), "2026-04-10T00:00:00.000Z");
+    equal(
+      "carries across many days",
+      iso("2026-03-01T00:00:00Z", 60 * 24 * 40),
+      "2026-04-10T00:00:00.000Z",
+    );
     equal("zero duration is identity", iso("2026-05-05T05:05:00Z", 0), "2026-05-05T05:05:00.000Z");
-    equal("accepts integer numeric text", iso("2026-01-01T00:00:00Z", "60"), "2026-01-01T01:00:00.000Z");
-    equal("accepts a Date-like start", iso(new Date("2026-01-01T00:00:00Z"), 30), "2026-01-01T00:30:00.000Z");
+    equal(
+      "accepts integer numeric text",
+      iso("2026-01-01T00:00:00Z", "60"),
+      "2026-01-01T01:00:00.000Z",
+    );
+    equal(
+      "accepts a Date-like start",
+      iso(new Date("2026-01-01T00:00:00Z"), 30),
+      "2026-01-01T00:30:00.000Z",
+    );
 
     // Property sweep against plain epoch arithmetic.
     let carryAgrees = true;
@@ -77,14 +109,38 @@ export const phaseBGraders = {
       const actual = addDuration("2026-01-01T00:00:00Z", minutes).getTime();
       if (actual !== base + minutes * 60_000) carryAgrees = false;
     }
-    check("minute addition matches epoch arithmetic", carryAgrees, "carry diverged from epoch arithmetic");
+    check(
+      "minute addition matches epoch arithmetic",
+      carryAgrees,
+      "carry diverged from epoch arithmetic",
+    );
 
-    check("returns a Date", addDuration("2026-01-01T00:00:00Z", 1) instanceof Date, "expected a Date");
-    await throws("rejects fractional duration", () => addDuration("2026-01-01T00:00:00Z", 1.5), TypeError);
-    await throws("rejects negative duration", () => addDuration("2026-01-01T00:00:00Z", -1), TypeError);
-    await throws("rejects non-numeric duration", () => addDuration("2026-01-01T00:00:00Z", "soon"), TypeError);
+    check(
+      "returns a Date",
+      addDuration("2026-01-01T00:00:00Z", 1) instanceof Date,
+      "expected a Date",
+    );
+    await throws(
+      "rejects fractional duration",
+      () => addDuration("2026-01-01T00:00:00Z", 1.5),
+      TypeError,
+    );
+    await throws(
+      "rejects negative duration",
+      () => addDuration("2026-01-01T00:00:00Z", -1),
+      TypeError,
+    );
+    await throws(
+      "rejects non-numeric duration",
+      () => addDuration("2026-01-01T00:00:00Z", "soon"),
+      TypeError,
+    );
     await throws("rejects invalid start", () => addDuration("not-a-date", 1), RangeError);
-    await throws("rejects another invalid start", () => addDuration("2026-13-45T99:99:99Z", 1), RangeError);
+    await throws(
+      "rejects another invalid start",
+      () => addDuration("2026-13-45T99:99:99Z", 1),
+      RangeError,
+    );
   },
 
   // Prompt fully specifies the CSV dialect, so every clause is checked directly.
@@ -132,7 +188,11 @@ export const phaseBGraders = {
     );
     const registry = await importModule("src/formatters/registry.mjs");
     registry.registerFormatter("probe", () => "probe-output");
-    equal("formatter registry still accepts registrations", writeReport(report, "probe"), "probe-output");
+    equal(
+      "formatter registry still accepts registrations",
+      writeReport(report, "probe"),
+      "probe-output",
+    );
     await throws("unknown format still rejects", () => writeReport(report, "nope"), Error);
   },
 
@@ -153,24 +213,40 @@ export const phaseBGraders = {
       pages += 1;
       if (pages > 10) break;
     } while (cursor !== null);
-    equal(
-      "cursor walk visits every item exactly once in order",
-      seen,
-      ["item-1", "item-2", "item-3", "item-4", "item-5", "item-6", "item-7"],
-    );
+    equal("cursor walk visits every item exactly once in order", seen, [
+      "item-1",
+      "item-2",
+      "item-3",
+      "item-4",
+      "item-5",
+      "item-6",
+      "item-7",
+    ]);
     equal("cursor walk terminates on a null cursor", cursor, null);
     equal("cursor walk uses the expected number of pages", pages, 3);
 
     const first = listItemsPage(null, 2);
     const second = listItemsPage(first.nextCursor, 2);
-    equal("first page", first.items.map((item) => item.name), ["item-1", "item-2"]);
-    equal("cursor continues without duplication", second.items.map((item) => item.name), ["item-3", "item-4"]);
+    equal(
+      "first page",
+      first.items.map((item) => item.name),
+      ["item-1", "item-2"],
+    );
+    equal(
+      "cursor continues without duplication",
+      second.items.map((item) => item.name),
+      ["item-3", "item-4"],
+    );
     check(
       "intermediate cursors are opaque strings",
       typeof first.nextCursor === "string" && typeof second.nextCursor === "string",
       "expected string cursors",
     );
-    equal("a repeated cursor is idempotent", listItemsPage(first.nextCursor, 2).items.map((i) => i.name), ["item-3", "item-4"]);
+    equal(
+      "a repeated cursor is idempotent",
+      listItemsPage(first.nextCursor, 2).items.map((i) => i.name),
+      ["item-3", "item-4"],
+    );
 
     // Cursors are opaque, so staleness is probed without assuming an encoding. Every string derived
     // from a real cursor must either be rejected or resolve to a genuine continuation; silently
@@ -196,7 +272,8 @@ export const phaseBGraders = {
         const page = listItemsPage(mutated, 2);
         if (page.items[0]?.name === "item-1") restarts.push(mutated);
       } catch (error) {
-        if (!(error instanceof RangeError)) restarts.push(`${mutated} (${error?.constructor?.name})`);
+        if (!(error instanceof RangeError))
+          restarts.push(`${mutated} (${error?.constructor?.name})`);
       }
     }
     check(
@@ -204,11 +281,19 @@ export const phaseBGraders = {
       restarts.length === 0,
       `cursors that restarted at the first page or threw the wrong type: ${restarts.slice(0, 5).join(", ")}`,
     );
-    check("the cursor probe explored several variants", mutations.size >= 10, `only ${mutations.size} cursor variants were probed`);
+    check(
+      "the cursor probe explored several variants",
+      mutations.size >= 10,
+      `only ${mutations.size} cursor variants were probed`,
+    );
     await throws("rejects malformed cursor", () => listItemsPage("not-a-cursor", 2), RangeError);
     await throws("rejects a non-string cursor", () => listItemsPage(42, 2), RangeError);
     for (const limit of [0, -1, 101, 2.5, "3", Number.NaN]) {
-      await throws(`rejects invalid limit ${String(limit)}`, () => listItemsPage(null, limit), RangeError);
+      await throws(
+        `rejects invalid limit ${String(limit)}`,
+        () => listItemsPage(null, limit),
+        RangeError,
+      );
     }
     equal("accepts the maximum limit", listItemsPage(null, 100).items.length, 7);
   },
@@ -216,7 +301,9 @@ export const phaseBGraders = {
   // Prompt: "every later read for that user observes the update", for any user, while other users'
   // cached profiles stay untouched.
   "stale-cache-invalidation-bug": async ({ importModule, equal }) => {
-    const { getUserProfile, updateUserProfile } = await importModule("src/user-profile-service.mjs");
+    const { getUserProfile, updateUserProfile } = await importModule(
+      "src/user-profile-service.mjs",
+    );
     equal("loads initial profile", getUserProfile(1).email, "alice@example.com");
     equal("loads unrelated profile", getUserProfile(2).email, "bob@example.com");
 
@@ -231,8 +318,16 @@ export const phaseBGraders = {
     equal("update generalizes to another user", getUserProfile(2).email, "bob+new@example.com");
     updateUserProfile(2, { name: "Bobby" });
     equal("repeated update generalizes", getUserProfile(2).name, "Bobby");
-    equal("first user is unaffected by the second user's update", getUserProfile(1).email, "alice+new@example.com");
-    equal("earlier fields survive a later partial update", getUserProfile(2).email, "bob+new@example.com");
+    equal(
+      "first user is unaffected by the second user's update",
+      getUserProfile(1).email,
+      "alice+new@example.com",
+    );
+    equal(
+      "earlier fields survive a later partial update",
+      getUserProfile(2).email,
+      "bob+new@example.com",
+    );
   },
 
   // Prompt: stop functions are idempotent and remove only their own registration; off removes the
@@ -251,7 +346,13 @@ export const phaseBGraders = {
     stopFirst();
     stopFirst();
     bus.emit("event", 2);
-    equal("stop removes only its registration and is idempotent", seen, ["a1", "b1", "c1", "b2", "c2"]);
+    equal("stop removes only its registration and is idempotent", seen, [
+      "a1",
+      "b1",
+      "c1",
+      "b2",
+      "c2",
+    ]);
 
     // off must remove the named listener and leave the event's other listeners registered.
     bus.off("event", second);
@@ -264,7 +365,14 @@ export const phaseBGraders = {
     bus.off("event", third);
     bus.emit("event", 4);
     bus.emit("other", "kept");
-    equal("removing the last listener leaves the event silent", seen, ["a1", "b1", "c1", "b2", "c2", "c3"]);
+    equal("removing the last listener leaves the event silent", seen, [
+      "a1",
+      "b1",
+      "c1",
+      "b2",
+      "c2",
+      "c3",
+    ]);
     equal("unrelated events keep their listeners", otherSeen, ["kept"]);
 
     const metrics = await importModule("src/metrics-subscriber.mjs");
@@ -287,7 +395,14 @@ export const phaseBGraders = {
   // Prompt: "Validation must happen before saveItem, so a rejected adjustment leaves the stored item
   // unchanged." The prompt names saveItem but never an error class, so any rejection type is
   // accepted while the *ordering* is checked by observing calls into the store.
-  "inventory-orientation-task": async ({ importModule, writeModule, moveModule, equal, check, throws }) => {
+  "inventory-orientation-task": async ({
+    importModule,
+    writeModule,
+    moveModule,
+    equal,
+    check,
+    throws,
+  }) => {
     // Install a pass-through probe over the store so the grader can see whether a rejected
     // adjustment reached saveItem at all. The probe changes no behavior.
     await moveModule("src/inventory-store.mjs", "src/inventory-store.__origin.mjs");
@@ -346,7 +461,11 @@ export function allItems() {
     }
 
     store.__saveCalls.length = 0;
-    equal("accepted adjustment still persists after rejections", restockItem("sku-a", -2).quantity, 10);
+    equal(
+      "accepted adjustment still persists after rejections",
+      restockItem("sku-a", -2).quantity,
+      10,
+    );
     check(
       "an accepted adjustment does reach saveItem",
       store.__saveCalls.length >= 1,
@@ -378,7 +497,11 @@ export function allItems() {
         }
       }
     }
-    check("inclusive overlap generalizes across ranges", agrees, "overlap diverged from the inclusive definition");
+    check(
+      "inclusive overlap generalizes across ranges",
+      agrees,
+      "overlap diverged from the inclusive definition",
+    );
 
     await throws("rejects reversed first range", () => overlapDays(2, 1, 3, 4), RangeError);
     await throws("rejects reversed second range", () => overlapDays(1, 2, 4, 3), RangeError);
@@ -419,11 +542,23 @@ export function allItems() {
 
     const before = scheduler.listScheduled().length;
     await throws("rejects empty task id", () => scheduler.scheduleReminder("", 1, 2), TypeError);
-    await throws("rejects non-string task id", () => scheduler.scheduleReminder(7, 1, 2), TypeError);
+    await throws(
+      "rejects non-string task id",
+      () => scheduler.scheduleReminder(7, 1, 2),
+      TypeError,
+    );
     for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, "soon", null]) {
       const label = String(bad);
-      await throws(`rejects invalid remindAt (${label})`, () => scheduler.scheduleReminder("x", bad, 2), TypeError);
-      await throws(`rejects invalid now (${label})`, () => scheduler.scheduleReminder("x", 1, bad), TypeError);
+      await throws(
+        `rejects invalid remindAt (${label})`,
+        () => scheduler.scheduleReminder("x", bad, 2),
+        TypeError,
+      );
+      await throws(
+        `rejects invalid now (${label})`,
+        () => scheduler.scheduleReminder("x", 1, bad),
+        TypeError,
+      );
     }
     check(
       "rejected reminders are not scheduled",
@@ -447,7 +582,20 @@ export function allItems() {
     const before = await listFiles(workspace);
 
     const tails = ["report.txt", "nested/report.txt", "a/b/c/report.txt"];
-    const prefixes = ["", "./", "sub/", "sub/./", "../", "..\\", "../../", "sub/../", "sub/../../", "a/b/../../../", "./../", ".././../"];
+    const prefixes = [
+      "",
+      "./",
+      "sub/",
+      "sub/./",
+      "../",
+      "..\\",
+      "../../",
+      "sub/../",
+      "sub/../../",
+      "a/b/../../../",
+      "./../",
+      ".././../",
+    ];
     const requests = new Set();
     for (const tail of tails) {
       for (const prefix of prefixes) {
@@ -483,7 +631,9 @@ export function allItems() {
         accepted += 1;
         const expectedTarget = path.resolve(root, requested);
         if (path.resolve(outcome.returned) !== expectedTarget) {
-          disagreements.push(`${JSON.stringify(requested)} returned ${outcome.returned}, expected ${expectedTarget}`);
+          disagreements.push(
+            `${JSON.stringify(requested)} returned ${outcome.returned}, expected ${expectedTarget}`,
+          );
           continue;
         }
         const written = await readFile(expectedTarget, "utf8").catch(() => null);
@@ -502,10 +652,19 @@ export function allItems() {
     check(
       "canonical containment holds for every generated path",
       disagreements.length === 0,
-      disagreements.slice(0, 6).join("; ") || "all generated paths agreed with canonical resolution",
+      disagreements.slice(0, 6).join("; ") ||
+        "all generated paths agreed with canonical resolution",
     );
-    check("the sweep exercised contained paths", accepted >= 8, `only ${accepted} contained paths were accepted`);
-    check("the sweep exercised escaping paths", rejected >= 8, `only ${rejected} escaping paths were rejected`);
+    check(
+      "the sweep exercised contained paths",
+      accepted >= 8,
+      `only ${accepted} contained paths were accepted`,
+    );
+    check(
+      "the sweep exercised escaping paths",
+      rejected >= 8,
+      `only ${rejected} escaping paths were rejected`,
+    );
 
     // Independent safety property: nothing the sweep created may live outside outDir.
     const after = await listFiles(workspace);
@@ -520,10 +679,22 @@ export function allItems() {
       `files written outside outDir: ${escapedFiles.slice(0, 6).join(", ")}`,
     );
 
-    equal("writes relative contained path", await readFile(writeReportFile(outDir, "final/report.txt", "relative"), "utf8"), "relative");
+    equal(
+      "writes relative contained path",
+      await readFile(writeReportFile(outDir, "final/report.txt", "relative"), "utf8"),
+      "relative",
+    );
     const absoluteRequest = path.join(outDir, "final-absolute.txt");
-    equal("accepts safe absolute contained path", path.resolve(writeReportFile(outDir, absoluteRequest, "absolute")), path.resolve(absoluteRequest));
-    await throws("rejects parent traversal", () => writeReportFile(outDir, "../escaped-final.txt", "bad"), RangeError);
+    equal(
+      "accepts safe absolute contained path",
+      path.resolve(writeReportFile(outDir, absoluteRequest, "absolute")),
+      path.resolve(absoluteRequest),
+    );
+    await throws(
+      "rejects parent traversal",
+      () => writeReportFile(outDir, "../escaped-final.txt", "bad"),
+      RangeError,
+    );
   },
 
   // Prompt: exactly one concurrent winner per key, audit-logged keys never reserved, keys
@@ -538,7 +709,11 @@ export function allItems() {
     ]) {
       const key = `race-${round}`;
       const results = await Promise.all(Array.from({ length: width }, () => store.reserveKey(key)));
-      equal(`round ${round}: exactly one concurrent reservation wins`, results.filter(Boolean).length, 1);
+      equal(
+        `round ${round}: exactly one concurrent reservation wins`,
+        results.filter(Boolean).length,
+        1,
+      );
     }
 
     const keys = ["a", "b", "c", "d"];
@@ -563,7 +738,9 @@ export function allItems() {
     store.markRecorded("recorded");
     equal("persistent audit record blocks reservation", await store.reserveKey("recorded"), false);
     store.markRecorded("recorded-concurrent");
-    const audited = await Promise.all(Array.from({ length: 6 }, () => store.reserveKey("recorded-concurrent")));
+    const audited = await Promise.all(
+      Array.from({ length: 6 }, () => store.reserveKey("recorded-concurrent")),
+    );
     check(
       "an audited key is never reserved, even concurrently",
       audited.every((value) => value === false),
@@ -574,7 +751,11 @@ export function allItems() {
     equal("a fresh key can be reserved", await store.reserveKey("release-then-audit"), true);
     store.releaseKey("release-then-audit");
     store.markRecorded("release-then-audit");
-    equal("release does not defeat the audit log", await store.reserveKey("release-then-audit"), false);
+    equal(
+      "release does not defeat the audit log",
+      await store.reserveKey("release-then-audit"),
+      false,
+    );
   },
 
   // Prompt enumerates the retry classification exhaustively, so the grader sweeps every documented
@@ -616,7 +797,9 @@ export function allItems() {
     }
     for (const status of [408, 425, 429, 503]) {
       let calls = 0;
-      const recovered = await deliverWebhook({}, async () => ({ status: ++calls === 3 ? 204 : status }));
+      const recovered = await deliverWebhook({}, async () => ({
+        status: ++calls === 3 ? 204 : status,
+      }));
       equal(`retryable ${status} can recover`, recovered, { status: "DELIVERED", attempts: 3 });
     }
 
@@ -624,7 +807,10 @@ export function allItems() {
     const sequence = [503, 429, 408, 425, 500];
     let index = 0;
     const mixed = await deliverWebhook({}, async () => ({ status: sequence[index++] }));
-    equal("mixed retryable statuses exhaust together", mixed, { status: "RETRY_EXHAUSTED", attempts: 5 });
+    equal("mixed retryable statuses exhaust together", mixed, {
+      status: "RETRY_EXHAUSTED",
+      attempts: 5,
+    });
 
     // A terminal status encountered mid-retry stops immediately.
     let terminalCalls = 0;
@@ -634,13 +820,19 @@ export function allItems() {
     });
     check(
       "a terminal status during retries stops immediately",
-      terminalAfterRetry.status === "REJECTED" && terminalAfterRetry.attempts === 3 && terminalCalls === 3,
+      terminalAfterRetry.status === "REJECTED" &&
+        terminalAfterRetry.attempts === 3 &&
+        terminalCalls === 3,
       `got ${JSON.stringify(terminalAfterRetry)} after ${terminalCalls} calls`,
     );
 
     const started = Date.now();
     await deliver(503);
-    check("retries add no wall-clock delay", Date.now() - started < 1_000, "retrying five times took over a second");
+    check(
+      "retries add no wall-clock delay",
+      Date.now() - started < 1_000,
+      "retrying five times took over a second",
+    );
   },
 };
 

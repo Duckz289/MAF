@@ -7,7 +7,8 @@ export function validateQuoteRequest(basePrice, adjustment, taxRate) {
   requireFiniteNumber(taxRate, "taxRate");
   if (basePrice < 0) throw new RangeError("basePrice must not be negative");
   if (taxRate < 0) throw new RangeError("taxRate must not be negative");
-  if (!adjustment || typeof adjustment !== "object") throw new RangeError("an adjustment is required");
+  if (!adjustment || typeof adjustment !== "object")
+    throw new RangeError("an adjustment is required");
   if (!Object.hasOwn(ADJUSTMENT_KINDS, adjustment.kind)) {
     throw new RangeError(`unknown adjustment kind: ${adjustment.kind}`);
   }

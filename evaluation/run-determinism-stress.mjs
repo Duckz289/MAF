@@ -116,13 +116,19 @@ const casesUnderBothCwds = [...fingerprintsByCwd].filter(([, byCwd]) => byCwd.si
 const statefulCases = baseCases.filter((item) => STATEFUL_TASKS.has(item.taskId));
 const statefulUnstable = statefulCases.filter((item) => fingerprints.get(item.key).size !== 1);
 const concurrencyCases = baseCases.filter((item) => CONCURRENCY_TASKS.has(item.taskId));
-const concurrencyUnstable = concurrencyCases.filter((item) => fingerprints.get(item.key).size !== 1);
+const concurrencyUnstable = concurrencyCases.filter(
+  (item) => fingerprints.get(item.key).size !== 1,
+);
 
 if (unstable.length > 0) {
-  failures.push(...unstable.map(([key, values]) => `${key}: ${values.size} distinct normalized outcomes`));
+  failures.push(
+    ...unstable.map(([key, values]) => `${key}: ${values.size} distinct normalized outcomes`),
+  );
 }
 if (cwdDivergent.length > 0) {
-  failures.push(...cwdDivergent.map(([key]) => `${key}: outcome differs by child working directory`));
+  failures.push(
+    ...cwdDivergent.map(([key]) => `${key}: outcome differs by child working directory`),
+  );
 }
 if ([...cwdCounts.values()].some((count) => count === 0)) {
   failures.push("both child working directories must be exercised");
@@ -144,7 +150,8 @@ const report = {
   // Measured: identical normalized outcome across every execution of a case, where executions were
   // rotated and reversed between rounds and interleaved across workers.
   orderIndependence: {
-    measurement: "distinct normalized outcomes per case across rotated, reversed, interleaved rounds",
+    measurement:
+      "distinct normalized outcomes per case across rotated, reversed, interleaved rounds",
     stableCases: baseCases.length - unstable.length,
     totalCases: baseCases.length,
     unstableCases: unstable.map(([key]) => key),
@@ -160,7 +167,8 @@ const report = {
 
   // Measured: every execution materialized its own temporary workspace directory.
   workspaceIsolation: {
-    measurement: "distinct temporary workspace directories observed versus executions that reported one",
+    measurement:
+      "distinct temporary workspace directories observed versus executions that reported one",
     executionsReportingWorkspace: observations.workspaceObservations,
     distinctWorkspaces: workspaces.size,
     reused: observations.workspaceObservations - workspaces.size,

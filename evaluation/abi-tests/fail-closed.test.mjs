@@ -76,7 +76,11 @@ console.log(JSON.stringify({
 `,
   );
   const result = await runCase({ taskId: "leaky", publicRepo: repo, grader, timeoutMs: 5_000 });
-  assert.equal(result.status, "PASS", `cleanup must not erase the classification: ${result.message}`);
+  assert.equal(
+    result.status,
+    "PASS",
+    `cleanup must not erase the classification: ${result.message}`,
+  );
   assert.equal(result.evidence.grader, "VALID");
   assert.ok(
     result.evidence.cleanup === "PASS" || result.evidence.cleanup.startsWith("FAILED:"),
@@ -157,7 +161,13 @@ test("a linked overlay target itself is rejected", async () => {
   await mkdir(path.join(workspace, "src"), { recursive: true });
   await mkdir(outside, { recursive: true });
   await writeFile(path.join(outside, "victim.txt"), "ORIGINAL", "utf8");
-  if (!(await link(path.join(workspace, "src", "victim.txt"), path.join(outside, "victim.txt"), "file"))) {
+  if (
+    !(await link(
+      path.join(workspace, "src", "victim.txt"),
+      path.join(outside, "victim.txt"),
+      "file",
+    ))
+  ) {
     return;
   }
   await assert.rejects(() => applyOverlayData({ "src/victim.txt": "PWNED" }, workspace), /link/);
@@ -166,18 +176,22 @@ test("a linked overlay target itself is rejected", async () => {
 
 test("drive-relative overlay paths are rejected explicitly", async () => {
   const workspace = await track(await mkdtemp(path.join(os.tmpdir(), "maf-drive-")));
+  await assert.rejects(() => applyOverlayData({ "C:evil.txt": "x" }, workspace), /drive-relative/);
   await assert.rejects(
-    () => applyOverlayData({ "C:evil.txt": "x" }, workspace),
+    () => applyOverlayData({ "z:payload.mjs": "x" }, workspace),
     /drive-relative/,
   );
-  await assert.rejects(() => applyOverlayData({ "z:payload.mjs": "x" }, workspace), /drive-relative/);
 });
 
 test("traversal and absolute overlay paths stay rejected", async () => {
   const workspace = await track(await mkdtemp(path.join(os.tmpdir(), "maf-traversal-")));
   await mkdir(path.join(workspace, "sub"), { recursive: true });
   for (const bad of ["../escape.mjs", "sub/../../escape.mjs", "a/b/../../../escape.mjs", ".."]) {
-    await assert.rejects(() => applyOverlayData({ [bad]: "x" }, workspace), /escapes workspace/, bad);
+    await assert.rejects(
+      () => applyOverlayData({ [bad]: "x" }, workspace),
+      /escapes workspace/,
+      bad,
+    );
   }
   await assert.rejects(
     () => applyOverlayData({ [path.join(workspace, "abs.mjs")]: "x" }, workspace),

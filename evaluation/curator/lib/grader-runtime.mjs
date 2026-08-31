@@ -127,7 +127,13 @@ export async function runBehavioralGrader(taskId, grader) {
           return Reflect.defineProperty(target, property, descriptor);
         },
       });
-      return { value, writes, get target() { return source; } };
+      return {
+        value,
+        writes,
+        get target() {
+          return source;
+        },
+      };
     },
   };
 

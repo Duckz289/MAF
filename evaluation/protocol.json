@@ -14,9 +14,20 @@
     "timeoutPolicy"
   ],
   "dvs": {
-    "definition": "hiddenGrader=PASS AND regression=PASS AND candidateIntegrity=VALID AND runValidity=VALID",
+    "definition": "hiddenGrader=PASS AND regression=PASS AND candidateIntegrity=VALID AND candidateExists AND runValidity=VALID AND NOT infrastructureFailure",
+    "infrastructureFailureCanNeverBeSuccess": true,
+    "infrastructureFailureModes": [
+      "INFRA_FAILURE",
+      "TIMEOUT",
+      "CANCELLED",
+      "QUOTA_EXHAUSTED",
+      "providerError",
+      "infrastructureError"
+    ],
     "agentDoneIsSufficient": false,
-    "mafInternalTrustIsSufficient": false
+    "mafInternalTrustIsSufficient": false,
+    "incoherentUpstreamStateIsDowngradedNeverUpgraded": true,
+    "implementation": "src/evaluation/types.ts"
   },
   "falseSafe": {
     "definition": "valid run claims DONE or TRUSTED while independent correctness evidence fails",
@@ -32,19 +43,26 @@
   "cost": {
     "missingUsage": "UNKNOWN",
     "unknownIsZero": false,
-    "invalidRunsImproveCostPerDvs": false
+    "invalidRunsImproveCostPerDvs": false,
+    "costPerDvsDefinition": "total cost of all runs in scope divided by the number of DVS successes",
+    "notMeanCostAmongSuccesses": true,
+    "completeRatioRequiresFullCoverage": true,
+    "partialCoverageReportsLowerBoundOnly": true
   },
   "metrics": [
-    "DVS_RATE",
-    "FALSE_SAFE_RATE",
+    "DVS_RATE_AMONG_VALID_RUNS",
+    "DVS_RATE_AMONG_ALL_RUNS",
+    "FALSE_SAFE_RATE_AMONG_VALID_RUNS",
     "COST_PER_DVS",
-    "TIME_TO_SAFE",
+    "MEAN_ELAPSED_OF_DVS_RUNS",
+    "MEAN_ELAPSED_OF_VALID_RUNS",
     "BOTH_PASS",
     "MAF_ONLY_PASS",
     "NATIVE_ONLY_PASS",
     "BOTH_FAIL",
     "INVALID_MAF",
-    "INVALID_NATIVE"
+    "INVALID_NATIVE",
+    "INVALID_BOTH"
   ],
   "execution": {
     "frontierRunsPermitted": false,
@@ -71,10 +89,16 @@
   "analysis": {
     "pairedByTask": true,
     "invalidRunsSeparate": true,
-    "historicalResultsAreEvidenceOnly": true
+    "historicalResultsAreEvidenceOnly": true,
+    "productionWiring": "src/evaluation/benchmark-bridge.ts; BenchmarkRunner.compare emits BenchmarkReport.evaluation"
   },
   "historicalEvidence": {
     "status": "HISTORICAL_LOST_IMPLEMENTATION_EVIDENCE",
     "usedForTuning": false
+  },
+  "metricSemantics": {
+    "MEAN_ELAPSED_OF_DVS_RUNS": "Mean elapsed time of DVS runs only. It excludes failures and timeouts and is therefore not a general time-to-safe; it is reported next to MEAN_ELAPSED_OF_VALID_RUNS for contrast.",
+    "DVS_RATE_AMONG_VALID_RUNS": "Headline rate. Denominator is valid runs, because analysis.invalidRunsSeparate is true.",
+    "INVALID_BOTH": "Both arms of a pair were invalid. Reported distinctly rather than collapsed into INVALID_NATIVE."
   }
 }

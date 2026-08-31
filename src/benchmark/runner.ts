@@ -7,6 +7,8 @@ import type {
 } from "../domain/strategy";
 import { assertStrategyObservation } from "../domain/strategy";
 import { redactSensitiveData, redactSensitiveText } from "../domain/security";
+import { evaluateBenchmarkSamples } from "../evaluation/benchmark-bridge";
+import type { EvaluationMetrics } from "../evaluation/types";
 
 export type BenchmarkStrategy = "NATIVE" | "MAF_ADAPTIVE";
 export type BenchmarkVerificationResult = "VERIFIED" | "QUARANTINED" | "FAILED";
@@ -81,6 +83,11 @@ export interface BenchmarkExecution {
   };
   runId?: string;
   candidateId?: string;
+  /** Infrastructure signals. Absent means the execution completed; a non-COMPLETED status or an
+   *  error string makes the run INVALID for protocol accounting and can never become a DVS. */
+  executionStatus?: "COMPLETED" | "INFRA_FAILURE" | "TIMEOUT" | "CANCELLED" | "QUOTA_EXHAUSTED";
+  providerError?: string;
+  infrastructureError?: string;
   trustState?: StrategyObservation["trustState"];
   qualityOutcome?: StrategyObservation["qualityOutcome"];
   security?: ExternalCheckOutcome;
@@ -112,6 +119,10 @@ export interface BenchmarkReport {
     costPerVerifiedSuccess: number | null;
     verifiedRunsWithKnownCost: number;
   };
+  /** Protocol accounting for this comparison, derived from the samples through
+   *  src/evaluation/benchmark-bridge.ts. This is where DVS, false-safe, invalid-run separation and
+   *  cost-per-DVS are actually applied to an evaluation flow. */
+  evaluation: EvaluationMetrics;
   /** Shadow evidence only; promotion still applies M12 scoped minimums. */
   strategyEvidence: StrategyObservation[];
 }
@@ -308,6 +319,15 @@ export const normalizeBenchmarkExecution = (value: unknown): BenchmarkExecution 
   if (!optionalString(raw.runId) || !optionalString(raw.candidateId))
     throw new Error("Benchmark executor returned malformed run/candidate identity");
   if (
+    raw.executionStatus !== undefined &&
+    !["COMPLETED", "INFRA_FAILURE", "TIMEOUT", "CANCELLED", "QUOTA_EXHAUSTED"].includes(
+      raw.executionStatus as string,
+    )
+  )
+    throw new Error("Benchmark executor returned an invalid execution status");
+  if (!optionalString(raw.providerError) || !optionalString(raw.infrastructureError))
+    throw new Error("Benchmark executor returned malformed infrastructure errors");
+  if (
     raw.signalSnapshots.length > 0 &&
     (typeof raw.runId !== "string" ||
       raw.signalSnapshots.some((entry) => (entry as Record<string, unknown>).runId !== raw.runId))
@@ -456,6 +476,19 @@ export const normalizeBenchmarkExecution = (value: unknown): BenchmarkExecution 
     ...(typeof raw.candidateId === "string"
       ? { candidateId: boundedText(raw.candidateId, 200) }
       : {}),
+    ...(raw.executionStatus !== undefined
+      ? {
+          executionStatus: raw.executionStatus as NonNullable<
+            BenchmarkExecution["executionStatus"]
+          >,
+        }
+      : {}),
+    ...(typeof raw.providerError === "string"
+      ? { providerError: boundedText(raw.providerError, 500) }
+      : {}),
+    ...(typeof raw.infrastructureError === "string"
+      ? { infrastructureError: boundedText(raw.infrastructureError, 500) }
+      : {}),
     ...(raw.trustState !== undefined
       ? { trustState: raw.trustState as NonNullable<BenchmarkExecution["trustState"]> }
       : {}),
@@ -564,6 +597,12 @@ const safeBenchmarkTask = (task: BenchmarkTask): BenchmarkTask => ({
     : {}),
 });
 
+/** The revision the comparison ran against, taken from the executor-reported state chain. Absent
+ *  evidence stays UNKNOWN rather than being invented. */
+const sourceRevisionOf = (samples: BenchmarkSample[]): string =>
+  samples.find((sample) => sample.sequenceEvidence?.baseStateDigest)?.sequenceEvidence
+    ?.baseStateDigest ?? "UNKNOWN";
+
 export class BenchmarkRunner {
   async compare(task: BenchmarkTask, executors: BenchmarkExecutor[]): Promise<BenchmarkReport> {
     const nativeCount = executors.filter((executor) => executor.strategy === "NATIVE").length;
@@ -625,6 +664,7 @@ export class BenchmarkRunner {
     return {
       generatedAt,
       samples,
+      evaluation: evaluateBenchmarkSamples(samples, sourceRevisionOf(samples)),
       metrics: {
         sampleCount: samples.length,
         verifiedSuccessRate: samples.length === 0 ? 0 : successes.length / samples.length,

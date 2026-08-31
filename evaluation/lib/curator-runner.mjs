@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { cp, lstat, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { findPrivateLeakage } from "./leakage.mjs";
@@ -203,7 +203,10 @@ export async function invokeGrader({ grader, workspace, timeoutMs = 10_000, chil
       terminateProcessTree(child);
       // Resolve once the child actually closes, so its handles on the workspace are released before
       // cleanup runs. The grace timer guarantees the case is still classified if it never closes.
-      graceTimer = setTimeout(() => finish(invalidGraderResult("grader timed out")), TERMINATION_GRACE_MS);
+      graceTimer = setTimeout(
+        () => finish(invalidGraderResult("grader timed out")),
+        TERMINATION_GRACE_MS,
+      );
     }, timeoutMs);
     child.stdout.on("data", (chunk) => {
       stdout += chunk;

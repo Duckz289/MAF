@@ -24,7 +24,9 @@ const rows = [];
 for (const entry of cases) {
   const expected = index.corpora[entry.corpus]?.expectedStatus;
   if (!expected) throw new Error(`${entry.id}: unknown corpus ${entry.corpus}`);
-  const overlay = await readCandidate(path.join(regressionRoot, "candidates", entry.corpus, entry.id));
+  const overlay = await readCandidate(
+    path.join(regressionRoot, "candidates", entry.corpus, entry.id),
+  );
   if (Object.keys(overlay).length === 0) {
     throw new Error(`${entry.corpus}/${entry.id}: candidate directory is empty or missing`);
   }
@@ -57,7 +59,9 @@ for (const row of rows) {
   else byCorpus[row.corpus].incorrect.push(row.id);
 }
 const incorrect = rows.filter((row) => !row.correct);
-console.log(JSON.stringify({ cases: rows.length, incorrect: incorrect.length, byCorpus, rows }, null, 2));
+console.log(
+  JSON.stringify({ cases: rows.length, incorrect: incorrect.length, byCorpus, rows }, null, 2),
+);
 if (incorrect.length > 0) process.exitCode = 1;
 
 // Recursively collect a candidate directory into an overlay map keyed by repo-relative POSIX paths.

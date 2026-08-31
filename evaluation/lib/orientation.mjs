@@ -39,7 +39,13 @@ const IMPORT_PATTERN =
 const CODE_IDENTIFIER = /\b(?:[a-z][a-zA-Z0-9]*[A-Z][a-zA-Z0-9]*|[A-Z][A-Z0-9_]{3,})\b/g;
 const PROSE_IDENTIFIERS = new Set(["JavaScript", "TypeError", "RangeError", "JSON", "UTF"]);
 
-export async function analyzeOrientation({ repoRoot, entrypoint, defectOwner, decoys = [], prompt }) {
+export async function analyzeOrientation({
+  repoRoot,
+  entrypoint,
+  defectOwner,
+  decoys = [],
+  prompt,
+}) {
   const modules = await listModules(repoRoot);
   const graph = new Map();
   const sources = new Map();
@@ -71,29 +77,30 @@ export async function analyzeOrientation({ repoRoot, entrypoint, defectOwner, de
   });
   // The worst case is the identifier that narrows the search most while still pointing at the owner.
   const ownerRevealing = identifierDiscrimination.filter((entry) => entry.ownerAmong);
-  const searchDiscrimination = ownerRevealing.length === 0
-    ? null
-    : Math.min(...ownerRevealing.map((entry) => entry.files));
+  const searchDiscrimination =
+    ownerRevealing.length === 0 ? null : Math.min(...ownerRevealing.map((entry) => entry.files));
 
   const decoyEvidence = decoys.map((relative) => ({
     module: relative,
     exists: modules.includes(relative),
     reachable: reachable.has(relative),
-    importedBy: [...graph.entries()].filter(([, edges]) => edges.includes(relative)).map(([node]) => node).length,
+    importedBy: [...graph.entries()]
+      .filter(([, edges]) => edges.includes(relative))
+      .map(([node]) => node).length,
     onOwnerPath: ownerPath?.includes(relative) ?? false,
   }));
 
   const orphans = [...reachable].filter(
     (relative) =>
-      relative !== entrypoint &&
-      [...graph.values()].every((edges) => !edges.includes(relative)),
+      relative !== entrypoint && [...graph.values()].every((edges) => !edges.includes(relative)),
   );
   const unreachable = modules.filter((relative) => !reachable.has(relative));
 
   const evidence = {
     totalModules: modules.length,
     reachableModules: reachable.size,
-    reachableFraction: modules.length === 0 ? 0 : Number((reachable.size / modules.length).toFixed(3)),
+    reachableFraction:
+      modules.length === 0 ? 0 : Number((reachable.size / modules.length).toFixed(3)),
     unreachableModules: unreachable.length,
     entrypoint,
     defectOwner,
@@ -106,7 +113,9 @@ export async function analyzeOrientation({ repoRoot, entrypoint, defectOwner, de
     searchDiscrimination,
     decoys: decoyEvidence,
     reachableDecoys: decoyEvidence.filter((entry) => entry.reachable).length,
-    decoysOnOwnerPath: decoyEvidence.filter((entry) => entry.onOwnerPath).map((entry) => entry.module),
+    decoysOnOwnerPath: decoyEvidence
+      .filter((entry) => entry.onOwnerPath)
+      .map((entry) => entry.module),
     orphanModules: orphans,
   };
   return { evidence, ...classify(evidence) };
@@ -126,7 +135,10 @@ export function classify(evidence) {
       `only ${evidence.reachableModules} modules are reachable (threshold ${THRESHOLDS.minReachableModules})`,
     );
   }
-  if (evidence.shortestOwnerPathHops !== null && evidence.shortestOwnerPathHops < THRESHOLDS.minOwnerPathHops) {
+  if (
+    evidence.shortestOwnerPathHops !== null &&
+    evidence.shortestOwnerPathHops < THRESHOLDS.minOwnerPathHops
+  ) {
     disqualifying.push(
       `the owner is ${evidence.shortestOwnerPathHops} hop(s) from the entrypoint (threshold ${THRESHOLDS.minOwnerPathHops})`,
     );
@@ -148,7 +160,10 @@ export function classify(evidence) {
       `only ${(evidence.reachableFraction * 100).toFixed(1)}% of modules are reachable (threshold ${(THRESHOLDS.minReachableFraction * 100).toFixed(0)}%)`,
     );
   }
-  if (evidence.searchDiscrimination !== null && evidence.searchDiscrimination < THRESHOLDS.minPromptIdentifierFiles) {
+  if (
+    evidence.searchDiscrimination !== null &&
+    evidence.searchDiscrimination < THRESHOLDS.minPromptIdentifierFiles
+  ) {
     const worst = evidence.promptIdentifiers
       .filter((entry) => entry.ownerAmong && entry.files === evidence.searchDiscrimination)
       .map((entry) => entry.identifier);
@@ -162,7 +177,9 @@ export function classify(evidence) {
     );
   }
   if (evidence.decoysOnOwnerPath.length > 0) {
-    weakening.push(`declared decoys sit on the owner path: ${evidence.decoysOnOwnerPath.join(", ")}`);
+    weakening.push(
+      `declared decoys sit on the owner path: ${evidence.decoysOnOwnerPath.join(", ")}`,
+    );
   }
   if (evidence.orphanModules.length > 0) {
     weakening.push(
@@ -184,7 +201,10 @@ async function listModules(repoRoot) {
   return entries
     .filter((entry) => entry.isFile() && entry.name.endsWith(".mjs"))
     .map((entry) =>
-      path.relative(repoRoot, path.join(entry.parentPath ?? entry.path, entry.name)).split(path.sep).join("/"),
+      path
+        .relative(repoRoot, path.join(entry.parentPath ?? entry.path, entry.name))
+        .split(path.sep)
+        .join("/"),
     )
     .sort();
 }

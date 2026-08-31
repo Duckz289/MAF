@@ -47,10 +47,17 @@ export const phaseCBand3Graders = {
     }
     equal(
       "the workspace default of ten still applies without an override",
-      sendDigest(agent, Array.from({ length: 11 }, (_, index) => String(index))).length,
+      sendDigest(
+        agent,
+        Array.from({ length: 11 }, (_, index) => String(index)),
+      ).length,
       2,
     );
-    equal("an empty digest sends nothing", sendDigest(agent, [], { ticketDigestBatchSize: 2 }).length, 0);
+    equal(
+      "an empty digest sends nothing",
+      sendDigest(agent, [], { ticketDigestBatchSize: 2 }).length,
+      0,
+    );
     for (const size of [0, -1, 2.5, "3", null]) {
       await throws(
         `invalid batch size ${String(size)} rejects`,
@@ -64,8 +71,16 @@ export const phaseCBand3Graders = {
     openTicket("printer offline", SEVERITY.NORMAL);
     openTicket("vpn drops", SEVERITY.HIGH);
     openTicket("badge reader", SEVERITY.NORMAL);
-    equal("a narrow escalation window escalates every open ticket", runEscalationSweep({ escalationAfterMinutes: 1 }).length, 3);
-    equal("a wide escalation window escalates nothing", runEscalationSweep({ escalationAfterMinutes: 5_000 }).length, 0);
+    equal(
+      "a narrow escalation window escalates every open ticket",
+      runEscalationSweep({ escalationAfterMinutes: 1 }).length,
+      3,
+    );
+    equal(
+      "a wide escalation window escalates nothing",
+      runEscalationSweep({ escalationAfterMinutes: 5_000 }).length,
+      0,
+    );
     equal("the workspace escalation default still applies", runEscalationSweep().length, 0);
     await throws(
       "an invalid escalation window rejects",
@@ -84,15 +99,30 @@ export const phaseCBand3Graders = {
       equal(`an override wins for ${key}`, settingValue(key, { [key]: override }), override);
     }
     for (const key of Object.keys(WORKSPACE_DEFAULTS)) {
-      equal(`${key} keeps its default when it is not overridden`, settingValue(key, { unrelatedKey: 1 }), WORKSPACE_DEFAULTS[key]);
-      equal(`${key} keeps its default with no overrides at all`, settingValue(key), WORKSPACE_DEFAULTS[key]);
+      equal(
+        `${key} keeps its default when it is not overridden`,
+        settingValue(key, { unrelatedKey: 1 }),
+        WORKSPACE_DEFAULTS[key],
+      );
+      equal(
+        `${key} keeps its default with no overrides at all`,
+        settingValue(key),
+        WORKSPACE_DEFAULTS[key],
+      );
     }
     equal(
       "several overrides apply at once",
-      [settingValue("auditRetentionDays", { auditRetentionDays: 1, defaultLocale: "es-ES" }), settingValue("defaultLocale", { auditRetentionDays: 1, defaultLocale: "es-ES" })],
+      [
+        settingValue("auditRetentionDays", { auditRetentionDays: 1, defaultLocale: "es-ES" }),
+        settingValue("defaultLocale", { auditRetentionDays: 1, defaultLocale: "es-ES" }),
+      ],
       [1, "es-ES"],
     );
-    equal("the workspace defaults themselves are unchanged", WORKSPACE_DEFAULTS.ticketDigestBatchSize, 10);
+    equal(
+      "the workspace defaults themselves are unchanged",
+      WORKSPACE_DEFAULTS.ticketDigestBatchSize,
+      10,
+    );
     equal("every workspace default is unchanged", WORKSPACE_DEFAULTS, {
       ticketDigestBatchSize: 10,
       escalationAfterMinutes: 60,
@@ -101,7 +131,9 @@ export const phaseCBand3Graders = {
     });
     const overrides = { defaultLocale: "ja-JP" };
     settingValue("defaultLocale", overrides);
-    equal("reading a setting does not modify the overrides it was given", overrides, { defaultLocale: "ja-JP" });
+    equal("reading a setting does not modify the overrides it was given", overrides, {
+      defaultLocale: "ja-JP",
+    });
     check(
       "digest deliveries carry a body",
       typeof sendDigest(agent, ["x"])[0]?.body === "string",
@@ -121,11 +153,31 @@ export const phaseCBand3Graders = {
       return Math.round(Math.max(0, base - reduction) * (1 + taxRate) * 100) / 100;
     };
 
-    equal("the reported case is corrected", quoteShipment(120, { kind: "PERCENT", value: 10 }, 0.08), 116.64);
-    equal("flat adjustments still price correctly", quoteShipment(120, { kind: "FLAT", value: 20 }, 0.08), 108);
-    equal("a flat adjustment rounds cents", quoteShipment(95, { kind: "FLAT", value: 20 }, 0.075), 80.63);
-    equal("an adjustment cannot make the subtotal negative", quoteShipment(30, { kind: "FLAT", value: 50 }, 0.2), 0);
-    equal("a zero adjustment is just taxed base", quoteShipment(200, { kind: "FLAT", value: 0 }, 0.1), 220);
+    equal(
+      "the reported case is corrected",
+      quoteShipment(120, { kind: "PERCENT", value: 10 }, 0.08),
+      116.64,
+    );
+    equal(
+      "flat adjustments still price correctly",
+      quoteShipment(120, { kind: "FLAT", value: 20 }, 0.08),
+      108,
+    );
+    equal(
+      "a flat adjustment rounds cents",
+      quoteShipment(95, { kind: "FLAT", value: 20 }, 0.075),
+      80.63,
+    );
+    equal(
+      "an adjustment cannot make the subtotal negative",
+      quoteShipment(30, { kind: "FLAT", value: 50 }, 0.2),
+      0,
+    );
+    equal(
+      "a zero adjustment is just taxed base",
+      quoteShipment(200, { kind: "FLAT", value: 0 }, 0.1),
+      220,
+    );
 
     // The formula must hold across the whole valid input space. A fix that repairs only the
     // percentage the report happens to mention does not satisfy the contract.
@@ -166,17 +218,46 @@ export const phaseCBand3Graders = {
     );
 
     // Validation is explicitly out of scope for the fix and must be preserved.
-    await throws("a percentage above one hundred rejects", () => quoteShipment(100, { kind: "PERCENT", value: 101 }, 0), RangeError);
-    await throws("a negative adjustment rejects", () => quoteShipment(100, { kind: "PERCENT", value: -1 }, 0), RangeError);
-    await throws("a negative tax rate rejects", () => quoteShipment(100, { kind: "FLAT", value: 1 }, -0.1), RangeError);
-    await throws("an unknown adjustment kind rejects", () => quoteShipment(100, { kind: "BOGUS", value: 1 }, 0), RangeError);
+    await throws(
+      "a percentage above one hundred rejects",
+      () => quoteShipment(100, { kind: "PERCENT", value: 101 }, 0),
+      RangeError,
+    );
+    await throws(
+      "a negative adjustment rejects",
+      () => quoteShipment(100, { kind: "PERCENT", value: -1 }, 0),
+      RangeError,
+    );
+    await throws(
+      "a negative tax rate rejects",
+      () => quoteShipment(100, { kind: "FLAT", value: 1 }, -0.1),
+      RangeError,
+    );
+    await throws(
+      "an unknown adjustment kind rejects",
+      () => quoteShipment(100, { kind: "BOGUS", value: 1 }, 0),
+      RangeError,
+    );
     await throws("a missing adjustment rejects", () => quoteShipment(100, null, 0), RangeError);
 
     // The separate code-based promotion path is explicitly out of scope.
-    equal("promotion codes still resolve to adjustments", adjustmentForCode("BULK20"), { kind: "FLAT", value: 20 });
-    equal("a percentage promotion code still resolves", adjustmentForCode("WELCOME"), { kind: "PERCENT", value: 5 });
-    equal("an unknown promotion code is a no-op adjustment", adjustmentForCode("NOPE"), { kind: "FLAT", value: 0 });
-    equal("a promotion code prices through the same contract", quoteShipment(200, adjustmentForCode("WELCOME"), 0.1), 209);
+    equal("promotion codes still resolve to adjustments", adjustmentForCode("BULK20"), {
+      kind: "FLAT",
+      value: 20,
+    });
+    equal("a percentage promotion code still resolves", adjustmentForCode("WELCOME"), {
+      kind: "PERCENT",
+      value: 5,
+    });
+    equal("an unknown promotion code is a no-op adjustment", adjustmentForCode("NOPE"), {
+      kind: "FLAT",
+      value: 0,
+    });
+    equal(
+      "a promotion code prices through the same contract",
+      quoteShipment(200, adjustmentForCode("WELCOME"), 0.1),
+      209,
+    );
   },
 
   // Prompt: a membership captures the price in force for its plan at the moment it is opened;
@@ -201,12 +282,18 @@ export const phaseCBand3Graders = {
     ];
     for (const [name, planId, amount] of sequence) {
       const membership = enrolAtPrice(name, planId, amount);
-      equal(`${name} on ${planId} captures the price in force (${amount})`, membership.rateAtEnrolment, amount);
+      equal(
+        `${name} on ${planId} captures the price in force (${amount})`,
+        membership.rateAtEnrolment,
+        amount,
+      );
       opened.push({ name, membership, amount });
     }
 
     // Every earlier membership must still hold the price it captured, after all the later changes.
-    const drifted = opened.filter(({ membership, amount }) => membership.rateAtEnrolment !== amount);
+    const drifted = opened.filter(
+      ({ membership, amount }) => membership.rateAtEnrolment !== amount,
+    );
     check(
       "earlier memberships keep their captured price after later price changes",
       drifted.length === 0,
@@ -233,25 +320,44 @@ export const phaseCBand3Graders = {
     enrolAtPrice("Hal", "basic", 21.5);
     equal(
       "a later enrolment leaves earlier captured prices untouched",
-      membershipLedger.all().slice(0, beforeIdleChange.length).map((membership) => membership.rateAtEnrolment),
+      membershipLedger
+        .all()
+        .slice(0, beforeIdleChange.length)
+        .map((membership) => membership.rateAtEnrolment),
       beforeIdleChange,
     );
 
     const ledgerSize = membershipLedger.all().length;
-    await throws("an unknown plan still rejects", () => enrolAtPrice("Ivy", "platinum", 10), RangeError);
+    await throws(
+      "an unknown plan still rejects",
+      () => enrolAtPrice("Ivy", "platinum", 10),
+      RangeError,
+    );
     equal("a rejected enrolment is not stored", membershipLedger.all().length, ledgerSize);
 
     // Unrelated behaviour is explicitly out of scope for the fix.
-    equal("the roster still lists every registered member", rosterReport().length >= sequence.length, true);
-    equal("statements still price from the captured rate", buildStatement(opened[0].membership).total, 49.99);
+    equal(
+      "the roster still lists every registered member",
+      rosterReport().length >= sequence.length,
+      true,
+    );
+    equal(
+      "statements still price from the captured rate",
+      buildStatement(opened[0].membership).total,
+      49.99,
+    );
   },
 
   // Prompt: one assignment command publishes exactly one observable PICKER_ASSIGNED update, and
   // each later reassignment is a distinct transition that adds exactly one more.
   "task-update-duplication": async ({ importModule, equal, check }) => {
-    const { runAssignmentScenario, runPickScenario, initFloor } = await importModule("src/app/floor-operations.mjs");
+    const { runAssignmentScenario, runPickScenario, initFloor } = await importModule(
+      "src/app/floor-operations.mjs",
+    );
     const { assignPickerCommand } = await importModule("src/picking/assign-picker-command.mjs");
-    const { getPickerAssignments, getPickCompletions } = await importModule("src/projections/floor-summary.mjs");
+    const { getPickerAssignments, getPickCompletions } = await importModule(
+      "src/projections/floor-summary.mjs",
+    );
     const { pickListStore, createPickList } = await importModule("src/picking/pick-list-store.mjs");
     const { registerPicker } = await importModule("src/staff/picker-directory.mjs");
     const { eventBus } = await importModule("src/events/event-bus.mjs");
@@ -271,7 +377,11 @@ export const phaseCBand3Graders = {
     equal("one assignment publishes one event", published, [
       { pickListId: first.pickList.id, pickerId: first.picker.id },
     ]);
-    equal("the assignment persists", pickListStore.get(first.pickList.id).pickerId, first.picker.id);
+    equal(
+      "the assignment persists",
+      pickListStore.get(first.pickList.id).pickerId,
+      first.picker.id,
+    );
 
     // Every subsequent transition must contribute exactly one update. A "drop every other write"
     // shortcut satisfies a single reassignment but not a run of them.
@@ -286,7 +396,11 @@ export const phaseCBand3Graders = {
       assignPickerCommand(first.pickList.id, picker.id);
       perTransition.push(getPickerAssignments().slice(beforeUpdates));
       perTransitionEvents.push(published.length - beforeEvents);
-      equal(`reassignment to ${name} persists`, pickListStore.get(first.pickList.id).pickerId, picker.id);
+      equal(
+        `reassignment to ${name} persists`,
+        pickListStore.get(first.pickList.id).pickerId,
+        picker.id,
+      );
     }
     equal(
       "each reassignment produces exactly one update naming the new picker",
@@ -308,19 +422,27 @@ export const phaseCBand3Graders = {
     assignPickerCommand(second.id, pickerX.id);
     assignPickerCommand(third.id, pickerY.id);
     assignPickerCommand(second.id, pickerY.id);
-    equal("interleaved assignments each produce one update", getPickerAssignments().slice(beforeInterleaved), [
-      { pickerId: pickerX.id, pickListId: second.id },
-      { pickerId: pickerY.id, pickListId: third.id },
-      { pickerId: pickerY.id, pickListId: second.id },
-    ]);
+    equal(
+      "interleaved assignments each produce one update",
+      getPickerAssignments().slice(beforeInterleaved),
+      [
+        { pickerId: pickerX.id, pickListId: second.id },
+        { pickerId: pickerY.id, pickListId: third.id },
+        { pickerId: pickerY.id, pickListId: second.id },
+      ],
+    );
     check(
       "the event payload shape is preserved",
-      published.every((payload) => Object.keys(payload).toSorted().join(",") === "pickListId,pickerId"),
+      published.every(
+        (payload) => Object.keys(payload).toSorted().join(",") === "pickListId,pickerId",
+      ),
       "assignment events must carry exactly pickListId and pickerId",
     );
     check(
       "the projection payload shape is preserved",
-      getPickerAssignments().every((update) => Object.keys(update).toSorted().join(",") === "pickListId,pickerId"),
+      getPickerAssignments().every(
+        (update) => Object.keys(update).toSorted().join(",") === "pickListId,pickerId",
+      ),
       "assignment updates must carry exactly pickListId and pickerId",
     );
 
@@ -328,24 +450,44 @@ export const phaseCBand3Graders = {
     const beforeCompletions = getPickCompletions().length;
     const picked = runPickScenario("zone-d", "widget", "Ivy");
     equal("one pick still produces one completion update", picked.updates.length, 1);
-    equal("pick completions accumulate normally", getPickCompletions().length, beforeCompletions + 1);
-    equal("a completed pick is stored as picked", pickListStore.get(picked.pickList.id).status, "PICKED");
+    equal(
+      "pick completions accumulate normally",
+      getPickCompletions().length,
+      beforeCompletions + 1,
+    );
+    equal(
+      "a completed pick is stored as picked",
+      pickListStore.get(picked.pickList.id).status,
+      "PICKED",
+    );
   },
 
   // Prompt: a successful completion must durably record the terminal state and publish exactly one
   // update, and every later read of that order must see it. Persistence is checked through every
   // repository read path, so a state synthesized inside one accessor is not a pass.
   "completion-state-regression": async ({ importModule, equal, check, throws }) => {
-    const { runCompletionScenario, runAssignmentScenario, initDispatch } = await importModule("src/app/dispatch-operations.mjs");
-    const { completeOrderCommand } = await importModule("src/workorders/complete-order-command.mjs");
-    const { workOrderRepository, raiseOrder } = await importModule("src/workorders/work-order-repository.mjs");
-    const { getOrderCompletions, boardSummary } = await importModule("src/projections/completion-board.mjs");
+    const { runCompletionScenario, runAssignmentScenario, initDispatch } = await importModule(
+      "src/app/dispatch-operations.mjs",
+    );
+    const { completeOrderCommand } = await importModule(
+      "src/workorders/complete-order-command.mjs",
+    );
+    const { workOrderRepository, raiseOrder } = await importModule(
+      "src/workorders/work-order-repository.mjs",
+    );
+    const { getOrderCompletions, boardSummary } = await importModule(
+      "src/projections/completion-board.mjs",
+    );
     const { technicianLoad } = await importModule("src/projections/technician-load.mjs");
     initDispatch();
 
     const first = runCompletionScenario("south", "Reseal joint");
     equal("completion result is terminal", first.completed.status, "COMPLETED");
-    check("completion result carries a timestamp", first.completed.completedAt !== null, "completedAt must not be null");
+    check(
+      "completion result carries a timestamp",
+      first.completed.completedAt !== null,
+      "completedAt must not be null",
+    );
     equal("one completion produces one update", first.updates, [
       { technicianId: null, orderId: first.completed.id },
     ]);
@@ -358,17 +500,26 @@ export const phaseCBand3Graders = {
       all: workOrderRepository.all().find((order) => order.id === id),
     });
     const disagreeing = Object.entries(readPaths(first.completed.id, "south")).filter(
-      ([, order]) => order?.status !== "COMPLETED" || order?.completedAt !== first.completed.completedAt,
+      ([, order]) =>
+        order?.status !== "COMPLETED" || order?.completedAt !== first.completed.completedAt,
     );
     check(
       "every repository read path observes the recorded completion",
       disagreeing.length === 0,
-      `read paths that did not observe the completion: ${Object.entries(readPaths(first.completed.id, "south")).map(([name, order]) => `${name}=${JSON.stringify(order?.status ?? null)}`).join(", ")}`,
+      `read paths that did not observe the completion: ${Object.entries(
+        readPaths(first.completed.id, "south"),
+      )
+        .map(([name, order]) => `${name}=${JSON.stringify(order?.status ?? null)}`)
+        .join(", ")}`,
     );
     equal("the board counts the completed order", boardSummary().completed >= 1, true);
 
     const beforeMissing = getOrderCompletions().length;
-    await throws("a missing order rejects", () => completeOrderCommand("order-does-not-exist"), Error);
+    await throws(
+      "a missing order rejects",
+      () => completeOrderCommand("order-does-not-exist"),
+      Error,
+    );
     equal("a failed completion emits no update", getOrderCompletions().length, beforeMissing);
 
     // The behaviour must hold for arbitrary orders, including one that already has a technician.
@@ -376,30 +527,52 @@ export const phaseCBand3Graders = {
     const beforeAssignedCompletion = getOrderCompletions().length;
     const completedAssigned = completeOrderCommand(assigned.order.id);
     equal("an assigned order completes to a terminal state", completedAssigned.status, "COMPLETED");
-    equal("an assigned order's completion is recorded", workOrderRepository.get(assigned.order.id).status, "COMPLETED");
+    equal(
+      "an assigned order's completion is recorded",
+      workOrderRepository.get(assigned.order.id).status,
+      "COMPLETED",
+    );
     equal(
       "an assigned order's completion timestamp is recorded",
       workOrderRepository.get(assigned.order.id).completedAt,
       completedAssigned.completedAt,
     );
-    equal("an assigned order keeps its technician", workOrderRepository.get(assigned.order.id).technicianId, assigned.technician.id);
-    equal("completing an assigned order publishes one update", getOrderCompletions().slice(beforeAssignedCompletion), [
-      { technicianId: assigned.technician.id, orderId: assigned.order.id },
-    ]);
+    equal(
+      "an assigned order keeps its technician",
+      workOrderRepository.get(assigned.order.id).technicianId,
+      assigned.technician.id,
+    );
+    equal(
+      "completing an assigned order publishes one update",
+      getOrderCompletions().slice(beforeAssignedCompletion),
+      [{ technicianId: assigned.technician.id, orderId: assigned.order.id }],
+    );
 
     // A third, directly raised order, to show the behaviour is not tied to one code path.
     const direct = raiseOrder("east", "Swap regulator");
     const beforeDirect = getOrderCompletions().length;
     const completedDirect = completeOrderCommand(direct.id);
-    equal("a directly raised order completes", workOrderRepository.get(direct.id).status, "COMPLETED");
-    equal("a directly raised order records its timestamp", workOrderRepository.get(direct.id).completedAt, completedDirect.completedAt);
-    equal("a directly raised order publishes one update", getOrderCompletions().slice(beforeDirect), [
-      { technicianId: null, orderId: direct.id },
-    ]);
+    equal(
+      "a directly raised order completes",
+      workOrderRepository.get(direct.id).status,
+      "COMPLETED",
+    );
+    equal(
+      "a directly raised order records its timestamp",
+      workOrderRepository.get(direct.id).completedAt,
+      completedDirect.completedAt,
+    );
+    equal(
+      "a directly raised order publishes one update",
+      getOrderCompletions().slice(beforeDirect),
+      [{ technicianId: null, orderId: direct.id }],
+    );
     equal("three orders are now recorded as completed", boardSummary().completed, 3);
     check(
       "the completion payload shape is preserved",
-      getOrderCompletions().every((update) => Object.keys(update).toSorted().join(",") === "orderId,technicianId"),
+      getOrderCompletions().every(
+        (update) => Object.keys(update).toSorted().join(",") === "orderId,technicianId",
+      ),
       "completion updates must carry exactly orderId and technicianId",
     );
 

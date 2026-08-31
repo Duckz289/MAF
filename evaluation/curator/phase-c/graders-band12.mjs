@@ -23,11 +23,19 @@ export const phaseCBand12Graders = {
         if (computeArea({ kind: "triangle", base, height }) !== 0.5 * base * height) agrees = false;
       }
     }
-    check("triangle area generalizes across bases and heights", agrees, "triangle area diverged from 0.5 * base * height");
+    check(
+      "triangle area generalizes across bases and heights",
+      agrees,
+      "triangle area diverged from 0.5 * base * height",
+    );
     equal("triangle area sample", computeArea({ kind: "triangle", base: 7, height: 4 }), 14);
 
     for (const kind of ["hexagon", "trapezoid", "", undefined]) {
-      await throws(`unknown kind ${String(kind)} still rejects`, () => computeArea({ kind }), RangeError);
+      await throws(
+        `unknown kind ${String(kind)} still rejects`,
+        () => computeArea({ kind }),
+        RangeError,
+      );
     }
   },
 
@@ -56,10 +64,18 @@ export const phaseCBand12Graders = {
   "b1-mirror-sibling-guard-clause": async ({ importModule, equal, throws }) => {
     const validators = await importModule("src/validators.mjs");
     equal("title is trimmed", validators.assertNonEmptyTitle("  Ship it  "), "Ship it");
-    equal("an already-trimmed title is returned as is", validators.assertNonEmptyTitle("Ship"), "Ship");
+    equal(
+      "an already-trimmed title is returned as is",
+      validators.assertNonEmptyTitle("Ship"),
+      "Ship",
+    );
     equal("interior whitespace is preserved", validators.assertNonEmptyTitle("  a  b  "), "a  b");
     for (const bad of ["", "   ", "\t\n", null, undefined, 42, {}]) {
-      await throws(`title ${JSON.stringify(bad) ?? String(bad)} rejects`, () => validators.assertNonEmptyTitle(bad), RangeError);
+      await throws(
+        `title ${JSON.stringify(bad) ?? String(bad)} rejects`,
+        () => validators.assertNonEmptyTitle(bad),
+        RangeError,
+      );
     }
     equal("name guard remains intact", validators.assertNonEmptyName("  Ada  "), "Ada");
     await throws("name guard still rejects", () => validators.assertNonEmptyName("  "), RangeError);
@@ -74,13 +90,21 @@ export const phaseCBand12Graders = {
     equal("renamed export preserves long ID", index.formatDisplayId(1234567), "ID-1234567");
     equal("exact-width ID is unchanged", index.formatDisplayId(123456), "ID-123456");
     equal("dependent import resolves", receipt.renderReceiptHeader(42), "Receipt for ID-000042");
-    check("the owning module exports the new name", typeof idUtils.formatDisplayId === "function", "src/id-utils.mjs must export formatDisplayId");
+    check(
+      "the owning module exports the new name",
+      typeof idUtils.formatDisplayId === "function",
+      "src/id-utils.mjs must export formatDisplayId",
+    );
 
     let agrees = true;
     for (const raw of [0, 1, 99, 100000, 999999, 1000000, "AB"]) {
       if (index.formatDisplayId(raw) !== `ID-${String(raw).padStart(6, "0")}`) agrees = false;
     }
-    check("behavior is unchanged by the rename", agrees, "formatting diverged from the original implementation");
+    check(
+      "behavior is unchanged by the rename",
+      agrees,
+      "formatting diverged from the original implementation",
+    );
   },
 
   // Prompt: pad on the left; a code already at least `length` long is returned unchanged.
@@ -112,7 +136,14 @@ export const phaseCBand12Graders = {
     store.seedItem("a-2", "tenant-a");
     store.seedItem("c-1", "tenant-c");
 
-    const results = bulkArchiveItems("tenant-a", ["a-1", "missing", "b-1", "a-2", "c-1", "also-missing"]);
+    const results = bulkArchiveItems("tenant-a", [
+      "a-1",
+      "missing",
+      "b-1",
+      "a-2",
+      "c-1",
+      "also-missing",
+    ]);
     equal("reports every requested item in input order", results, [
       { id: "a-1", archived: true },
       { id: "missing", archived: false, reason: "NOT_FOUND" },
@@ -121,7 +152,11 @@ export const phaseCBand12Graders = {
       { id: "c-1", archived: false, reason: "TENANT_MISMATCH" },
       { id: "also-missing", archived: false, reason: "NOT_FOUND" },
     ]);
-    equal("eligible items archive", [store.getItem("a-1").status, store.getItem("a-2").status], ["ARCHIVED", "ARCHIVED"]);
+    equal(
+      "eligible items archive",
+      [store.getItem("a-1").status, store.getItem("a-2").status],
+      ["ARCHIVED", "ARCHIVED"],
+    );
     equal("foreign item remains unchanged", store.getItem("b-1").status, "ACTIVE");
     equal("second foreign item remains unchanged", store.getItem("c-1").status, "ACTIVE");
 
@@ -141,7 +176,11 @@ export const phaseCBand12Graders = {
       { id: "a-1", archived: false, reason: "TENANT_MISMATCH" },
     ]);
     equal("the other tenant's item is now archived", store.getItem("b-1").status, "ARCHIVED");
-    equal("an already-archived foreign item is not re-touched", store.getItem("a-1").status, "ARCHIVED");
+    equal(
+      "an already-archived foreign item is not re-touched",
+      store.getItem("a-1").status,
+      "ARCHIVED",
+    );
     equal("an empty batch is accepted", bulkArchiveItems("tenant-a", []), []);
   },
 
@@ -163,15 +202,25 @@ export const phaseCBand12Graders = {
       const id = `event-${seats}-${contenders}`;
       inventory.seedEvent(id, seats);
       const outcomes = await Promise.all(
-        Array.from({ length: contenders }, (_, index) => inventory.bookSeat(id, `user-${index}`, yielding)),
+        Array.from({ length: contenders }, (_, index) =>
+          inventory.bookSeat(id, `user-${index}`, yielding),
+        ),
       );
       const winners = outcomes.filter(Boolean).length;
       const event = inventory.getEvent(id);
-      equal(`${seats} seats / ${contenders} contenders produces the right winner count`, winners, Math.min(seats, contenders));
-      equal(`${seats} seats / ${contenders} contenders leaves consistent state`, { available: event.available, booked: event.bookedBy.length }, {
-        available: seats - Math.min(seats, contenders),
-        booked: Math.min(seats, contenders),
-      });
+      equal(
+        `${seats} seats / ${contenders} contenders produces the right winner count`,
+        winners,
+        Math.min(seats, contenders),
+      );
+      equal(
+        `${seats} seats / ${contenders} contenders leaves consistent state`,
+        { available: event.available, booked: event.bookedBy.length },
+        {
+          available: seats - Math.min(seats, contenders),
+          booked: Math.min(seats, contenders),
+        },
+      );
       check(
         `${seats} seats / ${contenders} contenders records distinct users`,
         new Set(event.bookedBy).size === event.bookedBy.length,
@@ -189,12 +238,23 @@ export const phaseCBand12Graders = {
       inventory.bookSeat("right", "d", yielding),
     ]);
     equal("independent events each seat exactly one winner", mixed.filter(Boolean).length, 2);
-    equal("unknown events return false", await inventory.bookSeat("no-such-event", "x", yielding), false);
+    equal(
+      "unknown events return false",
+      await inventory.bookSeat("no-such-event", "x", yielding),
+      false,
+    );
 
     const started = Date.now();
     inventory.seedEvent("timing", 1);
-    await Promise.all([inventory.bookSeat("timing", "a", yielding), inventory.bookSeat("timing", "b", yielding)]);
-    check("synchronization does not rely on wall-clock delays", Date.now() - started < 1_000, "booking took over a second");
+    await Promise.all([
+      inventory.bookSeat("timing", "a", yielding),
+      inventory.bookSeat("timing", "b", yielding),
+    ]);
+    check(
+      "synchronization does not rely on wall-clock delays",
+      Date.now() - started < 1_000,
+      "booking took over a second",
+    );
   },
 
   // Prompt: "may set an order to REFUNDED only after the ledger call succeeds". The injected ledger
@@ -231,7 +291,11 @@ export const phaseCBand12Graders = {
       ["fail-2", 80],
     ]) {
       store.createOrder(id, total);
-      await throws(`ledger failure ${id} propagates`, () => processRefund(id, 4, failingLedger(id)), Error);
+      await throws(
+        `ledger failure ${id} propagates`,
+        () => processRefund(id, 4, failingLedger(id)),
+        Error,
+      );
       equal(`ledger failure ${id} leaves order paid`, store.getOrder(id).status, "PAID");
     }
 
@@ -241,7 +305,11 @@ export const phaseCBand12Graders = {
       leaked.length === 0,
       `orders already terminal when the ledger ran: ${JSON.stringify(leaked)}`,
     );
-    check("the ledger observation actually ran", observed.length === 5, `expected 5 ledger observations, saw ${observed.length}`);
+    check(
+      "the ledger observation actually ran",
+      observed.length === 5,
+      `expected 5 ledger observations, saw ${observed.length}`,
+    );
 
     // Invalid amounts are exercised against the default ledger, because the prompt leaves it open
     // whether the service or the ledger owns amount validation -- only the outcome is contractual.
@@ -250,11 +318,23 @@ export const phaseCBand12Graders = {
     // visible ledger never state.
     store.createOrder("invalid", 100);
     for (const amount of [-5, 0, -0.01, null]) {
-      await throws(`invalid amount ${String(amount)} rejects`, () => processRefund("invalid", amount), Error);
-      equal(`invalid amount ${String(amount)} leaves order paid`, store.getOrder("invalid").status, "PAID");
+      await throws(
+        `invalid amount ${String(amount)} rejects`,
+        () => processRefund("invalid", amount),
+        Error,
+      );
+      equal(
+        `invalid amount ${String(amount)} leaves order paid`,
+        store.getOrder("invalid").status,
+        "PAID",
+      );
     }
     await throws("missing order rejects", () => processRefund("no-such-order", 5), Error);
-    equal("a valid refund still succeeds after rejections", (await processRefund("invalid", 10)).status, "REFUNDED");
+    equal(
+      "a valid refund still succeeds after rejections",
+      (await processRefund("invalid", 10)).status,
+      "REFUNDED",
+    );
   },
 
   // Prompt: "It must not mutate the input" and extensions must survive. Mutation is observed while
@@ -307,10 +387,22 @@ export const phaseCBand12Graders = {
 
     // Arbitrary unknown fields must survive, and a record that already carries extensions must not
     // be rejected for its shape.
-    const wide = { id: "r2", name: "N", createdAt: 1, alpha: 1, beta: [1, 2], gamma: { deep: true }, schemaVersion: 1 };
+    const wide = {
+      id: "r2",
+      name: "N",
+      createdAt: 1,
+      alpha: 1,
+      beta: [1, 2],
+      gamma: { deep: true },
+      schemaVersion: 1,
+    };
     const wideBefore = structuredClone(wide);
     const wideOutput = migrateRecordV1toV2(wide);
-    equal("unknown fields survive", { alpha: wideOutput.alpha, beta: wideOutput.beta, gamma: wideOutput.gamma }, { alpha: 1, beta: [1, 2], gamma: { deep: true } });
+    equal(
+      "unknown fields survive",
+      { alpha: wideOutput.alpha, beta: wideOutput.beta, gamma: wideOutput.gamma },
+      { alpha: 1, beta: [1, 2], gamma: { deep: true } },
+    );
     equal("schema version is advanced from an existing one", wideOutput.schemaVersion, 2);
     equal("the wide input is unchanged", wide, wideBefore);
   },
@@ -320,7 +412,15 @@ export const phaseCBand12Graders = {
   "b2-partial-validation-mutation": async ({ importModule, equal, check, throws }) => {
     const { applyPatch } = await importModule("src/apply-patch.mjs");
 
-    for (const patch of [null, undefined, {}, { status: 42 }, { status: "invalid" }, { status: null }, { owner: "x" }]) {
+    for (const patch of [
+      null,
+      undefined,
+      {},
+      { status: 42 },
+      { status: "invalid" },
+      { status: null },
+      { owner: "x" },
+    ]) {
       const record = { status: "open", owner: "Ada", tags: ["a"] };
       const before = structuredClone(record);
       const writes = [];
@@ -348,7 +448,11 @@ export const phaseCBand12Graders = {
       const original = { status: status === "open" ? "closed" : "open", owner: "Ada", tags: ["a"] };
       const result = applyPatch(original, { status });
       equal(`valid patch applies status ${status}`, result.status, status);
-      equal(`valid patch ${status} preserves unrelated fields`, { owner: result.owner, tags: result.tags }, { owner: "Ada", tags: ["a"] });
+      equal(
+        `valid patch ${status} preserves unrelated fields`,
+        { owner: result.owner, tags: result.tags },
+        { owner: "Ada", tags: ["a"] },
+      );
     }
   },
 
@@ -363,8 +467,16 @@ export const phaseCBand12Graders = {
     for (const amount of amounts) {
       state = addLine(state, { sku: `s${amount}`, amount });
     }
-    equal("derived total sums every line", state.total, amounts.reduce((sum, value) => sum + value, 0));
-    equal("every line is retained in order", state.lines.map((line) => line.amount), amounts);
+    equal(
+      "derived total sums every line",
+      state.total,
+      amounts.reduce((sum, value) => sum + value, 0),
+    );
+    equal(
+      "every line is retained in order",
+      state.lines.map((line) => line.amount),
+      amounts,
+    );
 
     const original = { lines: [{ sku: "A", amount: 5 }], total: 5 };
     const before = structuredClone(original);
@@ -375,16 +487,31 @@ export const phaseCBand12Graders = {
       { sku: "B", amount: 3 },
     ]);
     equal("original state remains unchanged", original, before);
-    check("the added line is a copy", next.lines[1] !== undefined && next.lines.at(-1).sku === "B", "expected the new line to be present");
+    check(
+      "the added line is a copy",
+      next.lines[1] !== undefined && next.lines.at(-1).sku === "B",
+      "expected the new line to be present",
+    );
 
     // A stale `total` on the input must not be trusted: the returned total is derived from the lines.
     const stale = { lines: [{ sku: "A", amount: 5 }], total: 999 };
     equal("a stale input total is recomputed", addLine(stale, { sku: "B", amount: 3 }).total, 8);
 
-    for (const amount of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, "3", null, undefined]) {
+    for (const amount of [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      "3",
+      null,
+      undefined,
+    ]) {
       const target = { lines: [{ sku: "A", amount: 5 }], total: 5 };
       const snapshot = structuredClone(target);
-      await throws(`invalid amount ${String(amount)} rejects`, () => addLine(target, { sku: "C", amount }), REJECTION);
+      await throws(
+        `invalid amount ${String(amount)} rejects`,
+        () => addLine(target, { sku: "C", amount }),
+        REJECTION,
+      );
       equal(`invalid amount ${String(amount)} remains atomic`, target, snapshot);
     }
   },
@@ -427,6 +554,10 @@ export const phaseCBand12Graders = {
     other.commit(otherTx);
     equal("the second store commits independently", other.read("first"), "other-value");
     equal("the first store keeps its own value", store.read("first"), "one-updated");
-    check("reading an unknown key yields undefined", store.read("never-written") === undefined, "expected undefined for an unknown key");
+    check(
+      "reading an unknown key yields undefined",
+      store.read("never-written") === undefined,
+      "expected undefined for an unknown key",
+    );
   },
 };

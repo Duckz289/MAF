@@ -10,9 +10,15 @@ export function runFreightTerminal() {
   const { lane, account } = seedCatalog();
   const lines = [];
   lines.push(`base rate for ${lane.id}: ${lane.baseRate}`);
-  lines.push(`quote with 10% off and 8% tax: ${quoteShipment(lane.baseRate, { kind: "PERCENT", value: 10 }, 0.08)}`);
-  lines.push(`quote with 20 off and 8% tax: ${quoteShipment(lane.baseRate, { kind: "FLAT", value: 20 }, 0.08)}`);
-  lines.push(`quote with promo BULK20 and 8% tax: ${quoteShipment(lane.baseRate, adjustmentForCode("BULK20"), 0.08)}`);
+  lines.push(
+    `quote with 10% off and 8% tax: ${quoteShipment(lane.baseRate, { kind: "PERCENT", value: 10 }, 0.08)}`,
+  );
+  lines.push(
+    `quote with 20 off and 8% tax: ${quoteShipment(lane.baseRate, { kind: "FLAT", value: 20 }, 0.08)}`,
+  );
+  lines.push(
+    `quote with promo BULK20 and 8% tax: ${quoteShipment(lane.baseRate, adjustmentForCode("BULK20"), 0.08)}`,
+  );
   lines.push(`manifest weight band: ${buildManifest(lane).band}`);
   lines.push(`draft invoice lines: ${draftInvoice(account, lane).lines.length}`);
   return lines;

@@ -61,9 +61,13 @@ for (const item of review.tasks) {
     }
   }
 }
-failures.push(...promptFindings.privateGuidance.map((id) => `${id}: prompt leaks private guidance`));
 failures.push(
-  ...promptFindings.crossTaskIdentifier.map((entry) => `prompt leaks another task identifier: ${entry}`),
+  ...promptFindings.privateGuidance.map((id) => `${id}: prompt leaks private guidance`),
+);
+failures.push(
+  ...promptFindings.crossTaskIdentifier.map(
+    (entry) => `prompt leaks another task identifier: ${entry}`,
+  ),
 );
 
 // --- overlap reviews ---------------------------------------------------------------------------
@@ -88,7 +92,10 @@ for (const phase of ["phase-b", "phase-c"]) {
   overlaysByPhase[phase] = overlays;
   for (const id of expected.filter((item) => item.phase === phase).map(({ id }) => id)) {
     for (const candidate of ["reference", "alternative"]) {
-      implementations.push({ key: `${phase}/${id}/${candidate}`, value: overlays[candidate]?.[id] });
+      implementations.push({
+        key: `${phase}/${id}/${candidate}`,
+        value: overlays[candidate]?.[id],
+      });
     }
     attacks.push({ key: `${phase}/${id}/attack`, phase, id, value: overlays.attack?.[id] });
     wrong.push({ key: `${phase}/${id}/wrong`, value: overlays.wrong?.[id] });
@@ -100,8 +107,14 @@ for (const phase of ["phase-b", "phase-c"]) {
 for (const item of [...implementations, ...attacks, ...wrong]) {
   if (!item.value) failures.push(`${item.key}: missing overlay`);
 }
-assertUnique(implementations.map(({ value }) => fingerprint(value)), "correct implementation");
-assertUnique(attacks.map(({ value }) => fingerprint(value)), "attack implementation");
+assertUnique(
+  implementations.map(({ value }) => fingerprint(value)),
+  "correct implementation",
+);
+assertUnique(
+  attacks.map(({ value }) => fingerprint(value)),
+  "attack implementation",
+);
 
 const allowedWrongReuse = new Set(
   review.intentionalInvalidCandidateReuse.flatMap(({ tasks }) =>
@@ -157,7 +170,9 @@ for (const attack of attacks) {
   const awareness = attackShingles.size === 0 ? 0 : shared / attackShingles.size;
   attackAwareness.push({ task: attack.id, awareness: round(awareness) });
 }
-const graderAwareAttacks = attackAwareness.filter((entry) => entry.awareness >= ATTACK_AWARENESS_LIMIT);
+const graderAwareAttacks = attackAwareness.filter(
+  (entry) => entry.awareness >= ATTACK_AWARENESS_LIMIT,
+);
 for (const entry of graderAwareAttacks) {
   failures.push(
     `attack for ${entry.task} shares ${(entry.awareness * 100).toFixed(0)}% of its shingles with its own grader (limit ${(ATTACK_AWARENESS_LIMIT * 100).toFixed(0)}%)`,
@@ -232,7 +247,10 @@ for (const item of band3Declared) {
 }
 if (band3Counts.NOT_A_CONTEXT_TEST > 0) {
   failures.push(
-    `Band 3 contains ${band3Counts.NOT_A_CONTEXT_TEST} task(s) measured NOT_A_CONTEXT_TEST: ${band3Tasks.filter((t) => t.classification === "NOT_A_CONTEXT_TEST").map((t) => t.id).join(", ")}`,
+    `Band 3 contains ${band3Counts.NOT_A_CONTEXT_TEST} task(s) measured NOT_A_CONTEXT_TEST: ${band3Tasks
+      .filter((t) => t.classification === "NOT_A_CONTEXT_TEST")
+      .map((t) => t.id)
+      .join(", ")}`,
   );
 }
 
@@ -244,13 +262,16 @@ console.log(
       tasks: expected.length,
       uniqueBehaviorSignatures: new Set(review.tasks.map((t) => t.behaviorSignature)).size,
       reviewedCategoryOverlaps: review.overlapReviews.length,
-      correctImplementationFingerprints: new Set(implementations.map(({ value }) => fingerprint(value))).size,
+      correctImplementationFingerprints: new Set(
+        implementations.map(({ value }) => fingerprint(value)),
+      ).size,
       correctImplementations: implementations.length,
       uniqueAttackFingerprints: new Set(attacks.map(({ value }) => fingerprint(value))).size,
       attacks: attacks.length,
       reviewedIntentionalWrongReuse: review.intentionalInvalidCandidateReuse.length,
       promptLeakage: {
-        measurement: "lexical scan of every public prompt for private guidance and other task identifiers",
+        measurement:
+          "lexical scan of every public prompt for private guidance and other task identifiers",
         promptsScanned: review.tasks.length,
         privateGuidanceFindings: promptFindings.privateGuidance,
         crossTaskIdentifierFindings: promptFindings.crossTaskIdentifier,
@@ -272,11 +293,15 @@ console.log(
         measurement: `fraction of each attack's shingles also present in its own grader source; limit ${ATTACK_AWARENESS_LIMIT}`,
         attacksMeasured: attackAwareness.length,
         overLimit: graderAwareAttacks,
-        maxAwareness: attackAwareness.length === 0 ? null : Math.max(...attackAwareness.map((e) => e.awareness)),
+        maxAwareness:
+          attackAwareness.length === 0
+            ? null
+            : Math.max(...attackAwareness.map((e) => e.awareness)),
         perTask: attackAwareness.toSorted((a, b) => b.awareness - a.awareness),
       },
       band3: {
-        measurement: "orientation analyzer run over each Band 3 fixture; classification derived, not read",
+        measurement:
+          "orientation analyzer run over each Band 3 fixture; classification derived, not read",
         counts: band3Counts,
         tasks: band3Tasks,
       },
@@ -327,10 +352,11 @@ async function loadGraderSources() {
 }
 
 function shingles(source, size = 5) {
-  const tokens = String(source)
-    .replaceAll(/\/\/[^\n]*/g, " ")
-    .replaceAll(/\s+/g, " ")
-    .match(/[A-Za-z0-9_$]+|[^\sA-Za-z0-9_$]/g) ?? [];
+  const tokens =
+    String(source)
+      .replaceAll(/\/\/[^\n]*/g, " ")
+      .replaceAll(/\s+/g, " ")
+      .match(/[A-Za-z0-9_$]+|[^\sA-Za-z0-9_$]/g) ?? [];
   const set = new Set();
   for (let index = 0; index + size <= tokens.length; index += 1) {
     set.add(tokens.slice(index, index + size).join(" "));
@@ -387,7 +413,9 @@ function fingerprint(value) {
 
 function stableStringify(value) {
   return JSON.stringify(
-    Object.fromEntries(Object.entries(value ?? {}).sort(([left], [right]) => left.localeCompare(right))),
+    Object.fromEntries(
+      Object.entries(value ?? {}).sort(([left], [right]) => left.localeCompare(right)),
+    ),
   );
 }
 
