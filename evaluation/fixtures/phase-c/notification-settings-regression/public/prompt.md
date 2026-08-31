@@ -1,15 +1,23 @@
 # notification-settings-regression
 
-Digest delivery ignores request-level settings. For example, five items requested with a batch
-size of two must produce three ordered deliveries, but the application behaves as though the
-default batch size were still active.
+The support desk's morning digest ignores per-request settings. Run `node bin/demo.mjs`: the
+console asks for a digest batch size of two across five subjects and should get three ordered
+deliveries, but it gets one delivery containing everything, as though the workspace default were
+still in force.
 
-Restore request-level configuration precedence. A per-request override must win over the default
-for **any** configuration key, not only the one this report mentions, and a key that is not
-overridden must keep its default value. Do not change the default configuration itself, and do not
-mutate the caller's settings object.
+Per-request settings are supposed to take precedence over the workspace defaults for the duration
+of that call. Restore that precedence. It must hold for **any** setting a caller overrides, not
+only the one this report happens to mention, and a setting that is not overridden must keep its
+workspace default. Do not change the workspace defaults themselves, and do not modify the settings
+object a caller passes in.
 
-`sendDigest(user, items, settings)` must preserve item order, use a positive integer
-`notificationDigestBatchSize`, rejecting any other value with `RangeError`, and leave both the items
-and settings objects unchanged. Calls without a batch-size override must continue to use the default
-of ten. Preserve existing public APIs and unrelated configuration values.
+Concretely, after the fix:
+
+- `sendDigest(agent, subjects, settings)` must preserve subject order and group them using a
+  positive integer `ticketDigestBatchSize`, rejecting any other value with `RangeError`. A call
+  with no override must still use the workspace default of ten.
+- `runEscalationSweep(settings)` must honour an `escalationAfterMinutes` override in the same way.
+- `settingValue(key, overrides)` must return the caller's value for any overridden key and the
+  workspace default for any key the caller did not override.
+
+Preserve the existing public APIs, the delivery and ticket behaviour, and every unrelated setting.

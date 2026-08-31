@@ -1,10 +1,19 @@
 # discount-result-regression
 
-Checkout totals are wrong for percentage discounts. The checkout contract applies the discount
-to the base price first, then applies tax to the discounted subtotal. `PERCENT` values are a
-percentage of the base price; `FLAT` values are currency amounts. A discount may reduce the
-subtotal to zero but never below it, and the final total is rounded to two decimal places.
+Freight quotes come out wrong when a percentage adjustment is applied. Run `node bin/demo.mjs`:
+a base rate of 120 with 10% off and an 8% tax rate is quoted at 115.60, but the desk expects
+116.64. The same lane with a flat 20 off is quoted correctly, so only the percentage case is
+affected.
 
-Fix the behavior for arbitrary valid prices, discounts, and non-negative tax rates. Preserve the
-existing command and controller APIs and do not change the separate code-based promotion
-compatibility behavior.
+The quoting contract is:
+
+- the adjustment comes off the base price first, and tax is then applied to what remains;
+- a `PERCENT` adjustment is that percentage **of the base price**, and a `FLAT` adjustment is a
+  currency amount;
+- an adjustment may bring the subtotal down to zero but never below it;
+- the quoted total is rounded to two decimal places.
+
+Fix `quoteShipment(basePrice, adjustment, taxRate)` so it satisfies that contract for arbitrary
+valid base prices, adjustments and non-negative tax rates — not only for the numbers in this
+report. Keep the request validation as it is, including rejecting a percentage above one hundred
+with `RangeError`, and do not change the separate code-based promotion behaviour.

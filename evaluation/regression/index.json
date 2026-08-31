@@ -64,8 +64,8 @@
       "id": "config-special-case-single-key",
       "phase": "phase-c",
       "taskId": "notification-settings-regression",
-      "contract": "Restore request-level configuration precedence without changing the default configuration.",
-      "violation": "Restores precedence for notificationDigestBatchSize alone; every other request-level override is still overwritten by the default configuration."
+      "contract": "A per-request override must win over the workspace default for any setting key, not only the one this report mentions.",
+      "violation": "Restores precedence for ticketDigestBatchSize alone; every other per-request override is still overwritten by the workspace default."
     },
     {
       "corpus": "known-false-pass",

@@ -6,28 +6,32 @@
 // synthesized on read rather than persisted, must not pass. See GRADER_CONTRACT_AUDIT.md.
 
 export const phaseCBand3Graders = {
-  // Prompt: restore request-level configuration precedence for any key, keep the defaults for keys
-  // that are not overridden, and leave the caller's objects unchanged.
+  // Prompt: per-request settings take precedence over the workspace defaults for ANY key, keys that
+  // are not overridden keep their default, the defaults themselves are unchanged, and the caller's
+  // settings object is not modified. Every assertion below is stated in the prompt.
   "notification-settings-regression": async ({ importModule, equal, check, throws }) => {
-    const { createUser } = await importModule("src/services/user-service.mjs");
-    const { sendDigest } = await importModule("src/services/notification-service.mjs");
-    const { getConfigValue, resolveConfig } = await importModule("src/config/config-provider.mjs");
-    const { DEFAULT_CONFIG } = await importModule("src/config/app-config.mjs");
-    const user = createUser("Ada", "ada@example.com");
+    const { registerAgent } = await importModule("src/directory/agent-directory.mjs");
+    const { openTicket } = await importModule("src/tickets/ticket-store.mjs");
+    const { SEVERITY } = await importModule("src/support/severity.mjs");
+    const { sendDigest } = await importModule("src/workflows/daily-digest.mjs");
+    const { runEscalationSweep } = await importModule("src/workflows/escalation-policy.mjs");
+    const { settingValue } = await importModule("src/settings/settings-resolver.mjs");
+    const { WORKSPACE_DEFAULTS } = await importModule("src/settings/workspace-defaults.mjs");
 
-    const items = ["a", "b", "c", "d", "e", "f", "g"];
-    const settings = { notificationDigestBatchSize: 3, defaultCurrency: "EUR" };
-    const beforeItems = structuredClone(items);
+    const agent = registerAgent("Ada", "ada@example.com");
+    const subjects = ["a", "b", "c", "d", "e", "f", "g"];
+    const settings = { ticketDigestBatchSize: 3, defaultLocale: "fr-FR" };
+    const beforeSubjects = structuredClone(subjects);
     const beforeSettings = structuredClone(settings);
     equal(
       "request batch size controls delivery groups",
-      sendDigest(user, items, settings).map((delivery) => delivery.message),
+      sendDigest(agent, subjects, settings).map((delivery) => delivery.body),
       ["Digest: a, b, c", "Digest: d, e, f", "Digest: g"],
     );
-    equal("items remain unchanged", items, beforeItems);
-    equal("settings remain unchanged", settings, beforeSettings);
+    equal("subjects remain unchanged", subjects, beforeSubjects);
+    equal("the caller's settings object remains unchanged", settings, beforeSettings);
 
-    // Batch sizes must generalize, not special-case the value the symptom mentions.
+    // Batch sizes must generalize, not special-case the value the report happens to mention.
     for (const [size, count] of [
       [1, 7],
       [2, 4],
@@ -37,88 +41,142 @@ export const phaseCBand3Graders = {
     ]) {
       equal(
         `batch size ${size} produces ${count} deliveries`,
-        sendDigest(user, items, { notificationDigestBatchSize: size }).length,
+        sendDigest(agent, subjects, { ticketDigestBatchSize: size }).length,
         count,
       );
     }
     equal(
-      "default batch size remains ten",
-      sendDigest(user, Array.from({ length: 11 }, (_, index) => String(index))).length,
+      "the workspace default of ten still applies without an override",
+      sendDigest(agent, Array.from({ length: 11 }, (_, index) => String(index))).length,
       2,
     );
-    equal("an empty digest sends nothing", sendDigest(user, [], { notificationDigestBatchSize: 2 }).length, 0);
-
-    // Precedence is a property of the configuration layer, so it must hold for every key rather
-    // than for the one the reported symptom happens to mention.
-    for (const [key, override] of [
-      ["notificationDigestBatchSize", 4],
-      ["defaultCurrency", "EUR"],
-      ["maxTasksPerProject", 7],
-    ]) {
-      equal(`request-level override wins for ${key}`, getConfigValue(key, { [key]: override }), override);
-    }
-    equal("unrelated keys keep their defaults", getConfigValue("defaultCurrency", { maxTasksPerProject: 1 }), "USD");
-    equal("resolveConfig applies every override at once", resolveConfig({ defaultCurrency: "GBP", maxTasksPerProject: 3 }), {
-      ...DEFAULT_CONFIG,
-      defaultCurrency: "GBP",
-      maxTasksPerProject: 3,
-    });
-    equal("resolveConfig without overrides is the default configuration", resolveConfig(), { ...DEFAULT_CONFIG });
-    equal("the default configuration itself is unchanged", DEFAULT_CONFIG.notificationDigestBatchSize, 10);
-    const overrides = { defaultCurrency: "JPY" };
-    resolveConfig(overrides);
-    equal("resolveConfig does not mutate the overrides it is given", overrides, { defaultCurrency: "JPY" });
-
+    equal("an empty digest sends nothing", sendDigest(agent, [], { ticketDigestBatchSize: 2 }).length, 0);
     for (const size of [0, -1, 2.5, "3", null]) {
       await throws(
         `invalid batch size ${String(size)} rejects`,
-        () => sendDigest(user, ["one"], { notificationDigestBatchSize: size }),
+        () => sendDigest(agent, ["one"], { ticketDigestBatchSize: size }),
         RangeError,
       );
     }
-    check("digest deliveries carry a message", typeof sendDigest(user, ["x"])[0]?.message === "string", "expected a message string");
+
+    // A second workflow reading a different setting through the same layer. Restoring precedence
+    // for the digest alone does not satisfy the contract.
+    openTicket("printer offline", SEVERITY.NORMAL);
+    openTicket("vpn drops", SEVERITY.HIGH);
+    openTicket("badge reader", SEVERITY.NORMAL);
+    equal("a narrow escalation window escalates every open ticket", runEscalationSweep({ escalationAfterMinutes: 1 }).length, 3);
+    equal("a wide escalation window escalates nothing", runEscalationSweep({ escalationAfterMinutes: 5_000 }).length, 0);
+    equal("the workspace escalation default still applies", runEscalationSweep().length, 0);
+    await throws(
+      "an invalid escalation window rejects",
+      () => runEscalationSweep({ escalationAfterMinutes: 0 }),
+      RangeError,
+    );
+
+    // Precedence is a property of the settings layer, so it must hold for every key -- including a
+    // key no workflow reads.
+    for (const [key, override] of [
+      ["ticketDigestBatchSize", 4],
+      ["escalationAfterMinutes", 15],
+      ["auditRetentionDays", 7],
+      ["defaultLocale", "de-DE"],
+    ]) {
+      equal(`an override wins for ${key}`, settingValue(key, { [key]: override }), override);
+    }
+    for (const key of Object.keys(WORKSPACE_DEFAULTS)) {
+      equal(`${key} keeps its default when it is not overridden`, settingValue(key, { unrelatedKey: 1 }), WORKSPACE_DEFAULTS[key]);
+      equal(`${key} keeps its default with no overrides at all`, settingValue(key), WORKSPACE_DEFAULTS[key]);
+    }
+    equal(
+      "several overrides apply at once",
+      [settingValue("auditRetentionDays", { auditRetentionDays: 1, defaultLocale: "es-ES" }), settingValue("defaultLocale", { auditRetentionDays: 1, defaultLocale: "es-ES" })],
+      [1, "es-ES"],
+    );
+    equal("the workspace defaults themselves are unchanged", WORKSPACE_DEFAULTS.ticketDigestBatchSize, 10);
+    equal("every workspace default is unchanged", WORKSPACE_DEFAULTS, {
+      ticketDigestBatchSize: 10,
+      escalationAfterMinutes: 60,
+      auditRetentionDays: 30,
+      defaultLocale: "en-GB",
+    });
+    const overrides = { defaultLocale: "ja-JP" };
+    settingValue("defaultLocale", overrides);
+    equal("reading a setting does not modify the overrides it was given", overrides, { defaultLocale: "ja-JP" });
+    check(
+      "digest deliveries carry a body",
+      typeof sendDigest(agent, ["x"])[0]?.body === "string",
+      "expected a delivery body string",
+    );
   },
 
-  // Prompt: discount applies to the base price first, tax applies to the discounted subtotal, the
-  // subtotal floors at zero, and the total is rounded to two decimals.
+  // Prompt: the adjustment comes off the base price first, tax applies to what remains, a PERCENT
+  // adjustment is a percentage of the base price, the subtotal floors at zero, and the total is
+  // rounded to two decimals -- for arbitrary valid inputs, not just the reported ones.
   "discount-result-regression": async ({ importModule, equal, check, throws }) => {
-    const { handleCheckout } = await importModule("src/api/billing-controller.mjs");
-    const expected = (base, discount, taxRate) => {
-      const reduction = discount.kind === "PERCENT" ? (base * discount.value) / 100 : discount.value;
-      const subtotal = Math.max(0, base - reduction);
-      return Math.round(subtotal * (1 + taxRate) * 100) / 100;
+    const { quoteShipment } = await importModule("src/quoting/quote-service.mjs");
+    const { adjustmentForCode } = await importModule("src/promotions/promo-codes.mjs");
+    const expected = (base, adjustment, taxRate) => {
+      const reduction =
+        adjustment.kind === "PERCENT" ? (base * adjustment.value) / 100 : adjustment.value;
+      return Math.round(Math.max(0, base - reduction) * (1 + taxRate) * 100) / 100;
     };
 
-    equal("percentage discount precedes tax", handleCheckout(120, { kind: "PERCENT", value: 10 }, 0.08), 116.64);
-    equal("flat discount precedes tax and rounds cents", handleCheckout(95, { kind: "FLAT", value: 20 }, 0.075), 80.63);
-    equal("discount cannot make subtotal negative", handleCheckout(30, { kind: "FLAT", value: 50 }, 0.2), 0);
+    equal("the reported case is corrected", quoteShipment(120, { kind: "PERCENT", value: 10 }, 0.08), 116.64);
+    equal("flat adjustments still price correctly", quoteShipment(120, { kind: "FLAT", value: 20 }, 0.08), 108);
+    equal("a flat adjustment rounds cents", quoteShipment(95, { kind: "FLAT", value: 20 }, 0.075), 80.63);
+    equal("an adjustment cannot make the subtotal negative", quoteShipment(30, { kind: "FLAT", value: 50 }, 0.2), 0);
+    equal("a zero adjustment is just taxed base", quoteShipment(200, { kind: "FLAT", value: 0 }, 0.1), 220);
 
-    // The formula must hold for arbitrary valid inputs, not for the sampled ones.
+    // The formula must hold across the whole valid input space. A fix that repairs only the
+    // percentage the report happens to mention does not satisfy the contract.
     const disagreements = [];
-    for (const base of [0, 15, 30, 99.99, 250, 1000]) {
-      for (const discount of [
+    for (const base of [0, 15, 30, 99.99, 120, 250, 1000, 1234.56]) {
+      for (const adjustment of [
         { kind: "PERCENT", value: 0 },
+        { kind: "PERCENT", value: 5 },
+        { kind: "PERCENT", value: 10 },
         { kind: "PERCENT", value: 12 },
+        { kind: "PERCENT", value: 33.5 },
         { kind: "PERCENT", value: 100 },
         { kind: "FLAT", value: 0 },
         { kind: "FLAT", value: 20 },
         { kind: "FLAT", value: 5000 },
       ]) {
-        for (const taxRate of [0, 0.05, 0.075, 0.2]) {
-          const actual = handleCheckout(base, discount, taxRate);
-          if (actual !== expected(base, discount, taxRate)) {
-            disagreements.push(`base=${base} ${discount.kind}:${discount.value} tax=${taxRate} -> ${actual}, expected ${expected(base, discount, taxRate)}`);
+        for (const taxRate of [0, 0.05, 0.075, 0.08, 0.2]) {
+          const actual = quoteShipment(base, adjustment, taxRate);
+          const want = expected(base, adjustment, taxRate);
+          if (actual !== want) {
+            disagreements.push(
+              `base=${base} ${adjustment.kind}:${adjustment.value} tax=${taxRate} -> ${actual}, expected ${want}`,
+            );
           }
         }
       }
     }
     check(
-      "checkout totals generalize across prices, discounts and tax rates",
+      "quotes generalize across base rates, adjustments and tax rates",
       disagreements.length === 0,
-      disagreements.slice(0, 5).join("; ") || "every combination matched the contract",
+      `${disagreements.length} combination(s) diverged: ${disagreements.slice(0, 5).join("; ")}` ||
+        "every combination matched the contract",
     );
-    await throws("percentage over one hundred rejects", () => handleCheckout(100, { kind: "PERCENT", value: 101 }, 0), RangeError);
-    await throws("negative percentage rejects", () => handleCheckout(100, { kind: "PERCENT", value: -1 }, 0), RangeError);
+    check(
+      "the sweep covered the whole input space",
+      disagreements.length === 0,
+      `${8 * 9 * 5} combinations were priced`,
+    );
+
+    // Validation is explicitly out of scope for the fix and must be preserved.
+    await throws("a percentage above one hundred rejects", () => quoteShipment(100, { kind: "PERCENT", value: 101 }, 0), RangeError);
+    await throws("a negative adjustment rejects", () => quoteShipment(100, { kind: "PERCENT", value: -1 }, 0), RangeError);
+    await throws("a negative tax rate rejects", () => quoteShipment(100, { kind: "FLAT", value: 1 }, -0.1), RangeError);
+    await throws("an unknown adjustment kind rejects", () => quoteShipment(100, { kind: "BOGUS", value: 1 }, 0), RangeError);
+    await throws("a missing adjustment rejects", () => quoteShipment(100, null, 0), RangeError);
+
+    // The separate code-based promotion path is explicitly out of scope.
+    equal("promotion codes still resolve to adjustments", adjustmentForCode("BULK20"), { kind: "FLAT", value: 20 });
+    equal("a percentage promotion code still resolves", adjustmentForCode("WELCOME"), { kind: "PERCENT", value: 5 });
+    equal("an unknown promotion code is a no-op adjustment", adjustmentForCode("NOPE"), { kind: "FLAT", value: 0 });
+    equal("a promotion code prices through the same contract", quoteShipment(200, adjustmentForCode("WELCOME"), 0.1), 209);
   },
 
   // Prompt: a subscription opened after a price update captures the current price for that plan;

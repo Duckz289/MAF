@@ -1,36 +1,24 @@
 [
   {
     "id": "notification-settings-regression",
-    "classification": "CONTEXT_TEST_STRONG",
     "entrypoint": "bin/demo.mjs",
-    "defectOwner": "src/config/config-provider.mjs",
-    "behaviorPath": [
-      "bin/demo.mjs",
-      "src/services/notification-service.mjs",
-      "src/config/config-provider.mjs",
-      "src/config/app-config.mjs"
-    ],
+    "defectOwner": "src/settings/settings-resolver.mjs",
     "decoys": [
-      "src/legacy/legacy-notification-format.mjs",
-      "src/notifications/channel-notifiers.mjs",
-      "src/repositories/notification-repository.mjs"
+      "src/delivery/channel-adapters.mjs",
+      "src/render/digest-template.mjs",
+      "src/directory/agent-directory.mjs",
+      "src/util/ordering.mjs"
     ]
   },
   {
     "id": "discount-result-regression",
-    "classification": "CONTEXT_TEST_STRONG",
     "entrypoint": "bin/demo.mjs",
-    "defectOwner": "src/domain/discount-calculator.mjs",
-    "behaviorPath": [
-      "bin/demo.mjs",
-      "src/commands/checkout-command.mjs",
-      "src/services/discount-service.mjs",
-      "src/domain/discount-calculator.mjs"
-    ],
+    "defectOwner": "src/pricing/adjustment-rules.mjs",
     "decoys": [
-      "src/legacy/legacy-discount-rules.mjs",
-      "src/api/billing-controller.mjs",
-      "src/config/feature-flags.mjs"
+      "src/promotions/promo-codes.mjs",
+      "src/manifest/shipment-manifest.mjs",
+      "src/invoicing/invoice-builder.mjs",
+      "src/pricing/rounding.mjs"
     ]
   },
   {
