@@ -20,6 +20,7 @@ const forbiddenPath = /(?:hidden|grader|reference|shortcut|curator|salvage|priva
 const forbiddenContent =
   /(?:hidden grader|expected patch|correct owner|superseded by|unused by any live|retained only for historical reference|b3-config-provider-boundary-trace|b3-dead-code-vs-live-discount-path|b3-decoy-cache-source-of-truth|b3-duplicate-service-owner|b3-event-handler-owner-trace)/i;
 const failures = [];
+const measured = { filesScanned: 0, pathFindings: 0, contentFindings: 0, nulByteFindings: 0 };
 for (const [phase, id] of expected) {
   const root = path.join(fixtureRoot, phase, id);
   const publicRoot = path.join(root, "public");
@@ -32,12 +33,20 @@ for (const [phase, id] of expected) {
   }
   const entries = await readdir(publicRoot, { recursive: true });
   for (const entry of entries) {
-    if (forbiddenPath.test(entry)) failures.push(`${phase}/${id}: forbidden public path ${entry}`);
+    if (forbiddenPath.test(entry)) {
+      measured.pathFindings += 1;
+      failures.push(`${phase}/${id}: forbidden public path ${entry}`);
+    }
     const file = path.join(publicRoot, entry);
     try {
       const data = await readFile(file);
-      if (data.includes(0)) failures.push(`${phase}/${id}: NUL byte in ${entry}`);
+      measured.filesScanned += 1;
+      if (data.includes(0)) {
+        measured.nulByteFindings += 1;
+        failures.push(`${phase}/${id}: NUL byte in ${entry}`);
+      }
       if (forbiddenContent.test(data.toString("utf8"))) {
+        measured.contentFindings += 1;
         failures.push(`${phase}/${id}: forbidden public content in ${entry}`);
       }
     } catch {
@@ -46,12 +55,23 @@ for (const [phase, id] of expected) {
   }
 }
 if (failures.length) throw new Error(failures.join("\n"));
+// Every field below is a measured count or an explicit NOT_CHECKED. The previous version printed
+// hiddenIsolation, leakage and deterministicPolicy as the literal string "PASS" regardless of what
+// the scan found, and deterministicPolicy was never measured here at all.
 console.log(
   JSON.stringify({
+    measurement: "lexical scan of every materialized public fixture file",
     tasks: expected.length,
     publicMaterializations: expected.length,
-    hiddenIsolation: "PASS",
-    leakage: "PASS",
-    deterministicPolicy: "PASS",
+    filesScanned: measured.filesScanned,
+    forbiddenPathFindings: measured.pathFindings,
+    forbiddenContentFindings: measured.contentFindings,
+    nulByteFindings: measured.nulByteFindings,
+    notChecked: {
+      // Determinism is measured by run-determinism-stress.mjs, not by a static fixture scan.
+      deterministicPolicy: "NOT_CHECKED",
+      // Semantic leakage is out of scope; see evaluation/lib/leakage.mjs.
+      semanticLeakage: "NOT_CHECKED",
+    },
   }),
 );

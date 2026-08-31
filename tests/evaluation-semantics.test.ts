@@ -252,6 +252,64 @@ describe("cost per DVS accounting", () => {
   });
 });
 
+describe("cost per DVS is not a mean over successes", () => {
+  // The two quantities must never be readable as the same number.
+  it("differs from the mean cost of successful runs", () => {
+    const runs = [
+      base({ runId: "a", taskId: "t1", hiddenGrader: "FAIL", costUsd: 100 }),
+      base({ runId: "b", taskId: "t2", hiddenGrader: "FAIL", costUsd: 100 }),
+      base({ runId: "c", taskId: "t3", costUsd: 1 }),
+    ];
+    const metrics = summarizeEvaluation(runs);
+    const meanOverSuccesses = 1;
+    expect(metrics.cost.costPerDvsUsd).toBe(201);
+    expect(metrics.cost.costPerDvsUsd).not.toBe(meanOverSuccesses);
+  });
+
+  it("scales with the number of successes", () => {
+    const metrics = summarizeEvaluation([
+      base({ runId: "a", taskId: "t1", costUsd: 10 }),
+      base({ runId: "b", taskId: "t2", costUsd: 10 }),
+      base({ runId: "c", taskId: "t3", hiddenGrader: "FAIL", costUsd: 40 }),
+    ]);
+    expect(metrics.dvs).toBe(2);
+    expect(metrics.cost.costPerDvsUsd).toBe(30);
+  });
+
+  it("charges infrastructure failures against the ratio too", () => {
+    const metrics = summarizeEvaluation([
+      base({ runId: "a", taskId: "t1", costUsd: 5 }),
+      base({
+        runId: "b",
+        taskId: "t2",
+        executionStatus: "INFRA_FAILURE",
+        runValidity: "INVALID",
+        evidenceSource: "NOT_CHECKED",
+        candidateExists: false,
+        candidateIntegrity: "MISSING",
+        hiddenGrader: "NOT_CHECKED",
+        regression: "NOT_CHECKED",
+        claimedDone: false,
+        costUsd: 15,
+      }),
+    ]);
+    expect(metrics.dvs).toBe(1);
+    expect(metrics.infrastructureFailures).toBe(1);
+    expect(metrics.cost.costPerDvsUsd).toBe(20);
+  });
+
+  it("is zero-safe, unknown-safe and partial-safe together", () => {
+    expect(summarizeEvaluation([]).cost.status).toBe("NO_DVS");
+    expect(summarizeEvaluation([base({ hiddenGrader: "FAIL" })]).cost.status).toBe("NO_DVS");
+    const unknown = base({ runId: "u" });
+    delete unknown.costUsd;
+    expect(summarizeEvaluation([unknown]).cost.status).toBe("UNKNOWN");
+    expect(summarizeEvaluation([base({ runId: "k", costUsd: 2 }), unknown]).cost.status).toBe(
+      "PARTIAL",
+    );
+  });
+});
+
 describe("invalid run accounting", () => {
   it("separates invalid runs from the DVS denominator", () => {
     const metrics = summarizeEvaluation([

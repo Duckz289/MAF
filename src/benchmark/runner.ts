@@ -125,11 +125,23 @@ export interface BenchmarkSample extends BenchmarkExecution {
 export interface BenchmarkReport {
   generatedAt: string;
   samples: BenchmarkSample[];
+  /**
+   * Sample statistics over what the PARTICIPANTS reported about themselves. These describe the
+   * executions, not their correctness: `verificationResult` is a participant's own claim.
+   *
+   * Do not read `meanCostOfVerifiedSuccessesUsd` as a cost per success in the protocol sense. It is
+   * the arithmetic mean of the costs of the samples that claimed success, which says what a claimed
+   * success cost while ignoring everything spent not getting one. The protocol quantity is
+   * `evaluation.cost.costPerDvsUsd`: total cost of all runs in scope divided by the number of
+   * independently verified successes. The two are different questions and will differ in value.
+   */
   metrics: {
     sampleCount: number;
-    verifiedSuccessRate: number;
-    costPerVerifiedSuccess: number | null;
-    verifiedRunsWithKnownCost: number;
+    /** Fraction of samples whose participant claimed verification. Self-reported. */
+    selfReportedVerifiedRate: number;
+    /** Arithmetic mean of the known costs of self-reported successes. NOT cost per DVS. */
+    meanCostOfVerifiedSuccessesUsd: number | null;
+    selfReportedSuccessesWithKnownCost: number;
   };
   /** Protocol accounting for this comparison, derived from the samples through
    *  src/evaluation/benchmark-bridge.ts. This is where DVS, false-safe, invalid-run separation and
@@ -709,13 +721,13 @@ export class BenchmarkRunner {
       evaluation: evaluateBenchmarkSamples(samples, sourceRevisionOf(samples), verifications),
       metrics: {
         sampleCount: samples.length,
-        verifiedSuccessRate: samples.length === 0 ? 0 : successes.length / samples.length,
-        costPerVerifiedSuccess:
+        selfReportedVerifiedRate: samples.length === 0 ? 0 : successes.length / samples.length,
+        meanCostOfVerifiedSuccessesUsd:
           knownCostSuccesses.length === 0
             ? null
             : knownCostSuccesses.reduce((total, sample) => total + (sample.reportedCost ?? 0), 0) /
               knownCostSuccesses.length,
-        verifiedRunsWithKnownCost: knownCostSuccesses.length,
+        selfReportedSuccessesWithKnownCost: knownCostSuccesses.length,
       },
       strategyEvidence,
     };

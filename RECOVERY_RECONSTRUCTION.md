@@ -155,8 +155,11 @@ invalid. Infrastructure failure maps to NOT-DVS.
 
 `npm test`: 1,122 passed, 8 skipped (85 files passed, 4 skipped). `typecheck`: PASS. `build`:
 PASS. `smoke`: PASS (not gated in the combined repository run below). `format:check`: PASS.
-`lint`: FAIL, 20 warnings + 6 infos — intentional unused parameters in adversarial/pristine
-fixtures and test string-literal style diagnostics. `compose:check`:
+`lint`: PASS (exit code 0) with 20 warnings + 6 infos — intentional unused parameters in
+adversarial/pristine fixtures and test string-literal style diagnostics. This line previously read
+`FAIL`, which was wrong: `npm run lint` exits 0 and Biome reports those diagnostics as warnings and
+infos, not errors. The second independent audit established the correct exit code and the record is
+corrected here rather than quietly restated. `compose:check`:
 `ENVIRONMENT_UNAVAILABLE` — Docker Compose is not installed in this environment and no checksum-
 verified Compose bootstrap is configured, so it was not fabricated. `npm run validate` therefore
 does not complete end to end in this environment.

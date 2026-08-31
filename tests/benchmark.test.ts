@@ -63,9 +63,9 @@ describe("BenchmarkRunner", () => {
     );
     expect(report.metrics).toEqual({
       sampleCount: 2,
-      verifiedSuccessRate: 1,
-      costPerVerifiedSuccess: 0.25,
-      verifiedRunsWithKnownCost: 1,
+      selfReportedVerifiedRate: 1,
+      meanCostOfVerifiedSuccessesUsd: 0.25,
+      selfReportedSuccessesWithKnownCost: 1,
     });
     expect(report.strategyEvidence).toEqual([]);
     expect(report.samples[0]).toMatchObject({
@@ -76,7 +76,7 @@ describe("BenchmarkRunner", () => {
     const serialized = runner.serialize(report);
     expect(serialized).toContain('"reportedCost": null');
     expect(JSON.parse(serialized)).toMatchObject({
-      metrics: { verifiedSuccessRate: 1 },
+      metrics: { selfReportedVerifiedRate: 1 },
     });
   });
 
@@ -143,8 +143,8 @@ describe("BenchmarkRunner", () => {
         { strategy: "MAF_ADAPTIVE", execute: async () => execution(null) },
       ],
     );
-    expect(report.metrics.verifiedRunsWithKnownCost).toBe(0);
-    expect(report.metrics.costPerVerifiedSuccess).toBeNull();
+    expect(report.metrics.selfReportedSuccessesWithKnownCost).toBe(0);
+    expect(report.metrics.meanCostOfVerifiedSuccessesUsd).toBeNull();
     await expect(
       runner.compare({ id: "bad-cost", prompt: "x", expectedVerification: "test" }, [
         { strategy: "NATIVE", execute: async () => execution(-1) },
