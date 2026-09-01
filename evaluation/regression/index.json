@@ -28,6 +28,14 @@
     "audit2-round2-alternatives": {
       "expectedStatus": "PASS",
       "note": "Correct implementations authored after the same repairs, exercising rounding, exception type, mutation control, authorization, event ownership, caching, persistence and synchronization freedoms."
+    },
+    "audit3-cache-ownership-attacks": {
+      "expectedStatus": "FAIL",
+      "note": "Reported by the THIRD independent audit: stale-cache-invalidation-bug's grader never tested a patch carrying its own id field, so cache invalidation could be redirected by patch content instead of the userId argument. Two structurally distinct code shapes exhibiting the same ownership-redirection bug."
+    },
+    "audit3-cache-ownership-alternatives": {
+      "expectedStatus": "PASS",
+      "note": "Correct implementations for the same task, one matching the reference's invalidate-then-return shape and one using a structurally different write-through cache architecture, both keyed on the userId argument throughout."
     }
   },
   "cases": [
@@ -778,6 +786,42 @@
       "attackClass": "accumulator aliasing",
       "contract": "Do not change the workspace baseline itself; a setting that is not overridden must keep its baseline value.",
       "violation": "Uses the least specific layer's own values object as the accumulator, so the first overridden call writes the override permanently into the workspace baseline and every later default lookup returns it."
+    },
+    {
+      "corpus": "audit3-cache-ownership-attacks",
+      "id": "patch-id-nullish-fallback-redirect",
+      "phase": "phase-b",
+      "taskId": "stale-cache-invalidation-bug",
+      "attackClass": "caller-controlled ownership redirection",
+      "contract": "A successful update must ensure every later read for that user observes the update while leaving other users' cached profiles untouched.",
+      "violation": "Invalidates userProfileCacheKey(patch.id ?? userId) instead of userProfileCacheKey(userId), so a patch carrying its own id field (matching another real user, or an arbitrary bogus value) redirects which cache entry is cleared and the real target's cached profile stays stale."
+    },
+    {
+      "corpus": "audit3-cache-ownership-attacks",
+      "id": "patch-id-precedes-correction-redirect",
+      "phase": "phase-b",
+      "taskId": "stale-cache-invalidation-bug",
+      "attackClass": "caller-controlled ownership redirection",
+      "contract": "A successful update must ensure every later read for that user observes the update while leaving other users' cached profiles untouched.",
+      "violation": "Merges the patch and invalidates against the merge's own id field before correcting it back to the real userId for storage, so the same ownership-redirection defect appears through a different code shape than a `??` fallback."
+    },
+    {
+      "corpus": "audit3-cache-ownership-alternatives",
+      "id": "invalidate-by-real-target",
+      "phase": "phase-b",
+      "taskId": "stale-cache-invalidation-bug",
+      "freedom": "matches the reference's invalidate-then-return shape",
+      "contract": "A successful update must ensure every later read for that user observes the update while leaving other users' cached profiles untouched.",
+      "satisfies": "Always invalidates userProfileCacheKey(userId), ignoring any id field a patch happens to carry."
+    },
+    {
+      "corpus": "audit3-cache-ownership-alternatives",
+      "id": "write-through-cache-update",
+      "phase": "phase-b",
+      "taskId": "stale-cache-invalidation-bug",
+      "freedom": "write-through cache architecture instead of invalidate-then-refetch",
+      "contract": "A successful update must ensure every later read for that user observes the update while leaving other users' cached profiles untouched.",
+      "satisfies": "Writes the fresh profile straight into the cache under userProfileCacheKey(userId) instead of invalidating and waiting for the next read to repopulate it -- a structurally different, still-correct design keyed on the userId argument throughout."
     }
   ],
   "round2Seed": "0x2a0d17"

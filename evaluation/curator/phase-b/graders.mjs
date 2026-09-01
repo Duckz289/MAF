@@ -312,7 +312,7 @@ export const phaseBGraders = {
 
   // Prompt: "every later read for that user observes the update", for any user, while other users'
   // cached profiles stay untouched.
-  "stale-cache-invalidation-bug": async ({ importModule, equal }) => {
+  "stale-cache-invalidation-bug": async ({ importModule, equal, privateValues }) => {
     const { getUserProfile, updateUserProfile } = await importModule(
       "src/user-profile-service.mjs",
     );
@@ -339,6 +339,50 @@ export const phaseBGraders = {
       "earlier fields survive a later partial update",
       getUserProfile(2).email,
       "bob+new@example.com",
+    );
+
+    // The prompt's "userId" argument, not anything inside `patch`, decides whose cache entry is
+    // invalidated -- the returned profile always carries `id: userId` regardless of what a patch
+    // claims, so a patch's own `id` field is exactly the kind of caller-controlled value that must
+    // not be able to redirect which cache entry gets cleared. Two private, deterministic decoy
+    // values (seed 0x5eedc1) keep a candidate from special-casing a literal id seen anywhere in this
+    // file, and a patch naming a real *other* user's id checks that redirection can't even borrow a
+    // legitimate-looking target.
+    const [decoyIdA, decoyIdB] = privateValues(0x5eedc1, 2, "decoy");
+
+    getUserProfile(1);
+    updateUserProfile(1, { id: 2, email: "mallory@example.com" });
+    equal(
+      "a patch id field naming another real user does not redirect invalidation",
+      getUserProfile(1).email,
+      "mallory@example.com",
+    );
+    equal("the other real user's own profile is unaffected", getUserProfile(2).name, "Bobby");
+
+    getUserProfile(2);
+    updateUserProfile(2, { id: decoyIdA, name: "Robert" });
+    equal(
+      "a bogus, non-existent patch id field does not redirect invalidation either",
+      getUserProfile(2).name,
+      "Robert",
+    );
+
+    // A patch's id field matching its own target is the ordinary case and must keep working.
+    getUserProfile(1);
+    updateUserProfile(1, { id: 1, email: "alice+again@example.com" });
+    equal(
+      "a patch id field matching its own target still invalidates normally",
+      getUserProfile(1).email,
+      "alice+again@example.com",
+    );
+
+    // A second, independent decoy value guards against a candidate special-casing "the second
+    // private value" rather than actually reading the userId argument.
+    updateUserProfile(1, { id: decoyIdB, name: "Alice Again" });
+    equal(
+      "repeated bogus-id patches keep invalidating the real target",
+      getUserProfile(1).name,
+      "Alice Again",
     );
   },
 
