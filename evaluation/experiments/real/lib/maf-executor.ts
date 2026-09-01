@@ -22,7 +22,6 @@
 
 import type { RepositoryIndex, RuntimeSignalCollector } from "../../../../src/domain/ports";
 import { AdaptiveModeController } from "../../../../src/domain/mode-controller";
-import { classifyFailure, isAutoRetryable } from "../../../../src/domain/recovery";
 import {
   emptyCost,
   emptyUsage,
@@ -34,26 +33,24 @@ import {
 } from "../../../../src/domain/types";
 import { EvidenceRuntimeSignalCollector } from "../../../../src/application/runtime-signal-collector";
 import { LocalRepositoryIndex } from "../../../../src/infrastructure/project-brain";
-import { ClaudeCodeAdapter } from "../../../../src/infrastructure/claude-code-adapter";
+import {
+  ClaudeCodeAdapter,
+  type ClaudeCodeEffort,
+} from "../../../../src/infrastructure/claude-code-adapter";
 import type { AgentAdapter, AgentStartInput } from "../../../../src/domain/ports";
 import type {
   BenchmarkExecution,
   BenchmarkExecutor,
   BenchmarkTask,
 } from "../../../../src/benchmark/runner";
-import { runAgentSession, type AgentSessionResult } from "./agent-session-runner";
+import { driveAttempts } from "./attempt-driver";
 import { BudgetGuard } from "./budget-guard";
+import { RunExecutionLedger } from "./run-ledger";
+import { buildSideChannel, type ExperimentExecutorConfig } from "./executor-support";
 import type { ExecutorSideChannel, MafInterventionRecord } from "./provenance";
 
-export interface MafExecutorConfig {
-  requestedModel: string;
-  effort: string;
-  provider: string;
-  timeoutMs: number;
-  budgetUsd: number;
-  maxRecoveryAttempts?: number;
+export interface MafExecutorConfig extends ExperimentExecutorConfig {
   /** Test-only injection points. Every default is the real production component. */
-  adapter?: AgentAdapter;
   signalCollector?: RuntimeSignalCollector;
   repositoryIndex?: RepositoryIndex;
   modeController?: AdaptiveModeController;
@@ -75,19 +72,25 @@ export class MafExperimentExecutor implements BenchmarkExecutor {
   private readonly modeController: AdaptiveModeController;
   private readonly budgetGuard: BudgetGuard;
   private readonly maxRecoveryAttempts: number;
+  private readonly usingRealAdapter: boolean;
+  /** The exact config object the real adapter holds; see NativeExperimentExecutor for why. */
+  private readonly adapterConfig: { maxBudgetUsd: number };
 
   constructor(private readonly config: MafExecutorConfig) {
+    this.usingRealAdapter = config.adapter === undefined;
     this.budgetGuard = new BudgetGuard({
       limitUsd: config.budgetUsd,
-      cliEnforcementAvailable: config.adapter === undefined,
+      cliEnforcementAvailable: this.usingRealAdapter,
     });
-    this.adapter =
-      config.adapter ??
-      new ClaudeCodeAdapter({
-        model: config.requestedModel,
-        maxBudgetUsd: this.budgetGuard.maxBudgetUsdForAdapter(),
-        permissionMode: "acceptEdits",
-      });
+    const adapterConfig = {
+      model: config.requestedModel,
+      effort: config.effort as ClaudeCodeEffort,
+      maxBudgetUsd: config.budgetUsd,
+      permissionMode: "acceptEdits" as const,
+      ...(config.claudeCommand ? { command: config.claudeCommand } : {}),
+    };
+    this.adapterConfig = adapterConfig;
+    this.adapter = config.adapter ?? new ClaudeCodeAdapter(adapterConfig);
     this.signalCollector = config.signalCollector ?? new EvidenceRuntimeSignalCollector();
     this.repositoryIndex = config.repositoryIndex ?? new LocalRepositoryIndex();
     this.modeController = config.modeController ?? new AdaptiveModeController();
@@ -194,73 +197,63 @@ export class MafExperimentExecutor implements BenchmarkExecutor {
       }
     };
 
-    let retries = 0;
-    let result: AgentSessionResult = await runAgentSession({
+    const ledger = new RunExecutionLedger({
+      runBudgetUsd: this.config.budgetUsd,
+      runTimeoutMs: this.config.timeoutMs,
+      // The ceiling is enforced BEFORE any spawn. The first billed preflight only reported
+      // retryCount afterwards, which is far too late to stop money being spent.
+      maxProviderInvocations: this.config.maxProviderInvocations ?? this.maxRecoveryAttempts + 1,
+      ...(this.config.minimumAttemptBudgetUsd !== undefined
+        ? { minimumAttemptBudgetUsd: this.config.minimumAttemptBudgetUsd }
+        : {}),
+      ...(this.config.minimumAttemptTimeMs !== undefined
+        ? { minimumAttemptTimeMs: this.config.minimumAttemptTimeMs }
+        : {}),
+    });
+
+    const driven = await driveAttempts({
       adapter: this.adapter,
       input: startInput,
       prompt: task.prompt,
-      timeoutMs: this.config.timeoutMs,
+      ledger,
+      config: {
+        requestedModel: this.config.requestedModel,
+        effort: this.config.effort,
+        effortArgumentEmitted: this.usingRealAdapter,
+        maxRecoveryAttempts: this.maxRecoveryAttempts,
+        applyAttemptBudget: (attemptBudgetUsd) => {
+          this.adapterConfig.maxBudgetUsd = attemptBudgetUsd;
+        },
+      },
       onEvent,
     });
-    while (result.status === "INFRA_FAILURE" && retries < this.maxRecoveryAttempts) {
-      const classification = classifyFailure(
-        new Error(result.errorMessage ?? "unknown participant execution failure"),
-      );
-      if (!isAutoRetryable(classification)) break;
-      retries += 1;
-      result = await runAgentSession({
-        adapter: this.adapter,
-        input: startInput,
-        prompt: task.prompt,
-        timeoutMs: this.config.timeoutMs,
-        onEvent,
-      });
-    }
 
-    const budget = this.budgetGuard.finalize(result.reportedCost);
     const escalations = transitions.filter((t) => t.to === "SOLO_NATIVE").length;
     const mafDetails: MafInterventionRecord = {
       mode: { initial: initialMode, final: currentMode },
       interventions: transitions.length,
-      retries,
+      retries: driven.retries,
       escalations,
       transitions,
     };
-    this.sideChannel.set(runId, {
-      requestedModel: this.config.requestedModel,
-      resolvedModel: result.resolvedModel,
-      resolvedModelStatus: result.resolvedModel ? "RESOLVED" : "ALIAS_ONLY",
-      effort: this.config.effort,
-      provider: this.config.provider,
-      startedAt: result.startedAt,
-      finishedAt: result.finishedAt,
-      timeout: { timeoutMs: this.config.timeoutMs, timedOut: result.status === "TIMEOUT" },
-      budget,
-      cost: {
-        participantCostUsd: result.reportedCost,
-        participantInputTokens: result.usage.inputTokens,
-        participantOutputTokens: result.usage.outputTokens,
-        participantCacheTokens: result.usage.cachedTokens,
-        // Orchestration (signal collection, mode decisions) runs locally and calls no model of its
-        // own, so its dollar cost is genuinely zero -- not unknown.
+    this.sideChannel.set(
+      runId,
+      buildSideChannel({
+        config: this.config,
+        driven,
+        ledger,
+        budgetGuard: this.budgetGuard,
+        effortArgumentEmitted: this.usingRealAdapter,
+        candidateWorkspace: workspace,
+        // Signal collection and mode decisions run locally in this process and call no model of
+        // their own. Every provider invocation this run made is in `driven.attempts`, and each is
+        // purpose PARTICIPANT -- so orchestration spend is genuinely zero, not merely assumed.
         orchestrationCostUsd: 0,
-        verificationCostUsd: 0,
-        totalCostUsd: result.reportedCost,
-        costStatus: result.reportedCost === null ? "UNKNOWN" : "KNOWN",
-        ...(result.reportedCost === null
-          ? {
-              note:
-                "no usage/cost event was ever observed for this run; token counts below are reported " +
-                "as 0 because the executor never observed any, not because zero usage was confirmed",
-            }
-          : {}),
-      },
-      candidateWorkspace: workspace,
-      maf: mafDetails,
-    });
+        maf: mafDetails,
+      }),
+    );
 
-    const selfReportedSuccess = result.status === "COMPLETED" && result.resultSubtype === "success";
-    const latencyMs = Math.max(0, Date.parse(result.finishedAt) - Date.parse(result.startedAt));
+    const selfReportedSuccess = driven.finalOutcome.classification === "COMPLETED";
     const finalSnapshot = await this.signalCollector.latest(runId);
     const contextExpansion = finalSnapshot?.signals.contextExpansion?.value ?? 0;
 
@@ -272,12 +265,12 @@ export class MafExperimentExecutor implements BenchmarkExecutor {
       finalMode: currentMode,
       modeTransitions: rawTransitions,
       signalSnapshots: includedSnapshots,
-      inputTokens: result.usage.inputTokens,
-      outputTokens: result.usage.outputTokens,
-      cachedTokens: result.usage.cachedTokens,
-      reportedCost: result.reportedCost,
-      latencyMs,
-      retryCount: retries,
+      inputTokens: driven.totals.inputTokens,
+      outputTokens: driven.totals.outputTokens,
+      cachedTokens: driven.totals.cachedTokens,
+      reportedCost: driven.totals.costStatus === "UNKNOWN" ? null : driven.totals.knownCostUsd,
+      latencyMs: Math.max(0, Date.parse(driven.finishedAt) - Date.parse(driven.startedAt)),
+      retryCount: driven.retries,
       verificationAttempts: selfReportedSuccess ? 1 : 0,
       repairAttempts: 0,
       verifierFailures: 0,
@@ -288,13 +281,11 @@ export class MafExperimentExecutor implements BenchmarkExecutor {
       orchestrationOverheadMs: 0,
       runId,
       candidateId,
-      executionStatus:
-        result.status === "TIMEOUT"
-          ? "TIMEOUT"
-          : result.status === "INFRA_FAILURE"
-            ? "INFRA_FAILURE"
-            : "COMPLETED",
-      ...(result.errorMessage ? { providerError: result.errorMessage } : {}),
+      executionStatus: driven.finalOutcome.executionStatus,
+      ...(driven.finalOutcome.classification === "COMPLETED" ||
+      driven.finalOutcome.classification === "PARTICIPANT_TASK_FAILURE"
+        ? {}
+        : { providerError: driven.finalOutcome.firstFailure }),
     };
   }
 }

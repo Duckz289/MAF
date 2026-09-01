@@ -27,6 +27,11 @@ export interface ExperimentRunControllerConfig {
   provider: string;
   timeoutMs: number;
   budgetUsd: number;
+  /** Hard per-arm provider invocation ceiling, enforced before any spawn. */
+  maxProviderInvocations?: number;
+  maxRecoveryAttempts?: number;
+  /** Exact executable the preflight gate resolved and auth-checked; reused verbatim. */
+  claudeCommand?: string;
   protocolTag: string;
   protocolSha: string;
   suiteTag: string;
@@ -67,20 +72,22 @@ export class ExperimentRunController {
         expectedVerification: input.expectedVerification,
         candidateWorkspaces: { NATIVE: nativeWorkspace, MAF_ADAPTIVE: mafWorkspace },
       };
-      const native = new NativeExperimentExecutor({
+      const executorConfig = {
         requestedModel: this.config.requestedModel,
         effort: this.config.effort,
         provider: this.config.provider,
         timeoutMs: this.config.timeoutMs,
         budgetUsd: this.config.budgetUsd,
-      });
-      const maf = new MafExperimentExecutor({
-        requestedModel: this.config.requestedModel,
-        effort: this.config.effort,
-        provider: this.config.provider,
-        timeoutMs: this.config.timeoutMs,
-        budgetUsd: this.config.budgetUsd,
-      });
+        ...(this.config.maxProviderInvocations !== undefined
+          ? { maxProviderInvocations: this.config.maxProviderInvocations }
+          : {}),
+        ...(this.config.maxRecoveryAttempts !== undefined
+          ? { maxRecoveryAttempts: this.config.maxRecoveryAttempts }
+          : {}),
+        ...(this.config.claudeCommand ? { claudeCommand: this.config.claudeCommand } : {}),
+      };
+      const native = new NativeExperimentExecutor(executorConfig);
+      const maf = new MafExperimentExecutor(executorConfig);
       const runner = new BenchmarkRunner();
       const report = await runner.compare(task, [native, maf], { verifier: input.verifier });
       const paired = report.evaluation.paired[0];
