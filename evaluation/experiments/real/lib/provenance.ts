@@ -19,10 +19,65 @@
 // above or explicitly marked UNKNOWN.
 
 import type { NormalizedEvaluationRun } from "../../../../src/evaluation/types";
+import type { ModelResolutionStatus, StderrDiagnostics } from "./diagnostics";
+import type { AttemptFailureClass } from "./session-outcome";
+import type { AttemptRefusalReason } from "./run-ledger";
 
-export type ResolvedModelStatus = "RESOLVED" | "ALIAS_ONLY";
+export type { ModelResolutionStatus };
+/** @deprecated Superseded by ModelResolutionStatus, which can also express a placeholder identity. */
+export type ResolvedModelStatus = ModelResolutionStatus;
 export type ScoringStatus = "NON_SCORING" | "SCORING";
 export type CostFieldStatus = "KNOWN" | "PARTIAL" | "UNKNOWN";
+
+/**
+ * One provider invocation. The first billed preflight retained only the final attempt, so a failed
+ * attempt's spend would have vanished the moment a retry succeeded. Every attempt is recorded here,
+ * including refused ones (which never spawned a process and therefore cost nothing).
+ */
+export interface AttemptRecord {
+  attempt: number;
+  purpose: "PARTICIPANT" | "ORCHESTRATION";
+  /** False for an attempt the ledger refused BEFORE any process was created. */
+  started: boolean;
+  refusalReason?: AttemptRefusalReason;
+  refusalDetail?: string;
+  requestedModel: string;
+  reportedModel: string | null;
+  modelResolutionStatus: ModelResolutionStatus;
+  effort: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  durationMs: number | null;
+  /** Ceilings THIS attempt ran under -- derived from what remained of the run's ceilings. */
+  attemptTimeoutMs: number;
+  attemptBudgetUsd: number;
+  usage: { inputTokens: number; outputTokens: number; cachedTokens: number };
+  costUsd: number | null;
+  costStatus: CostFieldStatus;
+  resultSubtype: string | null;
+  resultIsError: boolean | null;
+  exitCode: number | null;
+  terminationSignal: string | null;
+  classification: AttemptFailureClass;
+  firstFailure: string;
+  exitCodeDiscrepancy: boolean;
+  stderr: StderrDiagnostics;
+  /** Executable + argv actually spawned, when observable. */
+  spawn: { command: string; args: string[] } | null;
+}
+
+/** Run-level ceiling accounting across every attempt. */
+export interface RunCeilingRecord {
+  runTimeoutMs: number;
+  runDeadline: string;
+  remainingRunTimeMsAtEnd: number;
+  runBudgetUsd: number;
+  /** Null when an attempt's cost was unmeasured, so the true remainder is genuinely unknown. */
+  remainingRunBudgetUsdAtEnd: number | null;
+  providerInvocationsAllowed: number;
+  providerInvocationsStarted: number;
+  providerInvocationsRefused: number;
+}
 
 export interface BudgetEnforcementRecord {
   mode: "HARD";
@@ -79,8 +134,13 @@ export interface MafInterventionRecord {
 export interface ExecutorSideChannel {
   requestedModel: string;
   resolvedModel: string | null;
-  resolvedModelStatus: ResolvedModelStatus;
+  resolvedModelStatus: ModelResolutionStatus;
+  /** Verbatim provider-reported model string, preserved even when it is a placeholder. */
+  rawReportedModel: string | null;
+  modelProvenanceNote: string;
   effort: string;
+  /** The effort value actually emitted to the CLI, proving the controlled variable was enforced. */
+  effortArgumentEmitted: boolean;
   provider: string;
   startedAt: string;
   finishedAt: string;
@@ -88,6 +148,12 @@ export interface ExecutorSideChannel {
   budget: BudgetEnforcementRecord;
   cost: CostBreakdown;
   candidateWorkspace: string;
+  /** Every provider invocation this run made or was refused. Never only the last one. */
+  attempts: AttemptRecord[];
+  ceilings: RunCeilingRecord;
+  /** Structured statement of what first failed, when the run did not complete. */
+  firstFailure: string | null;
+  failureClassification: AttemptFailureClass;
   maf?: MafInterventionRecord;
 }
 
@@ -104,8 +170,11 @@ export interface ExperimentProvenanceRecord {
   randomizationPosition: number | null;
   requestedModel: string;
   resolvedModel: string | null;
-  resolvedModelStatus: ResolvedModelStatus;
+  resolvedModelStatus: ModelResolutionStatus;
+  rawReportedModel: string | null;
+  modelProvenanceNote: string;
   effort: string;
+  effortArgumentEmitted: boolean;
   provider: string;
   startedAt: string;
   finishedAt: string;
@@ -117,6 +186,10 @@ export interface ExperimentProvenanceRecord {
   usage: { inputTokens: number; outputTokens: number; cachedTokens: number };
   cost: CostBreakdown;
   candidateWorkspace: string;
+  attempts: AttemptRecord[];
+  ceilings: RunCeilingRecord;
+  firstFailure: string | null;
+  failureClassification: AttemptFailureClass;
   executorSelfReport: NormalizedEvaluationRun["selfReported"];
   candidateIntegrity: NormalizedEvaluationRun["candidateIntegrity"];
   hiddenGrader: NormalizedEvaluationRun["hiddenGrader"];
@@ -162,7 +235,10 @@ export const buildProvenanceRecord = (input: {
     requestedModel: side.requestedModel,
     resolvedModel: side.resolvedModel,
     resolvedModelStatus: side.resolvedModelStatus,
+    rawReportedModel: side.rawReportedModel,
+    modelProvenanceNote: side.modelProvenanceNote,
     effort: side.effort,
+    effortArgumentEmitted: side.effortArgumentEmitted,
     provider: side.provider,
     startedAt: side.startedAt,
     finishedAt: side.finishedAt,
@@ -178,6 +254,10 @@ export const buildProvenanceRecord = (input: {
     },
     cost: side.cost,
     candidateWorkspace: side.candidateWorkspace,
+    attempts: side.attempts,
+    ceilings: side.ceilings,
+    firstFailure: side.firstFailure,
+    failureClassification: side.failureClassification,
     executorSelfReport: normalized.selfReported,
     candidateIntegrity: normalized.candidateIntegrity,
     hiddenGrader: normalized.hiddenGrader,
