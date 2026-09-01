@@ -51,7 +51,7 @@
         "note": "Frozen policy dimensions for Protocol v1, unchanged in v2. Runtime mode transitions the controller makes within this policy are adaptive by design (see EXPERIMENT_PROTOCOL.md section 6); the POLICY governing those transitions is what is frozen here, not any single run's transitions.",
         "interventionPolicy": "AdaptiveModeController default policy (src/domain/mode-controller.ts), unmodified for this protocol",
         "contextStrategy": "LocalRepositoryIndex (src/infrastructure/project-brain.ts) + EvidenceRuntimeSignalCollector (src/application/runtime-signal-collector.ts) default configuration, unmodified; scoped to file-listing context only, without the full ContextBuilder/ProjectBrain knowledge-base stack RunService uses in the general MAF runtime -- see EXPERIMENT_PROTOCOL_V2.md 'MAF context scoping'",
-        "retryPolicy": "Executor-reported retryCount only, plus one bounded recovery retry (src/domain/recovery.ts classifyFailure/isAutoRetryable, matching RunService's own defaultRecoveryPolicy.maxRecoveryAttempts = 1) when a run's failure classifies as auto-retryable; no additional MAF-imposed retry ceiling beyond that",
+        "retryPolicy": "One bounded recovery retry (matching RunService's own defaultRecoveryPolicy.maxRecoveryAttempts = 1) and ONLY when the attempt classifies as PROVIDER_FAILURE from structured evidence (evaluation/experiments/real/lib/session-outcome.ts). A participant task failure, auth/configuration failure, bare nonzero exit, signal termination, timeout or cancellation is never auto-retried. Every retry is additionally gated by the run ledger's invocation ceiling, remaining run budget and remaining run deadline, checked before any process is created. Retries are counted from attempts actually authorized and started.",
         "verificationPolicy": "Controller-side CuratorIndependentVerifier (src/evaluation/curator-verifier.ts): hidden grader + SMOKE regression, run after participant execution, never observed by the participant",
         "escalation": "STRICT -> GUIDED -> SOLO_NATIVE per AdaptiveModeController transition rules; no manual escalation for this protocol. Enforcement limitation disclosed in EXPERIMENT_PROTOCOL_V2.md: the Claude Code CLI runs one non-interactive invocation per session (livePolicyUpdate=false, safeSessionRestart=false), so a decided transition is recorded as DEFERRED_BOUNDARY evidence but cannot be enforced on an already-running session.",
         "recoveryBehavior": "src/domain/recovery.ts classifyFailure-driven provider-transient handling only; no additional MAF-side recovery beyond what the adapter itself reports",
@@ -92,18 +92,19 @@
     "resolution": {
       "requestedModel": "claude-sonnet-5",
       "resolutionSource": "Claude Code CLI stream-json assistant message `message.model`, when the CLI reports one",
-      "resolvedModelStatus": "Recorded per run as RESOLVED (a concrete dated snapshot id was observed) or ALIAS_ONLY (only the requested alias is known); never invented"
+      "resolvedModelStatus": "Recorded per run as RESOLVED (a concrete identifier distinct from the alias was observed), ALIAS_ONLY (only the requested alias is known), PLACEHOLDER_OR_SYNTHETIC (the provider reported a stand-in such as <synthetic>, which is preserved verbatim but never treated as resolved provenance and blocks a successful real-provider preflight), or NOT_REPORTED. Never invented.",
+      "effortEnforcement": "The requested effort is emitted as a real --effort CLI argument (src/infrastructure/claude-code-adapter.ts ClaudeCodeConfig.effort) and provenance records effortArgumentEmitted, so the controlled variable is enforced rather than merely declared."
     }
   },
   "runsPerTask": 3,
   "totalScoringRunsPlanned": 174,
   "runCountRationale": "29 tasks x 2 arms x 3 repetitions = 174 participant runs. Unchanged from v1 -- see EXPERIMENT_PROTOCOL.md section 15.",
   "timeoutMs": 1800000,
-  "timeoutRationale": "30 minutes per participant run. Unchanged from v1. Wired through evaluation/experiments/real/lib/agent-session-runner.ts, which races the participant's event stream against this timeout and classifies the run TIMEOUT (cancelling the session) rather than relying on any implicit CLI-side timeout.",
+  "timeoutRationale": "30 minutes per participant RUN, shared across every attempt of that run rather than granted afresh per attempt. Value unchanged from v1. A controller-owned run deadline is fixed at run start (evaluation/experiments/real/lib/run-ledger.ts); each attempt receives only the remaining time, and an attempt is refused outright when too little remains. evaluation/experiments/real/lib/agent-session-runner.ts races the participant's event stream against that per-attempt ceiling and classifies the run TIMEOUT (cancelling the session) rather than relying on any implicit CLI-side timeout.",
   "budget": {
     "perRunCeilingUsd": 8,
     "mode": "HARD",
-    "note": "Same $8.00/run HARD ceiling as v1. Enforcement mechanism and its limitations are disclosed explicitly in evaluation/experiments/real/lib/budget-guard.ts and EXPERIMENT_PROTOCOL_V2.md 'Budget enforcement': the controller passes --max-budget-usd to the Claude Code CLI (src/infrastructure/claude-code-adapter.ts ClaudeCodeConfig.maxBudgetUsd) and relies on the CLI's own internal accounting for real-time enforcement; the controller additionally performs a non-blocking, post-hoc comparison of the final reported cost against the ceiling via src/domain/budget.ts computeAllocation. The controller does not itself meter or interrupt spend mid-run."
+    "note": "Same $8.00/run HARD ceiling as v1, applied PER RUN across all attempts rather than per attempt. Each attempt's --max-budget-usd is set to the remaining run budget (evaluation/experiments/real/lib/run-ledger.ts), so a retry can never receive a fresh full ceiling; a retry is refused when too little remains, and refused outright when a prior attempt's cost was unmeasured (fail closed rather than spend against an unknown remainder). Enforcement limitations remain disclosed in evaluation/experiments/real/lib/budget-guard.ts and EXPERIMENT_PROTOCOL_V2.md section 8: the controller relies on the CLI's own internal accounting within an attempt and performs a non-blocking post-hoc comparison afterwards; controllerEnforcesRealTimeCutoff stays false. What the controller now guarantees is that the SUM of attempts cannot knowingly exceed the frozen per-run ceiling."
   },
   "randomization": {
     "seedSource": "evaluation/experiments/generate-randomization.mjs",
@@ -167,9 +168,20 @@
     "runner": "evaluation/experiments/run-real-preflight.ts",
     "npmScript": "experiment:real-preflight",
     "billedConfirmationFlag": "--confirm-billed-run",
-    "defaultBehavior": "Validates manifest/config, checks Claude Code CLI availability without any model call, builds the synthetic controller-owned workspaces, constructs the real Native and MAF executors and the independent verifier, prints the planned executions, and stops before any provider invocation.",
-    "billedBehavior": "Executes exactly 1 synthetic NON_SCORING Native run and 1 synthetic NON_SCORING MAF run against the preflight fixture only -- never a frozen Phase B/C task.",
-    "scope": "1 NATIVE run + 1 MAF run against evaluation/experiments/real/fixtures/preflight-phase/preflight-task only"
+    "defaultBehavior": "Validates manifest/config and frozen tags; resolves ONE Claude Code executable and captures its version; checks `claude auth status` on that same executable; verifies no ANTHROPIC_* routing or credential is forwarded to the participant; builds the synthetic controller-owned workspaces; constructs the real Native and MAF executors and the independent verifier; prints the planned executions; and stops before any provider invocation. No step makes a model call. Prints READY_FOR_BILLED_PREFLIGHT only when every gate passes, otherwise PREFLIGHT_ENVIRONMENT_REPAIR_REQUIRED.",
+    "billedBehavior": "Re-checks the same gates and refuses to spend if any are unmet, then executes exactly 1 synthetic NON_SCORING Native run and 1 synthetic NON_SCORING MAF run against the preflight fixture only -- never a frozen Phase B/C task.",
+    "scope": "1 NATIVE run + 1 MAF run against evaluation/experiments/real/fixtures/preflight-phase/preflight-task only",
+    "providerInvocationCeiling": "maxProviderInvocations = 1 per arm and maxRecoveryAttempts = 0, enforced by evaluation/experiments/real/lib/run-ledger.ts BEFORE any process is created. A second invocation for either arm is blocked at the ledger, not merely reported afterwards. The report exposes providerInvocations.{allowedPerArm,attempted,started,refused,byArm}.",
+    "executablePinning": "--claude-path <path> pins the exact executable that is version-checked, auth-checked and then executed, so the binary that was verified is provably the binary that runs.",
+    "firstAttempt": {
+      "status": "INVALID_PREFLIGHT_ATTEMPT",
+      "generatedAt": "2026-09-01T09:40:01.412Z",
+      "outcome": "INVALID_BOTH; both arms INFRA_FAILURE with providerError 'agent process exited with code 1'",
+      "countedTowardExperiment": false,
+      "archive": "C:\\Users\\Admin\\Documents\\MAF-preflight-forensics\\preflight-report-INVALID-ATTEMPT-2026-09-01T09-40-01Z.json",
+      "archiveSha256": "eabfa5083d9978994673dea81965517c050dc243bbd46b308a6b720d1279f4fe",
+      "note": "Preserved unmodified outside the repository as forensic evidence and never rewritten as successful. Its five proven defects (authorization overrun via retry amplification, terminal-state collapse, discarded diagnostics, unenforced effort, placeholder model provenance recorded as RESOLVED) are documented in EXPERIMENT_PROTOCOL_V2.md section 15 and repaired on branch repair/protocol-v2-real-runtime-v1."
+    }
   },
   "dryRun": {
     "status": "NON_SCORING",
