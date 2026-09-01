@@ -415,3 +415,121 @@ read as evidence that a third will not.
 
 `INDEPENDENT_REAUDIT_REQUIRED: YES`
 `FRONTIER_MODELS_EXECUTED: NO`
+
+# Pre-freeze small repairs (`repair/pre-freeze-small-fixes-v1`)
+
+A **third** audit was run against the Audit #2 repair above, at `62277b59b7f1f3adc0e34f05c4bb1292633356b0`.
+Its continuity was mixed -- the auditor of record for that pass stopped between turns, and the
+progress it had reported could not be independently recovered from any session, task tracker, or
+scratch artifact; what follows was re-derived fresh rather than trusted from an unverifiable prior
+claim. That audit found the production trust boundary and the executor-self-report exploit still
+correctly blocked, all six Audit #2 grader holes still closed, and no critical trust-boundary
+bypass -- but it did find three small, scoped, real defects, reproduced empirically rather than
+asserted. This section records their repair. The history stays whole:
+
+> reconstruction → Audit #1 failed → repair #1 → Audit #2 failed → repair #2 → **Audit #3 found three
+> scoped gaps** → this repair
+
+## Gap 1 — stale-cache-invalidation-bug grader never tested a patch carrying its own id
+
+`stale-cache-invalidation-bug`'s hidden grader exercised `updateUserProfile(userId, patch)` only
+with patches that never carried an `id` field of their own, so a candidate invalidating
+`userProfileCacheKey(patch.id ?? userId)` -- or any code shape reading a patch-influenced id before
+the real `userId` is enforced -- passed while leaving the actual target's cached profile stale.
+**Reproduced and repaired, generalized rather than patched to the one case**: the grader now probes
+a patch naming another real user's id, a bogus private id (deterministic, seeded, so a candidate
+cannot special-case a literal), a matching id, and a repeated bogus id. Permanent regression
+coverage added: two structurally distinct attack variants (FAIL) and two structurally distinct
+correct implementations, including the existing write-through architecture (PASS). Full audit
+regression corpus: 85/85 → **89/89** correct.
+
+## Gap 2 — Band 3 decisionPoints still walked from the entrypoint
+
+`notification-settings-regression` measured `CONTEXT_TEST_STRONG` in the Audit #2 repair above for
+the wrong reason: `investigationDepth` had already been made search-aware, but `decisionPoints` still
+walked the entrypoint-rooted import path, crediting forks a reader who follows the prompt's own
+precise search term (`settingValue(key, overrides)`, verbatim in the prompt) would never encounter.
+`evaluation/lib/orientation.mjs` now derives one search-aware landing point -- the file a precise,
+realistic search actually reaches, falling back to any symptom-bearing file and finally to the
+entrypoint only when no useful vocabulary exists -- and measures `investigationDepth`,
+`decisionPoints` and the reported path from that same point. No threshold changed.
+
+**Measured result changes from 3 STRONG / 2 WEAK to 2 STRONG / 3 WEAK.** A redesign that would
+manufacture STRONG for `notification-settings-regression` by adding a genuine competing subsystem
+was considered and rejected for this small, scoped repair: doing it honestly means adding real
+reachable, symptom-plausible files and re-verifying the task's whole grader/overlay set, which is
+materially larger than a measurement fix. It is reported honestly weak instead. `task-update-
+duplication` and `completion-state-regression` remain weak, as before. A scoped diversity review
+found three of the five Band 3 tasks (`notification-settings-regression`, `task-update-duplication`,
+`completion-state-regression`) share both a short, largely forkless investigation shape and a
+"comment states the correct rule, code silently does the opposite" bug-injection style; changing
+either without touching investigation topology (and risking an unintended STRONG/WEAK flip, or
+without re-verifying an interlinked fixture/grader/overlay set) was judged to exceed this repair's
+scope and was not attempted. The measured result is reported as measured, not forced toward a
+desired number.
+
+## Gap 3 — regression evidence did not distinguish smoke from full coverage
+
+Audit #3 empirically reproduced, through the real production `CuratorIndependentVerifier` on two
+live fixtures, that a candidate can pass `hiddenGrader`, pass the regression check, and still
+silently break an unrelated exported function the check never exercises -- and still reach DVS.
+`protocol.json` already disclosed this as a smoke check in prose, but `regression: "PASS"` read no
+differently than a full behavioral suite's verdict would. `regression` evidence now carries explicit
+`scope: "SMOKE"`, `method: "MODULE_LOAD_AND_ENTRYPOINT"`, `coverage: "PARTIAL"` metadata (
+`RegressionEvidenceScope`, `src/evaluation/independent-verification.ts`) alongside its PASS/FAIL
+verdict, attached whenever a regression check actually ran and absent (not "full") when nothing did.
+`evaluation/protocol.json`'s `verification.regression` is now a structured object carrying the same
+fields plus the Audit #3 finding, rather than a single prose string. Nothing about `isDvs`,
+`evidenceForStatus`, `evaluationRunIncoherences` or the independent-verification boundary changed --
+this is additive evidence labeling, not a semantic change. A cheap, generic, reference-free
+strengthening (comparing pristine-vs-candidate export shape) was evaluated and rejected: it would
+not have caught this finding (the broken functions stayed exported, just wrong), and a value-level
+generic check is not achievable without either a reference solution or per-task probes -- a
+benchmark rewrite, not a small repair.
+
+## Final measured validation (pre-freeze small repairs)
+
+| Gate | Result |
+| --- | --- |
+| Audit regression corpus (9 corpora, incl. 2 new) | 89/89 correct |
+| False-pass corpus (`wrong`,`attack`, all phases) | 58/58 correctly FAIL |
+| False-fail corpus (`reference`,`alternative`,`probe`, all phases) | 83/83 correctly PASS |
+| Full curator matrix (default) | 116/116, 0 failures |
+| Band 3 curator matrix (`--band band3`, all candidate types) | 25/25, 0 failures |
+| Band 3 orientation audit | 2 STRONG, 3 WEAK, 0 `NOT_A_CONTEXT_TEST` — measured, not declared |
+| Cross-suite audit | 0 failures; band3 counts match (2/3/0); fixture distinctness unaffected |
+| Production trust boundary + protocol/DVS unit tests | 17 + 29 = 46/46 PASS |
+| ABI / negative tests | 45/45 PASS |
+| `npm test` | 1,146 passed, 8 skipped -- unchanged from before this repair |
+| `npm run typecheck` | PASS |
+| `npm run lint` | PASS, exit code 0 |
+| `npm run format:check` | PASS |
+| `npm run build` | PASS |
+| `npm run smoke` | PASS |
+| `npm run compose:check` | `ENVIRONMENT_UNAVAILABLE` -- Docker not installed here, not fabricated |
+| `npm run validate` | `INCOMPLETE_ENVIRONMENT` -- stops at `compose:check` for the reason above |
+
+No 1-hour determinism stress rerun was needed for this repair: none of the three gaps touch
+determinism, workspace isolation, or scheduling, and the Audit #2 repair's recorded 2,030-execution
+result was independently spot-checked at reduced scale (435 executions, 0 failures) during Audit #3
+rather than rerun in full again here.
+
+## Pre-freeze small-repair checkpoints
+
+| Commit | Checkpoint |
+| --- | --- |
+| `062f2c2` | Close stale cache invalidation grader gap |
+| `0cb60cf` | Make band3 orientation measurement search-aware |
+| `c3ac66c` | Format fix-up (biome) for the above |
+| `a1981f5` | Clarify smoke regression evidence scope |
+| `b41bd06` | Format fix-up (biome) for the regenerated band3 report |
+| *next* | This documentation record |
+
+No Native or MAF frontier participant, paid benchmark model, or performance comparison was run as
+part of this repair. This was a **mixed-auditor continuation**: the third audit's own continuity was
+not independently verifiable, and this repair -- like the one before it -- was carried out by
+Claude, the same model family that authored the repair it is auditing. One short, fresh,
+non-Claude verification pass before an irreversible suite freeze remains recommended for that
+reason, independent of anything measured above.
+
+`FRONTIER_MODELS_EXECUTED: NO`
