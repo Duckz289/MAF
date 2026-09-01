@@ -4,16 +4,16 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
 import {
-  BenchmarkRunner,
   type BenchmarkExecution,
   type BenchmarkExecutor,
+  BenchmarkRunner,
   type BenchmarkTask,
 } from "../src/benchmark/runner";
 import { CuratorIndependentVerifier } from "../src/evaluation/curator-verifier";
 import {
-  notVerified,
   type IndependentVerificationResult,
   type IndependentVerifier,
+  notVerified,
 } from "../src/evaluation/independent-verification";
 
 // Production trust boundary.
@@ -367,6 +367,15 @@ export function clampNumber(value, min, max) {
     expect(native?.candidateIntegrity).toBe("VALID");
     expect(native?.hiddenGrader).toBe("PASS");
     expect(native?.regression).toBe("PASS");
+    // regression=PASS must always arrive with the scope of check that produced it, so a report
+    // reader is never left to assume a full behavioral suite ran (Audit #3).
+    expect(native?.regressionEvidence).toEqual({
+      scope: "SMOKE",
+      method: "MODULE_LOAD_AND_ENTRYPOINT",
+      coverage: "PARTIAL",
+      establishes: expect.stringContaining("imports without throwing"),
+      doesNotEstablish: expect.stringContaining("hidden grader's specific assertions"),
+    });
     expect(native?.dvs).toBe(true);
     expect(report.evaluation.dvs).toBe(2);
   });
@@ -387,6 +396,9 @@ export function clampNumber(value, min, max) {
     const native = report.evaluation.paired[0]?.native;
     expect(native?.candidateIntegrity).toBe("INVALID");
     expect(native?.hiddenGrader).toBe("NOT_CHECKED");
+    // No regression check ran against an invalid candidate, so there is no scope to report -- an
+    // absent regressionEvidence must not be misread as "fully covered".
+    expect(native?.regressionEvidence).toBeUndefined();
     expect(report.evaluation.dvs).toBe(0);
   });
 

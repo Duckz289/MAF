@@ -20,6 +20,44 @@ export type EvidenceSource = "INDEPENDENT" | "NOT_CHECKED";
 export type VerificationStatus = "PASS" | "FAIL" | "INVALID" | "NOT_RUN";
 
 /**
+ * What a `regression` evidence outcome actually establishes. Audit #3 found that a smoke check --
+ * "every shipped module loads, every public entrypoint runs to a clean exit" -- reported PASS/FAIL
+ * indistinguishably from a full behavioral regression suite would, and that this was easy to
+ * misread as comprehensive: a candidate that correctly fixes the graded behavior while silently
+ * breaking an unrelated, unexercised exported function still reaches regression=PASS. protocol.json
+ * disclosed the limitation in prose; this type makes it impossible for a report or a downstream
+ * reader to receive `regression: "PASS"` without also receiving what kind of PASS it is.
+ *
+ * scope       "SMOKE" is the only value a verifier that only loads modules and runs entrypoints may
+ *             report. A future verifier that actually asserts behavior would report "BEHAVIORAL" and
+ *             carry a different coverage value -- this type does not need to change to allow that.
+ * method      How the scope was established, so a reader does not have to trust the label alone.
+ * coverage    "PARTIAL" states plainly that only entrypoint-reachable, throw-detecting behavior was
+ *             exercised -- never "FULL" for a check that cannot assert output correctness.
+ */
+export interface RegressionEvidenceScope {
+  scope: "SMOKE";
+  method: "MODULE_LOAD_AND_ENTRYPOINT";
+  coverage: "PARTIAL";
+  /** One-line, human-readable restatement of exactly what this evidence establishes. */
+  establishes: string;
+  /** One-line, human-readable statement of what it explicitly does NOT establish. */
+  doesNotEstablish: string;
+}
+
+/** The regression scope every `CuratorIndependentVerifier` check currently reports. Exported so
+ *  reports and docs can reference the same literal rather than restating it. */
+export const SMOKE_REGRESSION_EVIDENCE: RegressionEvidenceScope = {
+  scope: "SMOKE",
+  method: "MODULE_LOAD_AND_ENTRYPOINT",
+  coverage: "PARTIAL",
+  establishes:
+    "every module the candidate ships imports without throwing, and every public entrypoint the fixture ships runs to a clean exit",
+  doesNotEstablish:
+    "the correctness of any exported behavior outside the hidden grader's specific assertions and outside whatever the entrypoint's own call graph happens to exercise",
+};
+
+/**
  * What the controller itself observed about the candidate artifact. Every field here is measured by
  * the controller against a workspace it owns; none of it is taken from the participant.
  */
@@ -45,6 +83,14 @@ export interface IndependentVerificationResult {
   regression: EvidenceOutcome;
   graderStatus: VerificationStatus;
   regressionStatus: VerificationStatus;
+  /**
+   * What kind of check `regression` reports, so PASS/FAIL is never read as more than it is. Present
+   * whenever a verifier actually attempted a regression check (regressionStatus !== "NOT_RUN"), so it
+   * describes the check that ran, not a static property of the port itself. Absent when nothing ran
+   * (regression stays NOT_CHECKED / regressionStatus stays "NOT_RUN") -- there is no scope to report
+   * for a check that never happened, and that absence must not be read as "full coverage" either.
+   */
+  regressionEvidence?: RegressionEvidenceScope;
   artifact?: CandidateArtifactEvidence;
   notes: string[];
 }

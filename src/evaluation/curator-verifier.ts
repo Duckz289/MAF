@@ -4,13 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  type CandidateArtifactEvidence,
   candidateIntegrityFromArtifact,
   evidenceForStatus,
-  notVerified,
-  type CandidateArtifactEvidence,
   type IndependentVerificationInput,
   type IndependentVerificationResult,
   type IndependentVerifier,
+  notVerified,
+  SMOKE_REGRESSION_EVIDENCE,
   type VerificationStatus,
 } from "./independent-verification";
 
@@ -32,6 +33,13 @@ import {
 // What it does NOT do, stated so no report overclaims it: the regression check is a smoke
 // regression over the fixture's public entrypoint, not a full project test suite. A task with no
 // entrypoint yields regression NOT_CHECKED, which blocks DVS rather than granting it.
+//
+// AUDIT #3 reproduced, on real fixtures through this exact class, that a candidate can pass
+// hiddenGrader, pass this regression check, and still silently break an unrelated exported
+// behavior that the check never exercises -- inherent to a smoke check, not a bug in this one.
+// Every regressionEvidence this verifier attaches therefore carries scope: "SMOKE" and
+// coverage: "PARTIAL" (see SMOKE_REGRESSION_EVIDENCE in independent-verification.ts) alongside the
+// PASS/FAIL, so `regression` is never read as more than it establishes.
 
 export interface CuratorTaskLocation {
   /** "phase-b" or "phase-c". */
@@ -109,6 +117,10 @@ export class CuratorIndependentVerifier implements IndependentVerifier {
       regression: evidenceForStatus(regressionStatus),
       graderStatus,
       regressionStatus,
+      // A regression check actually ran (even if it FAILed or came back INVALID): describe exactly
+      // what kind of check it was, so PASS/FAIL is never mistaken for a full behavioral suite.
+      // regressionStatus === "NOT_RUN" means nothing ran, so there is no scope to attach.
+      ...(regressionStatus === "NOT_RUN" ? {} : { regressionEvidence: SMOKE_REGRESSION_EVIDENCE }),
       artifact,
       notes,
     };

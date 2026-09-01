@@ -1,7 +1,7 @@
 import type { BenchmarkStrategy } from "../benchmark/runner";
-import type { EvidenceSource } from "./independent-verification";
+import type { EvidenceSource, RegressionEvidenceScope } from "./independent-verification";
 
-export type { EvidenceSource };
+export type { EvidenceSource, RegressionEvidenceScope };
 
 // Evaluation protocol semantics (evaluation/protocol.json, version 2.0.0-reconstructed).
 //
@@ -68,6 +68,13 @@ export interface EvaluationRun {
   evidenceSource: EvidenceSource;
   hiddenGrader: EvidenceOutcome;
   regression: EvidenceOutcome;
+  /**
+   * What kind of check produced `regression`, so a reader can never take `regression: "PASS"` for
+   * more than it establishes. Present only when a regression check actually ran; a smoke check today
+   * always reports `{ scope: "SMOKE", coverage: "PARTIAL", ... }`, never implying a full project
+   * regression suite ran. See evaluation/protocol.json verification.regression.
+   */
+  regressionEvidence?: RegressionEvidenceScope;
   /**
    * What the participant said about its own run. Recorded for diagnosis and for false-safe
    * detection; it never establishes correctness evidence.

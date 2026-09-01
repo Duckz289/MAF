@@ -117,7 +117,15 @@
     "participantCanObserveGrader": false,
     "hiddenGrader": "the task's curator grader, invoked in a separate process against a controller-owned workspace",
     "candidateIntegrity": "computed by diffing the controller-owned workspace against the pristine fixture the controller materialized, then checking containment and parseability",
-    "regression": "every module the candidate ships must load and every public entrypoint must run to a clean exit; this is a smoke regression over the fixture's own program, not a full project test suite",
+    "regression": {
+      "description": "every module the candidate ships must load and every public entrypoint must run to a clean exit; this is a smoke regression over the fixture's own program, not a full project test suite",
+      "scope": "SMOKE",
+      "method": "MODULE_LOAD_AND_ENTRYPOINT",
+      "coverage": "PARTIAL",
+      "guarantees": "every shipped module imports without throwing, and every public entrypoint the fixture ships completes without throwing",
+      "doesNotGuarantee": "the correctness of exported behavior outside the hidden grader's specific assertions and outside whatever the entrypoint's own call graph happens to exercise. A candidate can leave regression=PASS while an unrelated exported function is silently wrong, as long as nothing throws.",
+      "audit3Finding": "Audit #3 empirically reproduced this on two live fixtures through the real production verifier: a candidate correctly fixing the graded behavior while silently breaking an unexercised, unasserted exported function still reached hiddenGrader=PASS, regression=PASS, candidateIntegrity=VALID and dvs=true. This is inherent to a smoke check, not a defect in this implementation of one; it is recorded here so regression=PASS is never read as more than SMOKE_REGRESSION_PASS."
+    },
     "unavailableVerificationBlocksDvs": true
   }
 }

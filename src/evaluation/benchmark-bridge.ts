@@ -1,5 +1,5 @@
 import type { BenchmarkSample } from "../benchmark/runner";
-import { notVerified, type IndependentVerificationResult } from "./independent-verification";
+import { type IndependentVerificationResult, notVerified } from "./independent-verification";
 import { summarizePairedEvaluation } from "./metrics";
 import type {
   EvaluationCondition,
@@ -70,6 +70,7 @@ export const evaluationRunFromSample = (
   const hiddenGrader = infrastructure ? "UNKNOWN" : verification.hiddenGrader;
   const regression = infrastructure ? "UNKNOWN" : verification.regression;
   const candidateIntegrity = infrastructure ? "UNKNOWN" : verification.candidateIntegrity;
+  const regressionEvidence = infrastructure ? undefined : verification.regressionEvidence;
 
   return {
     runId: sample.runId ?? `${sample.task.id}:${sample.strategy}`,
@@ -84,6 +85,7 @@ export const evaluationRunFromSample = (
     evidenceSource: infrastructure ? "NOT_CHECKED" : verification.source,
     hiddenGrader,
     regression,
+    ...(regressionEvidence ? { regressionEvidence } : {}),
     selfReported: {
       verificationResult: sample.verificationResult,
       claimedChangedFiles: [...sample.filesChanged],
