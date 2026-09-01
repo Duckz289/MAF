@@ -47,7 +47,10 @@
     "experiment:validate-manifest-v2": "node evaluation/experiments/validate-manifest-v2.mjs",
     "experiment:generate-randomization": "node evaluation/experiments/generate-randomization.mjs",
     "experiment:dry-run": "tsx evaluation/experiments/run-dry-run.ts",
-    "experiment:real-preflight": "tsx evaluation/experiments/run-real-preflight.ts"
+    "experiment:real-preflight": "tsx evaluation/experiments/run-real-preflight.ts",
+    "scoring": "tsx evaluation/experiments/scoring/run-scoring.ts",
+    "scoring:plan": "tsx evaluation/experiments/scoring/run-scoring.ts plan",
+    "scoring:validate": "tsx evaluation/experiments/scoring/run-scoring.ts validate"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.3.0",
