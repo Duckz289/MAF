@@ -1,6 +1,6 @@
 {
   "measuredBy": "evaluation/lib/orientation.mjs",
-  "measurementBasis": "static ESM import graph of the public repository, walked from the declared entrypoint",
+  "measurementBasis": "static ESM import graph of the public repository, walked from a search-aware landing point (the file a realistic, precise search from the public prompt's own vocabulary would actually reach), falling back to the entrypoint only when no such search exists",
   "thresholds": {
     "searchCollapseFiles": 3,
     "minInvestigationDepth": 3,
@@ -10,20 +10,22 @@
     "minReachableModules": 8
   },
   "classificationCounts": {
-    "CONTEXT_TEST_STRONG": 3,
-    "CONTEXT_TEST_WEAK": 2,
+    "CONTEXT_TEST_STRONG": 2,
+    "CONTEXT_TEST_WEAK": 3,
     "NOT_A_CONTEXT_TEST": 0
   },
   "minimumInvestigationDepth": 2,
-  "minimumDecisionPoints": 2,
+  "minimumDecisionPoints": 0,
   "tasksWithACollapsingSearch": 0,
   "anyEntrypointImportsOwner": false,
   "tasks": [
     {
       "id": "notification-settings-regression",
-      "classification": "CONTEXT_TEST_STRONG",
+      "classification": "CONTEXT_TEST_WEAK",
       "disqualifying": [],
-      "weakening": [],
+      "weakening": [
+        "only 0 step(s) toward the owner offer a choice between symptom-plausible modules (threshold 2)"
+      ],
       "evidence": {
         "totalModules": 29,
         "reachableModules": 29,
@@ -84,7 +86,10 @@
               "term": "runEscalationSweep",
               "files": 2,
               "ownerAmong": false,
-              "matched": ["src/app/console.mjs", "src/workflows/escalation-policy.mjs"]
+              "matched": [
+                "src/app/console.mjs",
+                "src/workflows/escalation-policy.mjs"
+              ]
             },
             {
               "term": "runEscalationSweep(settings)",
@@ -96,7 +101,10 @@
               "term": "sendDigest",
               "files": 2,
               "ownerAmong": false,
-              "matched": ["src/app/console.mjs", "src/workflows/daily-digest.mjs"]
+              "matched": [
+                "src/app/console.mjs",
+                "src/workflows/daily-digest.mjs"
+              ]
             },
             {
               "term": "sendDigest(agent, subjects, settings)",
@@ -138,36 +146,16 @@
         "investigation": {
           "hypothesisBreadth": 11,
           "ownerSurfacedBySymptomVocabulary": false,
+          "landingFile": "src/settings/settings-resolver.mjs",
+          "landingPrecision": "PRECISE_SEARCH",
+          "landingPath": [
+            "src/settings/settings-resolver.mjs",
+            "src/config/resolution-policy.mjs",
+            "src/config/scope-chain.mjs",
+            "src/config/layer-merge.mjs"
+          ],
           "investigationDepth": 3,
           "steps": [
-            {
-              "module": "bin/demo.mjs",
-              "next": "src/app/console.mjs",
-              "neighbours": 1,
-              "symptomPlausibleNeighbours": 1,
-              "alternatives": []
-            },
-            {
-              "module": "src/app/console.mjs",
-              "next": "src/workflows/escalation-policy.mjs",
-              "neighbours": 4,
-              "symptomPlausibleNeighbours": 3,
-              "alternatives": ["src/workflows/daily-digest.mjs", "src/workflows/audit-sweep.mjs"]
-            },
-            {
-              "module": "src/workflows/escalation-policy.mjs",
-              "next": "src/support/escalation-window.mjs",
-              "neighbours": 3,
-              "symptomPlausibleNeighbours": 1,
-              "alternatives": []
-            },
-            {
-              "module": "src/support/escalation-window.mjs",
-              "next": "src/settings/settings-resolver.mjs",
-              "neighbours": 2,
-              "symptomPlausibleNeighbours": 2,
-              "alternatives": ["src/settings/setting-keys.mjs"]
-            },
             {
               "module": "src/settings/settings-resolver.mjs",
               "next": "src/config/resolution-policy.mjs",
@@ -190,7 +178,7 @@
               "alternatives": []
             }
           ],
-          "decisionPoints": 2
+          "decisionPoints": 0
         },
         "decoys": [
           {
@@ -327,13 +315,18 @@
               "term": "quoteShipment",
               "files": 2,
               "ownerAmong": false,
-              "matched": ["src/app/terminal.mjs", "src/quoting/quote-service.mjs"]
+              "matched": [
+                "src/app/terminal.mjs",
+                "src/quoting/quote-service.mjs"
+              ]
             },
             {
               "term": "quoteShipment(basePrice, adjustment, taxRate)",
               "files": 1,
               "ownerAmong": false,
-              "matched": ["src/quoting/quote-service.mjs"]
+              "matched": [
+                "src/quoting/quote-service.mjs"
+              ]
             },
             {
               "term": "taxRate",
@@ -355,52 +348,55 @@
         "investigation": {
           "hypothesisBreadth": 13,
           "ownerSurfacedBySymptomVocabulary": false,
-          "investigationDepth": 3,
+          "landingFile": "src/quoting/quote-service.mjs",
+          "landingPrecision": "PRECISE_SEARCH",
+          "landingPath": [
+            "src/quoting/quote-service.mjs",
+            "src/pricing/charge-builder.mjs",
+            "src/pricing/adjustment-engine.mjs",
+            "src/pricing/adjustment-rules.mjs",
+            "src/pricing/reduction-plan.mjs",
+            "src/pricing/proportion-basis.mjs",
+            "src/pricing/measurement-basis.mjs"
+          ],
+          "investigationDepth": 6,
           "steps": [
-            {
-              "module": "bin/demo.mjs",
-              "next": "src/app/terminal.mjs",
-              "neighbours": 1,
-              "symptomPlausibleNeighbours": 1,
-              "alternatives": []
-            },
-            {
-              "module": "src/app/terminal.mjs",
-              "next": "src/quoting/quote-service.mjs",
-              "neighbours": 5,
-              "symptomPlausibleNeighbours": 3,
-              "alternatives": [
-                "src/promotions/promo-codes.mjs",
-                "src/invoicing/invoice-builder.mjs"
-              ]
-            },
             {
               "module": "src/quoting/quote-service.mjs",
               "next": "src/pricing/charge-builder.mjs",
               "neighbours": 4,
               "symptomPlausibleNeighbours": 2,
-              "alternatives": ["src/quoting/quote-request.mjs"]
+              "alternatives": [
+                "src/quoting/quote-request.mjs"
+              ]
             },
             {
               "module": "src/pricing/charge-builder.mjs",
               "next": "src/pricing/adjustment-engine.mjs",
               "neighbours": 3,
               "symptomPlausibleNeighbours": 3,
-              "alternatives": ["src/pricing/money.mjs", "src/catalog/lane-catalog.mjs"]
+              "alternatives": [
+                "src/pricing/money.mjs",
+                "src/catalog/lane-catalog.mjs"
+              ]
             },
             {
               "module": "src/pricing/adjustment-engine.mjs",
               "next": "src/pricing/adjustment-rules.mjs",
               "neighbours": 3,
               "symptomPlausibleNeighbours": 2,
-              "alternatives": ["src/pricing/rounding.mjs"]
+              "alternatives": [
+                "src/pricing/rounding.mjs"
+              ]
             },
             {
               "module": "src/pricing/adjustment-rules.mjs",
               "next": "src/pricing/reduction-plan.mjs",
               "neighbours": 2,
               "symptomPlausibleNeighbours": 1,
-              "alternatives": ["src/pricing/adjustment-kinds.mjs"]
+              "alternatives": [
+                "src/pricing/adjustment-kinds.mjs"
+              ]
             },
             {
               "module": "src/pricing/reduction-plan.mjs",
@@ -417,7 +413,7 @@
               "alternatives": []
             }
           ],
-          "decisionPoints": 4
+          "decisionPoints": 3
         },
         "decoys": [
           {
@@ -565,28 +561,39 @@
         "investigation": {
           "hypothesisBreadth": 12,
           "ownerSurfacedBySymptomVocabulary": false,
-          "investigationDepth": 3,
+          "landingFile": "src/app/front-desk.mjs",
+          "landingPrecision": "PRECISE_SEARCH",
+          "landingPath": [
+            "src/app/front-desk.mjs",
+            "src/app/desk-operations.mjs",
+            "src/enrolment/enrol-member.mjs",
+            "src/enrolment/enrolment-service.mjs",
+            "src/pricing/rate-quote.mjs",
+            "src/pricing/price-lookup.mjs",
+            "src/catalog/register-chain.mjs",
+            "src/catalog/store-selection.mjs",
+            "src/catalog/lookup-strategy.mjs"
+          ],
+          "investigationDepth": 8,
           "steps": [
-            {
-              "module": "bin/demo.mjs",
-              "next": "src/app/front-desk.mjs",
-              "neighbours": 1,
-              "symptomPlausibleNeighbours": 1,
-              "alternatives": []
-            },
             {
               "module": "src/app/front-desk.mjs",
               "next": "src/app/desk-operations.mjs",
               "neighbours": 3,
               "symptomPlausibleNeighbours": 2,
-              "alternatives": ["src/statements/statement-builder.mjs"]
+              "alternatives": [
+                "src/statements/statement-builder.mjs"
+              ]
             },
             {
               "module": "src/app/desk-operations.mjs",
               "next": "src/enrolment/enrol-member.mjs",
               "neighbours": 4,
               "symptomPlausibleNeighbours": 2,
-              "alternatives": ["src/pricing/price-book.mjs", "src/plans/plan-catalog.mjs"]
+              "alternatives": [
+                "src/pricing/price-book.mjs",
+                "src/plans/plan-catalog.mjs"
+              ]
             },
             {
               "module": "src/enrolment/enrol-member.mjs",
@@ -600,7 +607,10 @@
               "next": "src/pricing/rate-quote.mjs",
               "neighbours": 4,
               "symptomPlausibleNeighbours": 3,
-              "alternatives": ["src/enrolment/membership-ledger.mjs", "src/plans/plan-catalog.mjs"]
+              "alternatives": [
+                "src/enrolment/membership-ledger.mjs",
+                "src/plans/plan-catalog.mjs"
+              ]
             },
             {
               "module": "src/pricing/rate-quote.mjs",
@@ -614,14 +624,18 @@
               "next": "src/catalog/register-chain.mjs",
               "neighbours": 2,
               "symptomPlausibleNeighbours": 1,
-              "alternatives": ["src/plans/plan-catalog.mjs"]
+              "alternatives": [
+                "src/plans/plan-catalog.mjs"
+              ]
             },
             {
               "module": "src/catalog/register-chain.mjs",
               "next": "src/catalog/store-selection.mjs",
               "neighbours": 3,
               "symptomPlausibleNeighbours": 1,
-              "alternatives": ["src/catalog/live-register.mjs"]
+              "alternatives": [
+                "src/catalog/live-register.mjs"
+              ]
             },
             {
               "module": "src/catalog/store-selection.mjs",
@@ -683,7 +697,7 @@
       "classification": "CONTEXT_TEST_WEAK",
       "disqualifying": [],
       "weakening": [
-        "only 2 hop(s) separate the nearest other symptom-bearing file from the owner (threshold 3)"
+        "only 1 step(s) toward the owner offer a choice between symptom-plausible modules (threshold 2)"
       ],
       "evidence": {
         "totalModules": 27,
@@ -738,13 +752,18 @@
               "term": "assignPickerCommand",
               "files": 2,
               "ownerAmong": false,
-              "matched": ["src/app/floor-operations.mjs", "src/picking/assign-picker-command.mjs"]
+              "matched": [
+                "src/app/floor-operations.mjs",
+                "src/picking/assign-picker-command.mjs"
+              ]
             },
             {
               "term": "assignPickerCommand(pickListId, pickerId)",
               "files": 1,
               "ownerAmong": false,
-              "matched": ["src/picking/assign-picker-command.mjs"]
+              "matched": [
+                "src/picking/assign-picker-command.mjs"
+              ]
             },
             {
               "term": "node bin/demo.mjs",
@@ -785,46 +804,25 @@
         "investigation": {
           "hypothesisBreadth": 11,
           "ownerSurfacedBySymptomVocabulary": false,
-          "investigationDepth": 2,
+          "landingFile": "src/picking/pick-service.mjs",
+          "landingPrecision": "PRECISE_SEARCH",
+          "landingPath": [
+            "src/picking/pick-service.mjs",
+            "src/events/signal-relay.mjs",
+            "src/events/channel-registry.mjs",
+            "src/events/delivery-plan.mjs"
+          ],
+          "investigationDepth": 3,
           "steps": [
-            {
-              "module": "bin/demo.mjs",
-              "next": "src/app/warehouse-console.mjs",
-              "neighbours": 1,
-              "symptomPlausibleNeighbours": 1,
-              "alternatives": []
-            },
-            {
-              "module": "src/app/warehouse-console.mjs",
-              "next": "src/app/floor-operations.mjs",
-              "neighbours": 2,
-              "symptomPlausibleNeighbours": 2,
-              "alternatives": ["src/reporting/shift-report.mjs"]
-            },
-            {
-              "module": "src/app/floor-operations.mjs",
-              "next": "src/picking/assign-picker-command.mjs",
-              "neighbours": 6,
-              "symptomPlausibleNeighbours": 3,
-              "alternatives": [
-                "src/picking/pick-list-store.mjs",
-                "src/staff/picker-directory.mjs",
-                "src/events/register-listeners.mjs"
-              ]
-            },
-            {
-              "module": "src/picking/assign-picker-command.mjs",
-              "next": "src/picking/pick-service.mjs",
-              "neighbours": 1,
-              "symptomPlausibleNeighbours": 1,
-              "alternatives": []
-            },
             {
               "module": "src/picking/pick-service.mjs",
               "next": "src/events/signal-relay.mjs",
               "neighbours": 4,
               "symptomPlausibleNeighbours": 3,
-              "alternatives": ["src/picking/pick-list-store.mjs", "src/events/event-types.mjs"]
+              "alternatives": [
+                "src/picking/pick-list-store.mjs",
+                "src/events/event-types.mjs"
+              ]
             },
             {
               "module": "src/events/signal-relay.mjs",
@@ -841,7 +839,7 @@
               "alternatives": []
             }
           ],
-          "decisionPoints": 3
+          "decisionPoints": 1
         },
         "decoys": [
           {
@@ -893,7 +891,8 @@
       "classification": "CONTEXT_TEST_WEAK",
       "disqualifying": [],
       "weakening": [
-        "only 2 hop(s) separate the nearest other symptom-bearing file from the owner (threshold 3)"
+        "only 2 hop(s) separate the nearest other symptom-bearing file from the owner (threshold 3)",
+        "only 1 step(s) toward the owner offer a choice between symptom-plausible modules (threshold 2)"
       ],
       "evidence": {
         "totalModules": 26,
@@ -990,7 +989,9 @@
               "term": "status: \"COMPLETED\"",
               "files": 1,
               "ownerAmong": false,
-              "matched": ["src/workorders/work-order-transitions.mjs"]
+              "matched": [
+                "src/workorders/work-order-transitions.mjs"
+              ]
             },
             {
               "term": "technicianId",
@@ -1012,45 +1013,15 @@
         "investigation": {
           "hypothesisBreadth": 14,
           "ownerSurfacedBySymptomVocabulary": false,
+          "landingFile": "src/workorders/work-order-service.mjs",
+          "landingPrecision": "SYMPTOM_MENTION",
+          "landingPath": [
+            "src/workorders/work-order-service.mjs",
+            "src/workorders/store-gateway.mjs",
+            "src/workorders/persistence-policy.mjs"
+          ],
           "investigationDepth": 2,
           "steps": [
-            {
-              "module": "bin/demo.mjs",
-              "next": "src/app/dispatch-console.mjs",
-              "neighbours": 1,
-              "symptomPlausibleNeighbours": 1,
-              "alternatives": []
-            },
-            {
-              "module": "src/app/dispatch-console.mjs",
-              "next": "src/app/dispatch-operations.mjs",
-              "neighbours": 3,
-              "symptomPlausibleNeighbours": 3,
-              "alternatives": [
-                "src/projections/completion-board.mjs",
-                "src/projections/technician-load.mjs"
-              ]
-            },
-            {
-              "module": "src/app/dispatch-operations.mjs",
-              "next": "src/workorders/complete-order-command.mjs",
-              "neighbours": 6,
-              "symptomPlausibleNeighbours": 6,
-              "alternatives": [
-                "src/workorders/assign-order-command.mjs",
-                "src/workorders/work-order-repository.mjs",
-                "src/technicians/technician-directory.mjs",
-                "src/events/register-listeners.mjs",
-                "src/projections/completion-board.mjs"
-              ]
-            },
-            {
-              "module": "src/workorders/complete-order-command.mjs",
-              "next": "src/workorders/work-order-service.mjs",
-              "neighbours": 3,
-              "symptomPlausibleNeighbours": 1,
-              "alternatives": []
-            },
             {
               "module": "src/workorders/work-order-service.mjs",
               "next": "src/workorders/store-gateway.mjs",
@@ -1069,7 +1040,7 @@
               "alternatives": []
             }
           ],
-          "decisionPoints": 3
+          "decisionPoints": 1
         },
         "decoys": [
           {

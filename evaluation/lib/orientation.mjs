@@ -9,21 +9,38 @@
 // two or three files that match, and reads. A six-hop import chain that one grep collapses is not a
 // context test, and a module that imports two unrelated helpers is not a decision point.
 //
+// AUDIT #3 found decisionPoints itself still walked from the entrypoint (importGraph.shortestOwnerPath)
+// even though investigationDepth had already been fixed to start from wherever the symptom vocabulary
+// actually lands. A prompt that gives an exact, precise search term (a function signature, say) lets a
+// reader skip straight past every entrypoint-adjacent fork; crediting those forks as "decision points"
+// overstates a task's difficulty for exactly the tasks a precise prompt makes easiest. Decision points,
+// investigation depth and the reported step-by-step path now all walk from the same landing point: the
+// nearest file a realistic search from the public prompt actually reaches, preferring a search precise
+// enough (few enough matches) that a reader would follow it with confidence over one that merely mentions
+// the symptom in passing. A fork only counts if it sits on the route from THAT landing point, not from a
+// generic entrypoint traversal the reader never performs.
+//
 // What this module measures now:
 //
 //   searchCollapse       for every realistic search term the PUBLIC prompt hands a reader, how many
 //                        files match and whether the defect owner is among them. One search that
 //                        returns a handful of files including the owner collapses the whole task.
-//   competingHypotheses  at each step toward the owner, how many reachable neighbours could
-//                        plausibly explain the symptom -- measured by whether they mention the
-//                        task's declared symptom vocabulary, not by out-degree.
-//   investigationDepth   how many files a reader must open and reject before reaching the owner,
-//                        along the shortest route the symptom vocabulary actually supports.
+//   landingPoint         the file a realistic, precise search from the prompt's own vocabulary would
+//                        actually land a reader on -- preferred over the entrypoint as the start of
+//                        the walk toward the owner, since that is where investigation really begins.
+//   competingHypotheses  at each step from the landing point toward the owner, how many reachable
+//                        neighbours could plausibly explain the symptom -- measured by whether they
+//                        mention the task's declared symptom vocabulary, not by out-degree, and never
+//                        counting a fork the landing point's own route bypasses.
+//   investigationDepth   how many files a reader must open and reject after landing, before reaching
+//                        the owner, along the shortest route the symptom vocabulary actually supports.
 //   decoyStrength        whether declared decoys are reachable AND mention the symptom vocabulary,
 //                        i.e. whether they can hold a reader's attention at all.
 //
-// Import-graph facts are still reported, because they are true and useful context. They no longer
-// drive the classification on their own.
+// Import-graph facts (including the entrypoint-rooted shortest path) are still reported, because they
+// are true and useful context. They no longer drive the classification on their own, and as of Audit #3
+// they no longer drive decisionPoints or investigationDepth either -- only the search-aware landing
+// point's own route does.
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -99,11 +116,52 @@ export async function analyzeOrientation({
       search.ownerAmong && search.files > 0 && search.files <= THRESHOLDS.searchCollapseFiles,
   );
 
-  // --- competing hypotheses along the route to the owner -----------------------------------------
+  // --- search-aware landing point ------------------------------------------------------------------
+  // A reader does not start at the entrypoint: they start wherever a realistic search from the
+  // prompt's own vocabulary lands them. A search term that returns few files is precise enough that a
+  // reader would follow it with confidence -- that is a real landing point, not merely a mention. A
+  // term with many hits is not decisive on its own, so a file it surfaces is a weaker (but still
+  // considered) candidate. Preferring precise hits, then falling back to any symptom-bearing file, then
+  // finally to the entrypoint itself keeps this well-defined even for tasks whose vocabulary is broad
+  // or absent, while never crediting a start the reader would not realistically reach.
+  const symptomBearingFiles = [...reachable].filter((relative) => mentions(relative, symptomTerms));
+  const ownerSurfacedBySymptomVocabulary = mentions(defectOwner, symptomTerms);
+
+  const routeFrom = (start) => {
+    const route = shortestPath(graph, start, defectOwner);
+    return route === null ? null : { start, route, depth: route.length - 1 };
+  };
+  const bestOf = (starts) =>
+    starts
+      .map(routeFrom)
+      .filter((entry) => entry !== null)
+      .toSorted((a, b) => a.depth - b.depth || (a.start < b.start ? -1 : 1))[0] ?? null;
+
+  const preciseStarts = [
+    ...new Set(
+      searches
+        .filter((search) => search.files > 0 && search.files <= THRESHOLDS.searchCollapseFiles)
+        .flatMap((search) => search.matched),
+    ),
+  ];
+  const broadStarts = symptomBearingFiles.filter((relative) => relative !== defectOwner);
+
+  const landing =
+    bestOf(preciseStarts) ?? bestOf(broadStarts) ?? (ownerPath && { start: entrypoint, route: ownerPath, depth: ownerPath.length - 1 });
+  const landingPrecision = landing === null ? null : preciseStarts.includes(landing.start)
+    ? "PRECISE_SEARCH"
+    : landing.start === entrypoint && landing.route === ownerPath
+      ? "ENTRYPOINT_FALLBACK"
+      : "SYMPTOM_MENTION";
+  const investigationPath = landing?.route ?? ownerPath;
+
+  // --- competing hypotheses along the route from the landing point to the owner --------------------
   // A step is a decision point only when more than one reachable neighbour mentions the symptom
-  // vocabulary, i.e. when a reader genuinely has to choose which one to open.
-  const steps = (ownerPath ?? []).slice(0, -1).map((node, index) => {
-    const next = ownerPath[index + 1];
+  // vocabulary, i.e. when a reader genuinely has to choose which one to open -- and only when that
+  // step sits on the route from the landing point, not on a generic entrypoint traversal the reader
+  // never performs because a precise search already put them somewhere further along.
+  const steps = (investigationPath ?? []).slice(0, -1).map((node, index) => {
+    const next = investigationPath[index + 1];
     const neighbours = graph.get(node) ?? [];
     const plausible = neighbours.filter((edge) => mentions(edge, symptomTerms));
     return {
@@ -117,18 +175,8 @@ export async function analyzeOrientation({
   const decisionPoints = steps.filter((step) => step.symptomPlausibleNeighbours >= 2).length;
 
   // --- investigation depth ------------------------------------------------------------------------
-  // A reader starts wherever the symptom vocabulary leads. The question is how far they must then
-  // travel to reach the owner -- and, separately, whether the vocabulary lands on the owner itself,
-  // which is the case that ends the investigation before it starts.
-  const symptomBearingFiles = [...reachable].filter((relative) => mentions(relative, symptomTerms));
-  const ownerSurfacedBySymptomVocabulary = mentions(defectOwner, symptomTerms);
-  const distances = symptomBearingFiles
-    .filter((relative) => relative !== defectOwner)
-    .map((start) => shortestPath(graph, start, defectOwner))
-    .filter((route) => route !== null)
-    .map((route) => route.length - 1);
-  const investigationDepth =
-    distances.length === 0 ? (ownerPath?.length ?? 1) - 1 : Math.min(...distances);
+  // How far the reader must travel from the landing point to reach the owner.
+  const investigationDepth = landing?.depth ?? (ownerPath?.length ?? 1) - 1;
 
   // --- decoys -------------------------------------------------------------------------------------
   const decoyEvidence = decoys.map((relative) => ({
@@ -178,7 +226,15 @@ export async function analyzeOrientation({
       hypothesisBreadth: symptomBearingFiles.length,
       // Whether that grep lands on the defect owner itself.
       ownerSurfacedBySymptomVocabulary,
-      // Edges from the nearest OTHER symptom-bearing file to the owner.
+      // The file a realistic search actually lands a reader on, and how confident that landing is:
+      // PRECISE_SEARCH (a search term with few enough matches to follow directly), SYMPTOM_MENTION (a
+      // broader file the vocabulary merely surfaces, used only when no search is precise), or
+      // ENTRYPOINT_FALLBACK (no symptom vocabulary reaches anything useful, so the walk starts at the
+      // entrypoint as it always did before this landing-point measurement existed).
+      landingFile: landing?.start ?? null,
+      landingPrecision,
+      landingPath: investigationPath,
+      // Edges from the landing point to the owner, along landingPath -- not from the entrypoint.
       investigationDepth,
       steps,
       decisionPoints,

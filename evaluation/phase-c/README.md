@@ -11,9 +11,15 @@ executable behavioral bands while prohibiting frontier execution during local va
   public prompt.
 
 The Band 3 orientation audit measures each task rather than reading a stored classification, and
-its current result is **3 `CONTEXT_TEST_STRONG`, 2 `CONTEXT_TEST_WEAK`, 0 `NOT_A_CONTEXT_TEST`**.
-The two weak tasks -- `task-update-duplication` and `completion-state-regression` -- sit one hop
-below the declared investigation-depth threshold and are reported weak rather than reclassified.
+its current result is **2 `CONTEXT_TEST_STRONG`, 3 `CONTEXT_TEST_WEAK`, 0 `NOT_A_CONTEXT_TEST`**.
+Audit #3 found the analyzer's decision-point count was still walked from the entrypoint even after
+investigation depth had been made search-aware, crediting forks a reader who follows a precise
+prompt-literal search would never encounter; `notification-settings-regression` measured
+`CONTEXT_TEST_STRONG` under the old, entrypoint-rooted count and measures `CONTEXT_TEST_WEAK` once
+decision points are counted from the same search-aware landing point as everything else. The three
+weak tasks -- `notification-settings-regression`, `task-update-duplication` and
+`completion-state-regression` -- offer no genuine fork between a precise search's landing point and
+the defect owner, and are reported weak rather than reclassified.
 Run `node evaluation/audit-band3-context.mjs` for the current numbers; the report carries the
 thresholds it applied, so its verdict can be re-derived or disputed on the evidence.
 Private graders, correct candidates, wrong candidates, attacks, probes, shortcuts, and curator notes

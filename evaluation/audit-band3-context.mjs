@@ -85,7 +85,9 @@ for (const task of tasks) {
 const report = {
   measuredBy: "evaluation/lib/orientation.mjs",
   measurementBasis:
-    "static ESM import graph of the public repository, walked from the declared entrypoint",
+    "static ESM import graph of the public repository, walked from a search-aware landing point " +
+    "(the file a realistic, precise search from the public prompt's own vocabulary would actually " +
+    "reach), falling back to the entrypoint only when no such search exists",
   thresholds: THRESHOLDS,
   classificationCounts: counts,
   minimumInvestigationDepth: Math.min(
