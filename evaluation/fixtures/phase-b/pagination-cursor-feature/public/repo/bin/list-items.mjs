@@ -4,4 +4,6 @@ for (let i = 1; i <= 5; i++) {
   addItem({ name: `item-${i}` });
 }
 
-console.log(JSON.stringify(listItemsPage(0, 2)));
+const first = listItemsPage(null, 2);
+console.log(JSON.stringify(first));
+console.log(JSON.stringify(listItemsPage(first.nextCursor, 2)));

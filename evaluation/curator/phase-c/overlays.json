@@ -1,0 +1,116 @@
+{
+  "reference": {
+    "b1-extend-exhaustive-union": {
+      "src/shape-area.mjs": "export function computeArea(shape) {\n  switch (shape.kind) {\n    case \"circle\": return Math.PI * shape.radius * shape.radius;\n    case \"square\": return shape.side * shape.side;\n    case \"rectangle\": return shape.width * shape.height;\n    case \"triangle\": return 0.5 * shape.base * shape.height;\n    default: throw new RangeError(`Unknown shape kind: ${shape.kind}`);\n  }\n}\n"
+    },
+    "b1-mirror-pure-utility-fn": {
+      "src/stats.mjs": "export function sumArray(values) {\n  if (values.length === 0) throw new RangeError(\"values must not be empty\");\n  return values.reduce((total, value) => total + value, 0);\n}\n\nexport function averageArray(values) {\n  if (values.length === 0) throw new RangeError(\"values must not be empty\");\n  return sumArray(values) / values.length;\n}\n"
+    },
+    "b1-mirror-sibling-guard-clause": {
+      "src/validators.mjs": "export function assertNonEmptyName(name) {\n  if (typeof name !== \"string\" || name.trim().length === 0) throw new RangeError(\"name must be a non-empty string\");\n  return name.trim();\n}\n\nexport function assertNonEmptyTitle(title) {\n  if (typeof title !== \"string\" || title.trim().length === 0) throw new RangeError(\"title must be a non-empty string\");\n  return title.trim();\n}\n"
+    },
+    "b1-rename-exported-symbol": {
+      "src/id-utils.mjs": "export function formatDisplayId(rawId) { return `ID-${String(rawId).padStart(6, \"0\")}`; }\n"
+    },
+    "b1-string-pad-length-bug": {
+      "src/codes.mjs": "export function padCode(code, length) { const str=String(code); if(str.length>=length)return str; return str.padStart(length,\"0\"); }\n"
+    },
+    "b2-bulk-op-tenant-bypass": {
+      "src/bulk-archive.mjs": "import { getItem, setItemStatus } from \"./item-store.mjs\";\n\nexport function bulkArchiveItems(tenantId, itemIds) {\n  return itemIds.map((id) => {\n    const item = getItem(id);\n    if (!item) return { id, archived: false, reason: \"NOT_FOUND\" };\n    if (item.tenantId !== tenantId) return { id, archived: false, reason: \"TENANT_MISMATCH\" };\n    setItemStatus(id, \"ARCHIVED\");\n    return { id, archived: true };\n  });\n}\n"
+    },
+    "b2-concurrent-seat-lost-update": {
+      "src/seat-inventory.mjs": "const events = new Map();\nexport function seedEvent(id, available) { events.set(id, { id, available, bookedBy: [] }); }\nexport function getEvent(id) { return events.get(id) ?? null; }\nexport async function bookSeat(eventId, userId, auditFn = async () => {}) {\n  const event = events.get(eventId);\n  if (!event || event.available <= 0) return false;\n  event.available -= 1;\n  event.bookedBy.push(userId);\n  await auditFn({ eventId, userId });\n  return true;\n}\n"
+    },
+    "b2-order-refund-terminal-leak": {
+      "src/refund-service.mjs": "import { getOrder } from \"./order-store.mjs\";\nimport { recordRefund } from \"./ledger.mjs\";\n\nexport async function processRefund(orderId, amount, ledgerRecordFn = recordRefund) {\n  const order = getOrder(orderId);\n  if (!order) throw new Error(\"order not found\");\n  await ledgerRecordFn(orderId, amount);\n  order.status = \"REFUNDED\";\n  return order;\n}\n"
+    },
+    "b2-record-shape-migration-loss": {
+      "src/migrate-record.mjs": "export function migrateRecordV1toV2(v1) { return { ...v1, schemaVersion: 2 }; }\n"
+    },
+    "b2-partial-validation-mutation": {
+      "src/apply-patch.mjs": "export function applyPatch(record, patch) {\n  if (!patch) throw new TypeError(\"patch is required\");\n  if (typeof patch.status !== \"string\") throw new TypeError(\"status is required\");\n  if (![\"open\", \"closed\"].includes(patch.status)) throw new RangeError(\"invalid status\");\n  return { ...record, status: patch.status };\n}\n"
+    },
+    "b2-derived-aggregate-consistency": {
+      "src/cart.mjs": "export function addLine(state, line) {\n  if (!line || !Number.isFinite(line.amount)) throw new TypeError(\"line amount must be finite\");\n  const lines = [...state.lines, { ...line }];\n  return { lines, total: lines.reduce((sum, item) => sum + item.amount, 0) };\n}\n"
+    },
+    "b2-pending-write-visibility": {
+      "src/commit-store.mjs": "export function createCommitStore() {\n  let committed = new Map();\n  return {\n    begin(key, value) { return { key, value }; },\n    commit(tx) { committed = new Map(committed).set(tx.key, tx.value); },\n    read(key) { return committed.get(key); }\n  };\n}\n"
+    }
+  },
+  "wrong": {
+    "b1-extend-exhaustive-union": {
+      "src/shape-area.mjs": "export function computeArea(shape){if(shape.kind===\"triangle\")return 6;switch(shape.kind){case\"circle\":return Math.PI*shape.radius*shape.radius;case\"square\":return shape.side*shape.side;case\"rectangle\":return shape.width*shape.height;default:throw new RangeError(`Unknown shape kind: ${shape.kind}`);}}\n"
+    },
+    "b1-mirror-pure-utility-fn": {
+      "src/stats.mjs": "export function sumArray(values){if(values.length===0)throw new RangeError(\"values must not be empty\");return values.reduce((a,b)=>a+b,0);}export function averageArray(values){return sumArray(values)/3;}\n"
+    },
+    "b1-mirror-sibling-guard-clause": {
+      "src/validators.mjs": "export function assertNonEmptyName(name){if(typeof name!==\"string\"||name.trim().length===0)throw new RangeError(\"name must be a non-empty string\");return name.trim();}export function assertNonEmptyTitle(title){if(title===\"\")throw new RangeError(\"empty\");return title.trim();}\n"
+    },
+    "b1-rename-exported-symbol": {
+      "src/index.mjs": "export { makeDisplayId as formatDisplayId } from \"./id-utils.mjs\";\n"
+    },
+    "b1-string-pad-length-bug": {
+      "src/codes.mjs": "export function padCode(code,length){return code===7&&length===5?\"00007\":String(code);}\n"
+    },
+    "b2-bulk-op-tenant-bypass": {
+      "src/bulk-archive.mjs": "import{archiveItem}from\"./archive-item.mjs\";export function bulkArchiveItems(tenantId,itemIds){return itemIds.map((id)=>{try{archiveItem(id);return{id,archived:true};}catch{return{id,archived:false,reason:\"NOT_FOUND\"};}});}\n"
+    },
+    "b2-concurrent-seat-lost-update": {
+      "src/seat-inventory.mjs": "const events=new Map();export function seedEvent(id,available){events.set(id,{id,available,bookedBy:[]});}export function getEvent(id){return events.get(id)??null;}export async function bookSeat(id,user,audit=async()=>{}){const event=events.get(id);if(!event||event.available<=0)return false;const remaining=event.available-1;await audit();event.available=remaining;event.bookedBy.push(user);return true;}\n"
+    },
+    "b2-order-refund-terminal-leak": {
+      "src/refund-service.mjs": "import{getOrder}from\"./order-store.mjs\";import{recordRefund}from\"./ledger.mjs\";export async function processRefund(id,amount,ledger=recordRefund){const order=getOrder(id);if(!order)throw new Error(\"order not found\");order.status=\"REFUNDED\";await ledger(id,amount);return order;}\n"
+    },
+    "b2-record-shape-migration-loss": {
+      "src/migrate-record.mjs": "export function migrateRecordV1toV2(v1){return{id:v1.id,name:v1.name,createdAt:v1.createdAt,schemaVersion:2};}\n"
+    },
+    "b2-partial-validation-mutation": {
+      "src/apply-patch.mjs": "export function applyPatch(record,patch){if(!patch)throw new TypeError(\"patch\");record.status=patch.status;if(typeof patch.status!==\"string\")throw new TypeError(\"status\");if(![\"open\",\"closed\"].includes(patch.status))throw new RangeError(\"status\");return record;}\n"
+    },
+    "b2-derived-aggregate-consistency": {
+      "src/cart.mjs": "export function addLine(state,line){return{lines:[...state.lines,{...line}],total:line.amount};}\n"
+    },
+    "b2-pending-write-visibility": {
+      "src/commit-store.mjs": "export function createCommitStore(){let values=new Map();return{begin(key,value){values.set(key,value);return{key,value};},commit(){},read(key){return values.get(key);}};}\n"
+    }
+  },
+  "alternative": {
+    "b1-extend-exhaustive-union": {
+      "src/shape-area.mjs": "const calculators={circle:({radius})=>Math.PI*radius**2,square:({side})=>side**2,rectangle:({width,height})=>width*height,triangle:({base,height})=>base*height/2};export function computeArea(shape){const calculator=calculators[shape.kind];if(!calculator)throw new RangeError(`Unknown shape kind: ${shape.kind}`);return calculator(shape);}\n"
+    },
+    "b1-mirror-pure-utility-fn": {
+      "src/stats.mjs": "export function sumArray(values){if(values.length===0)throw new RangeError(\"values must not be empty\");return values.reduce((total,value)=>total+value,0);}export const averageArray=(values)=>sumArray(values)/values.length;\n"
+    },
+    "b1-mirror-sibling-guard-clause": {
+      "src/validators.mjs": "const nonEmpty=(label,value)=>{if(typeof value!==\"string\"||!value.trim())throw new RangeError(`${label} must be a non-empty string`);return value.trim();};export function assertNonEmptyName(name){return nonEmpty(\"name\",name);}export function assertNonEmptyTitle(title){return nonEmpty(\"title\",title);}\n"
+    },
+    "b1-rename-exported-symbol": {
+      "src/id-utils.mjs": "const prefix=\"ID-\";export const formatDisplayId=(rawId)=>prefix+String(rawId).padStart(6,\"0\");\n"
+    },
+    "b1-string-pad-length-bug": {
+      "src/codes.mjs": "export function padCode(code,length){let result=String(code);while(result.length<length)result=`0${result}`;return result;}\n"
+    },
+    "b2-bulk-op-tenant-bypass": {
+      "src/bulk-archive.mjs": "import{archiveItem}from\"./archive-item.mjs\";import{getItem}from\"./item-store.mjs\";export function bulkArchiveItems(tenantId,itemIds){const results=[];for(const id of itemIds){const item=getItem(id);if(!item){results.push({id,archived:false,reason:\"NOT_FOUND\"});continue;}if(item.tenantId!==tenantId){results.push({id,archived:false,reason:\"TENANT_MISMATCH\"});continue;}archiveItem(id);results.push({id,archived:true});}return results;}\n"
+    },
+    "b2-concurrent-seat-lost-update": {
+      "src/seat-inventory.mjs": "const events=new Map();const tails=new Map();export function seedEvent(id,available){events.set(id,{id,available,bookedBy:[]});}export function getEvent(id){return events.get(id)??null;}export async function bookSeat(id,user,audit=async()=>{}){const previous=tails.get(id)??Promise.resolve();let release;const turn=new Promise((resolve)=>{release=resolve;});tails.set(id,previous.then(()=>turn));await previous;try{const event=events.get(id);if(!event||event.available<=0)return false;event.available-=1;event.bookedBy.push(user);await audit({eventId:id,userId:user});return true;}finally{release();}}\n"
+    },
+    "b2-order-refund-terminal-leak": {
+      "src/refund-service.mjs": "import{getOrder}from\"./order-store.mjs\";import{recordRefund}from\"./ledger.mjs\";export async function processRefund(id,amount,write=recordRefund){const order=getOrder(id);if(!order)throw new Error(\"order not found\");if(!(amount>0))throw new Error(\"invalid refund amount\");const entry=await write(id,amount);if(!entry?.recorded)throw new Error(\"refund was not recorded\");Object.assign(order,{status:\"REFUNDED\"});return order;}\n"
+    },
+    "b2-record-shape-migration-loss": {
+      "src/migrate-record.mjs": "export function migrateRecordV1toV2(v1){const migrated=Object.assign({},v1);Object.defineProperty(migrated,\"schemaVersion\",{value:2,enumerable:true,writable:true,configurable:true});return migrated;}\n"
+    },
+    "b2-partial-validation-mutation": {
+      "src/apply-patch.mjs": "const allowed=new Set([\"open\",\"closed\"]);export function applyPatch(record,patch){const status=patch?.status;if(typeof status!==\"string\")throw new TypeError(\"status is required\");if(!allowed.has(status))throw new RangeError(\"invalid status\");record.status=status;return record;}\n"
+    },
+    "b2-derived-aggregate-consistency": {
+      "src/cart.mjs": "export function addLine(state,line){if(typeof line?.amount!==\"number\"||!Number.isFinite(line.amount))throw new TypeError(\"amount\");const appended=state.lines.concat([{...line}]);return{lines:appended,total:appended.map(({amount})=>amount).reduce((a,b)=>a+b,0)};}\n"
+    },
+    "b2-pending-write-visibility": {
+      "src/commit-store.mjs": "export function createCommitStore(){const committed=new Map();return{begin(key,value){return Object.freeze({key,value});},commit({key,value}){committed.set(key,value);},read(key){return committed.has(key)?committed.get(key):undefined;}};}\n"
+    }
+  }
+}

@@ -1,0 +1,216 @@
+{
+  "tasks": [
+    {
+      "phase": "phase-b",
+      "id": "clamp-number-util",
+      "family": "numeric-boundary",
+      "behaviorSignature": "number-conversion-and-inclusive-clamp"
+    },
+    {
+      "phase": "phase-b",
+      "id": "duration-carry-fix",
+      "family": "temporal-arithmetic",
+      "behaviorSignature": "utc-minute-carry-and-input-validation"
+    },
+    {
+      "phase": "phase-b",
+      "id": "csv-export-feature",
+      "family": "serialization",
+      "behaviorSignature": "csv-field-escaping-and-registry-preservation"
+    },
+    {
+      "phase": "phase-b",
+      "id": "pagination-cursor-feature",
+      "family": "pagination",
+      "behaviorSignature": "opaque-cursor-continuation-without-duplication"
+    },
+    {
+      "phase": "phase-b",
+      "id": "stale-cache-invalidation-bug",
+      "family": "data-freshness",
+      "behaviorSignature": "profile-write-cache-coherence"
+    },
+    {
+      "phase": "phase-b",
+      "id": "event-emitter-listener-leak",
+      "family": "event-lifecycle",
+      "behaviorSignature": "idempotent-listener-unsubscription-over-repeated-lifecycles"
+    },
+    {
+      "phase": "phase-b",
+      "id": "inventory-orientation-task",
+      "family": "inventory",
+      "behaviorSignature": "signed-stock-adjustment-with-atomic-result-validation"
+    },
+    {
+      "phase": "phase-b",
+      "id": "backward-compat-date-regression",
+      "family": "range-semantics",
+      "behaviorSignature": "inclusive-integer-day-overlap"
+    },
+    {
+      "phase": "phase-b",
+      "id": "past-due-reminder-handling",
+      "family": "scheduling",
+      "behaviorSignature": "past-present-future-reminder-acceptance-and-due-query"
+    },
+    {
+      "phase": "phase-b",
+      "id": "report-output-path-boundary",
+      "family": "filesystem-safety",
+      "behaviorSignature": "canonical-contained-output-path-boundary"
+    },
+    {
+      "phase": "phase-b",
+      "id": "idempotency-key-race",
+      "family": "concurrency",
+      "behaviorSignature": "per-key-reservation-with-persistent-audit-exclusion"
+    },
+    {
+      "phase": "phase-b",
+      "id": "webhook-retry-terminal-state",
+      "family": "recovery-policy",
+      "behaviorSignature": "http-status-terminal-versus-retryable-delivery-policy"
+    },
+    {
+      "phase": "phase-c",
+      "id": "b1-extend-exhaustive-union",
+      "family": "local-extension",
+      "behaviorSignature": "exhaustive-shape-dispatch-extension"
+    },
+    {
+      "phase": "phase-c",
+      "id": "b1-mirror-pure-utility-fn",
+      "family": "local-extension",
+      "behaviorSignature": "sibling-pure-average-utility-contract"
+    },
+    {
+      "phase": "phase-c",
+      "id": "b1-mirror-sibling-guard-clause",
+      "family": "validation",
+      "behaviorSignature": "sibling-string-guard-consistency"
+    },
+    {
+      "phase": "phase-c",
+      "id": "b1-rename-exported-symbol",
+      "family": "module-api",
+      "behaviorSignature": "cross-module-export-rename-compatibility"
+    },
+    {
+      "phase": "phase-c",
+      "id": "b1-string-pad-length-bug",
+      "family": "string-formatting",
+      "behaviorSignature": "variable-length-left-padding"
+    },
+    {
+      "phase": "phase-c",
+      "id": "b2-bulk-op-tenant-bypass",
+      "family": "multi-tenant-bulk",
+      "behaviorSignature": "tenant-safe-per-item-bulk-results"
+    },
+    {
+      "phase": "phase-c",
+      "id": "b2-concurrent-seat-lost-update",
+      "family": "concurrency",
+      "behaviorSignature": "finite-seat-claim-consistency-under-yield"
+    },
+    {
+      "phase": "phase-c",
+      "id": "b2-order-refund-terminal-leak",
+      "family": "transaction-ordering",
+      "behaviorSignature": "external-ledger-success-before-terminal-refund-state"
+    },
+    {
+      "phase": "phase-c",
+      "id": "b2-record-shape-migration-loss",
+      "family": "schema-migration",
+      "behaviorSignature": "extensible-record-shape-preservation"
+    },
+    {
+      "phase": "phase-c",
+      "id": "b2-partial-validation-mutation",
+      "family": "validation",
+      "behaviorSignature": "validate-entire-patch-before-mutation"
+    },
+    {
+      "phase": "phase-c",
+      "id": "b2-derived-aggregate-consistency",
+      "family": "derived-state",
+      "behaviorSignature": "immutable-line-append-with-recomputed-total"
+    },
+    {
+      "phase": "phase-c",
+      "id": "b2-pending-write-visibility",
+      "family": "transaction-visibility",
+      "behaviorSignature": "pending-versus-committed-store-isolation"
+    },
+    {
+      "phase": "phase-c",
+      "id": "notification-settings-regression",
+      "family": "context-tracing",
+      "behaviorSignature": "request-configuration-precedence-through-digest-delivery"
+    },
+    {
+      "phase": "phase-c",
+      "id": "discount-result-regression",
+      "family": "context-tracing",
+      "behaviorSignature": "discount-kind-calculation-before-tax"
+    },
+    {
+      "phase": "phase-c",
+      "id": "subscription-price-mismatch",
+      "family": "context-tracing",
+      "behaviorSignature": "live-price-source-selection-at-subscription-time"
+    },
+    {
+      "phase": "phase-c",
+      "id": "task-update-duplication",
+      "family": "context-tracing",
+      "behaviorSignature": "single-event-ownership-per-assignment-transition"
+    },
+    {
+      "phase": "phase-c",
+      "id": "completion-state-regression",
+      "family": "context-tracing",
+      "behaviorSignature": "persist-completion-before-observable-publish"
+    }
+  ],
+  "overlapReviews": [
+    {
+      "tasks": ["clamp-number-util", "b2-partial-validation-mutation"],
+      "verdict": "DISTINCT",
+      "reason": "Primitive conversion and bounds differ from atomic object-patch validation."
+    },
+    {
+      "tasks": ["idempotency-key-race", "b2-concurrent-seat-lost-update"],
+      "verdict": "DISTINCT",
+      "reason": "Per-key exclusion with an audit record differs from finite-resource accounting under concurrency."
+    },
+    {
+      "tasks": ["stale-cache-invalidation-bug", "subscription-price-mismatch"],
+      "verdict": "DISTINCT",
+      "reason": "Cache coherence after writes differs from multi-hop authoritative-source selection for new records."
+    },
+    {
+      "tasks": ["webhook-retry-terminal-state", "b2-order-refund-terminal-leak"],
+      "verdict": "DISTINCT",
+      "reason": "HTTP retry classification differs from transactional state ordering around an external write."
+    },
+    {
+      "tasks": ["event-emitter-listener-leak", "task-update-duplication"],
+      "verdict": "DISTINCT",
+      "reason": "Listener teardown across lifecycles differs from duplicate ownership of one domain event."
+    },
+    {
+      "tasks": ["inventory-orientation-task", "b2-bulk-op-tenant-bypass"],
+      "verdict": "DISTINCT",
+      "reason": "Atomic signed quantity adjustment differs from tenant authorization and per-item bulk reporting."
+    },
+    {
+      "tasks": ["inventory-orientation-task", "b2-partial-validation-mutation"],
+      "verdict": "DISTINCT",
+      "reason": "Both concern ordering around a rejection, and the independent audit flagged them as sharing one invariant and one blind spot. They are kept because the ordering is with respect to different things and is observed with different instruments: inventory-orientation-task is about whether a rejected adjustment reaches the repository persistence call saveItem at all, measured with a pass-through probe over the store, and additionally asks the solver to locate and reuse an existing repository invariant across modules. b2-partial-validation-mutation is about whether any property of a caller-owned in-memory object is written before validation completes, measured with a write-recording proxy, and its contract explicitly permits mutating that object once validation has succeeded - a permitted path inventory-orientation-task has no analogue for."
+    }
+  ],
+  "intentionalInvalidCandidateReuse": []
+}

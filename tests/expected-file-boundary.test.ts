@@ -48,7 +48,13 @@ const verify = async (
   return new CommandVerifier().verify(
     run,
     task,
-    { id: run.id, path: root, repositoryPath: root, revision: "HEAD", baseRevision: "a".repeat(40) },
+    {
+      id: run.id,
+      path: root,
+      repositoryPath: root,
+      revision: "HEAD",
+      baseRevision: "a".repeat(40),
+    },
     { patch: "", changedFiles: [] },
   );
 };
@@ -61,14 +67,17 @@ describe("expected-file verification boundaries", () => {
     expect(result.state).toBe("VERIFIED");
   });
 
-  it.each(["missing.txt", "../outside.txt", "C:\\outside.txt", "C:relative.txt", "/etc/passwd"])(
-    "fails safely for %s",
-    async (expectedFile) => {
-      const result = await verify(expectedFile);
-      expect(result.state).not.toBe("VERIFIED");
-      expect(result.exitCode).not.toBe(0);
-    },
-  );
+  it.each([
+    "missing.txt",
+    "../outside.txt",
+    "C:\\outside.txt",
+    "C:relative.txt",
+    "/etc/passwd",
+  ])("fails safely for %s", async (expectedFile) => {
+    const result = await verify(expectedFile);
+    expect(result.state).not.toBe("VERIFIED");
+    expect(result.exitCode).not.toBe(0);
+  });
 
   it("does not accept a directory as a file", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "maf-expected-file-dir-"));

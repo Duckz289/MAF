@@ -623,6 +623,13 @@ export interface TelemetryRecord {
 
 export interface TelemetrySink {
   record(record: TelemetryRecord): Promise<void>;
+  /**
+   * Arithmetic mean of the total cost of telemetry records marked verifiedSuccess.
+   *
+   * This is a product-usage statistic, not the evaluation protocol's cost per Durable Verified
+   * Success. That quantity is total cost of all runs in scope divided by the number of successes and
+   * lives in src/evaluation/metrics.ts; the two answer different questions and will differ.
+   */
   costPerVerifiedSuccess(): Promise<number | null>;
   /**
    * M11 health-ledger source for the operational trend window. Optional: a sink that cannot list

@@ -1,8 +1,6 @@
-# b2-order-refund-terminal-leak
+# Do not publish a terminal refund state before the ledger accepts it
 
-This task is part of the NEWLY_AUTHORED_RECONSTRUCTION benchmark. Modify the public repository to satisfy the behavior demonstrated by its existing entrypoint and source seed. Preserve existing public API compatibility and keep unrelated behavior unchanged.
-
-## Acceptance
-
-The entrypoint must complete successfully for its documented scenario, and the implementation must generalize to equivalent valid inputs rather than hard-coding the displayed example.
-Public source files currently include: bin\demo.mjs, src\ledger.mjs, src\order-store.mjs, src\refund-service.mjs
+`processRefund(orderId, amount, ledgerRecordFn)` may set an order to `REFUNDED` only after the
+ledger call succeeds. Missing orders and invalid amounts must still reject. If validation or the
+injected asynchronous ledger function fails, the order must remain `PAID`. A successful call returns
+the order in `REFUNDED` state.

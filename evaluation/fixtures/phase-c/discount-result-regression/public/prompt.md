@@ -1,8 +1,21 @@
-# b3-dead-code-vs-live-discount-path
+# discount-result-regression
 
-This task is part of the NEWLY_AUTHORED_RECONSTRUCTION benchmark. Modify the public repository to satisfy the behavior demonstrated by its existing entrypoint and source seed. Preserve existing public API compatibility and keep unrelated behavior unchanged.
+Freight quotes come out wrong when a percentage adjustment is applied. Run `node bin/demo.mjs`:
+a base rate of 120 with 10% off and an 8% tax rate is quoted at 115.60, but the desk expects
+116.64. The same lane with a flat 20 off is quoted correctly, so only the percentage case is
+affected.
 
-## Acceptance
+The quoting contract is:
 
-The entrypoint must complete successfully for its documented scenario, and the implementation must generalize to equivalent valid inputs rather than hard-coding the displayed example.
-Public source files currently include: bin\demo.mjs, src\bootstrap.mjs, src\admin\admin-report.mjs, src\admin\admin-task-controller.mjs, src\analytics\event-logger.mjs, src\analytics\report-builder.mjs
+- the adjustment comes off the base price first, and tax is then applied to what remains;
+- a `PERCENT` adjustment is that percentage **of the base price**, and a `FLAT` adjustment is a
+  currency amount;
+- an adjustment may bring the subtotal down to zero but never below it;
+- the quoted total is rounded to two decimal places. Any standard rounding of the exact value to
+  the nearest cent is acceptable — where the exact value falls exactly on a half cent, either
+  neighbouring cent is correct.
+
+Fix `quoteShipment(basePrice, adjustment, taxRate)` so it satisfies that contract for arbitrary
+valid base prices, adjustments and non-negative tax rates — not only for the numbers in this
+report. Keep the request validation as it is, including rejecting a percentage above one hundred
+with `RangeError`, and do not change the separate code-based promotion behaviour.

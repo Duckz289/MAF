@@ -1,8 +1,14 @@
-# b3-decoy-cache-source-of-truth
+# subscription-price-mismatch
 
-This task is part of the NEWLY_AUTHORED_RECONSTRUCTION benchmark. Modify the public repository to satisfy the behavior demonstrated by its existing entrypoint and source seed. Preserve existing public API compatibility and keep unrelated behavior unchanged.
+Memberships opened after a price change still record the old price. Run `node bin/demo.mjs`: the
+desk moves the `standard` plan to 39 and enrols Bo immediately afterwards, but Bo's membership is
+recorded at 34.99 — the same figure as Ada's, who enrolled before the change.
 
-## Acceptance
+A membership must capture the price that is in force for that plan at the moment it is opened, and
+store it as `rateAtEnrolment`. Memberships opened earlier must keep the price they captured when a
+plan's price changes later, and a plan the club does not offer must still be rejected with
+`RangeError`.
 
-The entrypoint must complete successfully for its documented scenario, and the implementation must generalize to equivalent valid inputs rather than hard-coding the displayed example.
-Public source files currently include: src\bootstrap.mjs, src\admin\admin-report.mjs, src\admin\admin-task-controller.mjs, src\analytics\event-logger.mjs, src\analytics\report-builder.mjs, src\analytics\usage-tracker.mjs
+Fix this for every plan and for repeated price changes, not just the one in this report. Preserve
+the front-desk and enrolment APIs, the stored membership shape (`memberId`, `planId`,
+`rateAtEnrolment`), and the unrelated roster, statement and access behaviour.

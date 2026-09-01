@@ -4,11 +4,40 @@
   "status": "PRE_REGISTERED_LOCAL_ONLY",
   "purpose": "Paired Native versus MAF evaluation of durable verified software-engineering outcomes",
   "conditions": ["NATIVE", "MAF"],
-  "matching": ["task", "startingRepositorySeed", "frontierModel", "budgetPolicy", "environment", "hiddenGrader", "timeoutPolicy"],
+  "matching": [
+    "task",
+    "startingRepositorySeed",
+    "frontierModel",
+    "budgetPolicy",
+    "environment",
+    "hiddenGrader",
+    "timeoutPolicy"
+  ],
   "dvs": {
-    "definition": "hiddenGrader=PASS AND regression=PASS AND candidateIntegrity=VALID AND runValidity=VALID",
+    "definition": "evidenceSource=INDEPENDENT AND hiddenGrader=PASS AND regression=PASS AND candidateIntegrity=VALID AND candidateExists AND runValidity=VALID AND NOT infrastructureFailure",
+    "infrastructureFailureCanNeverBeSuccess": true,
+    "infrastructureFailureModes": [
+      "INFRA_FAILURE",
+      "TIMEOUT",
+      "CANCELLED",
+      "QUOTA_EXHAUSTED",
+      "providerError",
+      "infrastructureError"
+    ],
     "agentDoneIsSufficient": false,
-    "mafInternalTrustIsSufficient": false
+    "mafInternalTrustIsSufficient": false,
+    "incoherentUpstreamStateIsDowngradedNeverUpgraded": true,
+    "implementation": "src/evaluation/types.ts; boundary in src/evaluation/independent-verification.ts; controller-side verifier in src/evaluation/curator-verifier.ts",
+    "participantSelfReportIsNotVerification": true,
+    "evidenceSources": ["INDEPENDENT", "NOT_CHECKED"],
+    "trustedFieldsOwnedByController": [
+      "hiddenGrader",
+      "regression",
+      "candidateIntegrity",
+      "candidateExists"
+    ],
+    "participantClaimIsNeitherNecessaryNorSufficient": "A participant that reports failure over a candidate the independent grader passes is still a DVS; a participant that reports success over a candidate the grader fails is not.",
+    "absentVerificationResolvesTo": "NOT_CHECKED"
   },
   "falseSafe": {
     "definition": "valid run claims DONE or TRUSTED while independent correctness evidence fails",
@@ -16,12 +45,87 @@
   },
   "runValidity": ["VALID", "INVALID"],
   "candidateIntegrity": ["VALID", "INVALID", "MISSING", "UNKNOWN"],
-  "invalidRuns": {"countAsDvs": false, "countAsFalseSafeByDefault": false, "reportedSeparately": true},
-  "cost": {"missingUsage": "UNKNOWN", "unknownIsZero": false, "invalidRunsImproveCostPerDvs": false},
-  "metrics": ["DVS_RATE", "FALSE_SAFE_RATE", "COST_PER_DVS", "TIME_TO_SAFE", "BOTH_PASS", "MAF_ONLY_PASS", "NATIVE_ONLY_PASS", "BOTH_FAIL", "INVALID_MAF", "INVALID_NATIVE"],
-  "execution": {"frontierRunsPermitted": false, "timeoutMs": 120000, "repetitions": 3, "randomization": "counterbalanced task-condition order", "stoppingRule": "stop local validation on any leakage, nondeterminism, or integrity failure"},
-  "fairness": {"sameSeed": true, "samePrompt": true, "sameModel": true, "sameBudget": true, "sameEnvironment": true, "sameGrader": true, "sameTimeout": true},
-  "leakageIsolation": {"hiddenGraderUnavailableToConditions": true, "referenceUnavailableToConditions": true, "shortcutUnavailableToConditions": true, "curatorNotesUnavailableToConditions": true},
-  "analysis": {"pairedByTask": true, "invalidRunsSeparate": true, "historicalResultsAreEvidenceOnly": true},
-  "historicalEvidence": {"status": "HISTORICAL_LOST_IMPLEMENTATION_EVIDENCE", "usedForTuning": false}
+  "invalidRuns": {
+    "countAsDvs": false,
+    "countAsFalseSafeByDefault": false,
+    "reportedSeparately": true
+  },
+  "cost": {
+    "missingUsage": "UNKNOWN",
+    "unknownIsZero": false,
+    "invalidRunsImproveCostPerDvs": false,
+    "costPerDvsDefinition": "total cost of all runs in scope divided by the number of DVS successes",
+    "notMeanCostAmongSuccesses": true,
+    "completeRatioRequiresFullCoverage": true,
+    "partialCoverageReportsLowerBoundOnly": true
+  },
+  "metrics": [
+    "DVS_RATE_AMONG_VALID_RUNS",
+    "DVS_RATE_AMONG_ALL_RUNS",
+    "FALSE_SAFE_RATE_AMONG_VALID_RUNS",
+    "COST_PER_DVS",
+    "MEAN_ELAPSED_OF_DVS_RUNS",
+    "MEAN_ELAPSED_OF_VALID_RUNS",
+    "BOTH_PASS",
+    "MAF_ONLY_PASS",
+    "NATIVE_ONLY_PASS",
+    "BOTH_FAIL",
+    "INVALID_MAF",
+    "INVALID_NATIVE",
+    "INVALID_BOTH"
+  ],
+  "execution": {
+    "frontierRunsPermitted": false,
+    "timeoutMs": 120000,
+    "repetitions": 3,
+    "randomization": "counterbalanced task-condition order",
+    "stoppingRule": "stop local validation on any leakage, nondeterminism, or integrity failure"
+  },
+  "fairness": {
+    "sameSeed": true,
+    "samePrompt": true,
+    "sameModel": true,
+    "sameBudget": true,
+    "sameEnvironment": true,
+    "sameGrader": true,
+    "sameTimeout": true
+  },
+  "leakageIsolation": {
+    "hiddenGraderUnavailableToConditions": true,
+    "referenceUnavailableToConditions": true,
+    "shortcutUnavailableToConditions": true,
+    "curatorNotesUnavailableToConditions": true
+  },
+  "analysis": {
+    "pairedByTask": true,
+    "invalidRunsSeparate": true,
+    "historicalResultsAreEvidenceOnly": true,
+    "productionWiring": "src/evaluation/benchmark-bridge.ts; BenchmarkRunner.compare(task, executors, { verifier }) emits BenchmarkReport.evaluation"
+  },
+  "historicalEvidence": {
+    "status": "HISTORICAL_LOST_IMPLEMENTATION_EVIDENCE",
+    "usedForTuning": false
+  },
+  "metricSemantics": {
+    "MEAN_ELAPSED_OF_DVS_RUNS": "Mean elapsed time of DVS runs only. It excludes failures and timeouts and is therefore not a general time-to-safe; it is reported next to MEAN_ELAPSED_OF_VALID_RUNS for contrast.",
+    "DVS_RATE_AMONG_VALID_RUNS": "Headline rate. Denominator is valid runs, because analysis.invalidRunsSeparate is true.",
+    "INVALID_BOTH": "Both arms of a pair were invalid. Reported distinctly rather than collapsed into INVALID_NATIVE."
+  },
+  "verification": {
+    "owner": "CONTROLLER",
+    "runsAfterParticipantExecution": true,
+    "participantCanObserveGrader": false,
+    "hiddenGrader": "the task's curator grader, invoked in a separate process against a controller-owned workspace",
+    "candidateIntegrity": "computed by diffing the controller-owned workspace against the pristine fixture the controller materialized, then checking containment and parseability",
+    "regression": {
+      "description": "every module the candidate ships must load and every public entrypoint must run to a clean exit; this is a smoke regression over the fixture's own program, not a full project test suite",
+      "scope": "SMOKE",
+      "method": "MODULE_LOAD_AND_ENTRYPOINT",
+      "coverage": "PARTIAL",
+      "guarantees": "every shipped module imports without throwing, and every public entrypoint the fixture ships completes without throwing",
+      "doesNotGuarantee": "the correctness of exported behavior outside the hidden grader's specific assertions and outside whatever the entrypoint's own call graph happens to exercise. A candidate can leave regression=PASS while an unrelated exported function is silently wrong, as long as nothing throws.",
+      "audit3Finding": "Audit #3 empirically reproduced this on two live fixtures through the real production verifier: a candidate correctly fixing the graded behavior while silently breaking an unexercised, unasserted exported function still reached hiddenGrader=PASS, regression=PASS, candidateIntegrity=VALID and dvs=true. This is inherent to a smoke check, not a defect in this implementation of one; it is recorded here so regression=PASS is never read as more than SMOKE_REGRESSION_PASS."
+    },
+    "unavailableVerificationBlocksDvs": true
+  }
 }

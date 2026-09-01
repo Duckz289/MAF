@@ -1,0 +1,828 @@
+{
+  "source": "independent audit of snapshot bb3265275cd1291e84807c7c453d9bec72229884",
+  "corpora": {
+    "known-false-pass": {
+      "expectedStatus": "FAIL",
+      "note": "Reported by the independent audit as accepted despite violating the public contract. A PASS here is a grader defect."
+    },
+    "known-false-fail": {
+      "expectedStatus": "PASS",
+      "note": "Reported by the independent audit as rejected despite satisfying the public contract. A FAIL here means the grader encodes a hidden requirement."
+    },
+    "fresh-false-pass": {
+      "expectedStatus": "FAIL",
+      "note": "Contract-derived attacks authored during the repair, not copied from the audit."
+    },
+    "fresh-false-fail": {
+      "expectedStatus": "PASS",
+      "note": "Structurally different correct implementations authored during the repair."
+    },
+    "audit2-false-pass": {
+      "expectedStatus": "FAIL",
+      "note": "Reported by the SECOND independent audit as accepted despite violating the public contract. A PASS here is a grader observation defect."
+    },
+    "audit2-round2-attacks": {
+      "expectedStatus": "FAIL",
+      "note": "Contract-derived attacks authored AFTER the second-audit repairs, aimed at the surfaces those repairs created: deep mutation observation, seeded private values, and the redesigned Band 3 owners."
+    },
+    "audit2-round2-alternatives": {
+      "expectedStatus": "PASS",
+      "note": "Correct implementations authored after the same repairs, exercising rounding, exception type, mutation control, authorization, event ownership, caching, persistence and synchronization freedoms."
+    },
+    "audit3-cache-ownership-attacks": {
+      "expectedStatus": "FAIL",
+      "note": "Reported by the THIRD independent audit: stale-cache-invalidation-bug's grader never tested a patch carrying its own id field, so cache invalidation could be redirected by patch content instead of the userId argument. Two structurally distinct code shapes exhibiting the same ownership-redirection bug."
+    },
+    "audit3-cache-ownership-alternatives": {
+      "expectedStatus": "PASS",
+      "note": "Correct implementations for the same task, one matching the reference's invalidate-then-return shape and one using a structurally different write-through cache architecture, both keyed on the userId argument throughout."
+    }
+  },
+  "cases": [
+    {
+      "corpus": "known-false-pass",
+      "id": "path-boundary-leading-dotdot-only",
+      "phase": "phase-b",
+      "taskId": "report-output-path-boundary",
+      "contract": "Reject traversal, sibling-prefix tricks, and every other path that resolves outside outDir with RangeError.",
+      "violation": "Only a leading parent segment is rejected. Nested traversal such as sub/../../PWNED.txt still resolves outside outDir and is written."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "inventory-save-then-restore",
+      "phase": "phase-b",
+      "taskId": "inventory-orientation-task",
+      "contract": "Validation must happen before saveItem, so a rejected adjustment leaves the stored item unchanged.",
+      "violation": "Persists the adjusted item through saveItem, validates afterwards, and restores the previous record on rejection."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "patch-mutate-then-restore",
+      "phase": "phase-c",
+      "taskId": "b2-partial-validation-mutation",
+      "contract": "A missing patch, missing/non-string status, or any other status must throw without changing any property of record.",
+      "violation": "Writes patch.status onto the record before validating it and restores a snapshot on rejection."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "refund-publish-then-rollback",
+      "phase": "phase-c",
+      "taskId": "b2-order-refund-terminal-leak",
+      "contract": "processRefund may set an order to REFUNDED only after the ledger call succeeds.",
+      "violation": "Publishes the REFUNDED terminal state before invoking the ledger and rolls back when the ledger rejects."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "cache-invalidate-only-user-one",
+      "phase": "phase-b",
+      "taskId": "stale-cache-invalidation-bug",
+      "contract": "A successful update must ensure every later read for that user observes the update.",
+      "violation": "Invalidates the cache only when userId === 1; every other user keeps serving a stale cached profile."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "config-special-case-single-key",
+      "phase": "phase-c",
+      "taskId": "notification-settings-regression",
+      "contract": "A per-request override must win over the workspace default for any setting key, not only the one this report mentions.",
+      "violation": "Restores precedence for ticketDigestBatchSize alone; every other per-request override is still overwritten by the workspace default."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "projection-drop-every-second-write",
+      "phase": "phase-c",
+      "taskId": "task-update-duplication",
+      "contract": "Each transition must publish exactly one observable assignment update; a later reassignment is a distinct transition that adds exactly one more.",
+      "violation": "Leaves the duplicate emit in place and discards every second projection write, so a run of distinct reassignments records only half of them."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "completion-synthesized-on-read",
+      "phase": "phase-c",
+      "taskId": "completion-state-regression",
+      "contract": "A successful completion must durably record status COMPLETED and a non-null completedAt, and every later read of that order must see it.",
+      "violation": "Records completion in a read-time overlay instead of persisting it; workOrderRepository.all() and byRegion() still report the order as open."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "pagination-accepts-stale-cursor",
+      "phase": "phase-b",
+      "taskId": "pagination-cursor-feature",
+      "contract": "Reject malformed/stale cursors with RangeError.",
+      "violation": "Rejects only syntactically malformed cursors; a stale cursor whose anchor item no longer exists silently restarts at the first page."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "webhook-408-425-terminal",
+      "phase": "phase-b",
+      "taskId": "webhook-retry-terminal-state",
+      "contract": "Retry 408, 425, 429, and 5xx responses up to five total attempts.",
+      "violation": "Classifies 408 and 425 as terminal and rejects them after a single attempt."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "clamp-unvalidated-bounds",
+      "phase": "phase-b",
+      "taskId": "clamp-number-util",
+      "contract": "Convert all three arguments with Number(...) and reject non-finite converted values with TypeError.",
+      "violation": "Validates only the converted value; non-finite converted bounds fall through and the function returns NaN."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "migration-temporary-input-mutation",
+      "phase": "phase-c",
+      "taskId": "b2-record-shape-migration-loss",
+      "contract": "It must not mutate the input.",
+      "violation": "Writes schemaVersion onto the caller's record, spreads it, then deletes the field again."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "bulk-archive-phantom-not-found-record",
+      "phase": "phase-c",
+      "taskId": "b2-bulk-op-tenant-bypass",
+      "contract": "A missing or foreign item must not be mutated.",
+      "violation": "Seeds a phantom store record under the caller's own tenant for every unknown id."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "reminder-unvalidated-now",
+      "phase": "phase-b",
+      "taskId": "past-due-reminder-handling",
+      "contract": "Require a non-empty string task ID and finite numeric timestamps, throwing TypeError otherwise.",
+      "violation": "Validates remindAt but never now, so a non-finite now is accepted and silently hides every due reminder."
+    },
+    {
+      "corpus": "known-false-pass",
+      "id": "off-removes-every-listener",
+      "phase": "phase-b",
+      "taskId": "event-emitter-listener-leak",
+      "contract": "off(eventName, listener) must be available and stopping subscribers must not remove unrelated listeners.",
+      "violation": "off drops the entire listener group for the event, removing unrelated subscribers."
+    },
+    {
+      "corpus": "known-false-fail",
+      "id": "inventory-repository-quantity-invariant",
+      "phase": "phase-b",
+      "taskId": "inventory-orientation-task",
+      "contract": "Reject any adjustment whose resulting quantity is negative or non-integer; reuse the repository's quantity invariant where practical. No exception subclass is specified.",
+      "satisfies": "Validates before saveItem by delegating to the repository invariant assertValidQuantity, which reports a fractional result as RangeError."
+    },
+    {
+      "corpus": "known-false-fail",
+      "id": "aggregate-range-error-rejection",
+      "phase": "phase-c",
+      "taskId": "b2-derived-aggregate-consistency",
+      "contract": "Require line.amount to be a finite number and reject invalid input without mutating the original state. No exception subclass is specified.",
+      "satisfies": "Rejects a non-finite amount before building the new state and reports the out-of-domain value as RangeError."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "clamp-parsefloat-conversion",
+      "phase": "phase-b",
+      "taskId": "clamp-number-util",
+      "attackClass": "visible-example hard-code",
+      "contract": "Convert all three arguments with JavaScript's Number(...) conversion.",
+      "violation": "Special-cases the null example the report shows and otherwise converts with parseFloat, so booleans, empty strings and hex text convert differently and trailing garbage is partially parsed."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "duration-parseint-validation",
+      "phase": "phase-b",
+      "taskId": "duration-carry-fix",
+      "attackClass": "loose input parsing",
+      "contract": "Reject a negative, fractional, or non-numeric duration with TypeError.",
+      "violation": "Validates the duration after parseInt, so a fractional duration is silently truncated to an integer and accepted instead of rejected."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "csv-quote-only-commas",
+      "phase": "phase-b",
+      "taskId": "csv-export-feature",
+      "attackClass": "partial escaping",
+      "contract": "Quote a field when it contains a comma, quote, carriage return, or newline; inside a quoted field, double each quote.",
+      "violation": "Doubles embedded quotes but only wraps a field when it contains a comma, a newline or a carriage return, so a field containing only a quote character is emitted unquoted."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "pagination-lower-bound-only",
+      "phase": "phase-b",
+      "taskId": "pagination-cursor-feature",
+      "attackClass": "partial range validation",
+      "contract": "Reject non-integer limits outside 1-100 with RangeError.",
+      "violation": "Validates only the lower bound of the limit, so a non-integer limit and a limit above one hundred are both accepted."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "cache-stores-patch-not-profile",
+      "phase": "phase-b",
+      "taskId": "stale-cache-invalidation-bug",
+      "attackClass": "partial state write",
+      "contract": "updateUserProfile merges the patch into the stored profile and returns the updated profile.",
+      "violation": "Refreshes the cache with the patch itself rather than the merged profile, so a partial update drops every field the patch did not mention."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "off-removes-only-last-listener",
+      "phase": "phase-b",
+      "taskId": "event-emitter-listener-leak",
+      "attackClass": "partial removal",
+      "contract": "off(eventName, listener) must remove the named listener.",
+      "violation": "off only removes the listener when it was the most recently registered one for that event, so an earlier listener can never be detached by name."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "inventory-rounds-instead-of-rejecting",
+      "phase": "phase-b",
+      "taskId": "inventory-orientation-task",
+      "attackClass": "silent coercion",
+      "contract": "Reject any adjustment whose resulting quantity is negative or non-integer.",
+      "violation": "Validates before saveItem, but rounds a fractional result to the nearest integer and stores it instead of rejecting the adjustment."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "overlap-modulo-integer-check",
+      "phase": "phase-b",
+      "taskId": "backward-compat-date-regression",
+      "attackClass": "loose validation",
+      "contract": "Reject a non-integer input with TypeError.",
+      "violation": "Checks integrality with a modulo test, which coerces, so numeric strings pass validation instead of being rejected."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "reminder-due-list-not-copied",
+      "phase": "phase-b",
+      "taskId": "past-due-reminder-handling",
+      "attackClass": "missing defensive copy",
+      "contract": "Preserve insertion order and return defensive list copies.",
+      "violation": "Returns the scheduler's own backing array from dueReminders whenever no reminder was filtered out, so a caller that clears the returned list empties the scheduler."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "path-prefix-without-separator",
+      "phase": "phase-b",
+      "taskId": "report-output-path-boundary",
+      "attackClass": "partial containment validation",
+      "contract": "Reject traversal, sibling-prefix tricks, and every other path that resolves outside outDir.",
+      "violation": "Compares the resolved target against the output directory with a bare string prefix, so a sibling directory whose name merely starts with the output directory's name is accepted."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "idempotency-global-lock",
+      "phase": "phase-b",
+      "taskId": "idempotency-key-race",
+      "attackClass": "over-broad locking",
+      "contract": "Different keys must not block each other.",
+      "violation": "Serialises every reservation behind one global lock, so a reservation for one key refuses reservations for unrelated keys."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "webhook-short-retry-budget",
+      "phase": "phase-b",
+      "taskId": "webhook-retry-terminal-state",
+      "attackClass": "partial status handling",
+      "contract": "Retry 408, 425, 429, and 5xx responses up to five total attempts.",
+      "violation": "Gives 408, 425 and 429 a three-attempt budget while 5xx keeps five, so the documented retry policy is not uniform."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "shape-rejection-type-changed",
+      "phase": "phase-c",
+      "taskId": "b1-extend-exhaustive-union",
+      "attackClass": "collateral regression",
+      "contract": "Don't change how the existing shape kinds are computed or how an unknown kind is rejected.",
+      "violation": "Adds the triangle case correctly but rewrites the default branch to throw a plain Error, changing the documented rejection behavior."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "average-without-empty-guard",
+      "phase": "phase-c",
+      "taskId": "b1-mirror-pure-utility-fn",
+      "attackClass": "missing mirrored guard",
+      "contract": "Throw the same RangeError on an empty array.",
+      "violation": "Computes the mean without mirroring sumArray's empty guard, so an empty array divides by zero and returns NaN instead of rejecting."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "title-guard-coerces-non-strings",
+      "phase": "phase-c",
+      "taskId": "b1-mirror-sibling-guard-clause",
+      "attackClass": "loose validation",
+      "contract": "Reject a non-string or a string that is empty after trimming with RangeError.",
+      "violation": "Coerces its argument with String() before trimming, so a non-string is accepted and returned as text instead of rejected."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "rename-aliased-at-the-wrong-layer",
+      "phase": "phase-c",
+      "taskId": "b1-rename-exported-symbol",
+      "attackClass": "wrong-layer patch",
+      "contract": "Rename the exported function in src/id-utils.mjs so both consumers resolve.",
+      "violation": "Adds an alias in the index barrel instead of renaming the owning module's export, so the receipt module's direct import still cannot resolve."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "pad-numbers-only",
+      "phase": "phase-c",
+      "taskId": "b1-string-pad-length-bug",
+      "attackClass": "partial type handling",
+      "contract": "A code that's already at least length characters long must still be returned unchanged; string input remains supported.",
+      "violation": "Pads on the left only for numeric codes and leaves string codes on the original right-padding path."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "bulk-archive-stops-at-first-rejection",
+      "phase": "phase-c",
+      "taskId": "b2-bulk-op-tenant-bypass",
+      "attackClass": "early exit",
+      "contract": "One rejected item must not prevent eligible items in the same batch from being archived.",
+      "violation": "Returns as soon as an item is rejected, so eligible items later in the batch are never archived or reported."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "seat-booking-creates-unknown-event",
+      "phase": "phase-c",
+      "taskId": "b2-concurrent-seat-lost-update",
+      "attackClass": "phantom record",
+      "contract": "bookSeat returns a promise for true only when it atomically claims one available seat, otherwise false.",
+      "violation": "Creates an event on demand when the id is unknown, so booking against an event that was never seeded succeeds."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "refund-terminal-state-not-persisted",
+      "phase": "phase-c",
+      "taskId": "b2-order-refund-terminal-leak",
+      "attackClass": "unpersisted state",
+      "contract": "A successful call returns the order in REFUNDED state.",
+      "violation": "Waits for the ledger correctly but applies the terminal state to a copy, so the stored order stays PAID after a successful refund."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "migration-known-field-allowlist",
+      "phase": "phase-c",
+      "taskId": "b2-record-shape-migration-loss",
+      "attackClass": "partial allowlist",
+      "contract": "Preserve every own enumerable field from the input, including fields unknown to the migration such as metadata.",
+      "violation": "Copies an allowlist that was extended with metadata after the reported bug, so any other unknown field is still dropped."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "patch-drops-unrelated-fields",
+      "phase": "phase-c",
+      "taskId": "b2-partial-validation-mutation",
+      "attackClass": "partial preservation",
+      "contract": "A valid patch must produce the requested status while preserving unrelated record fields.",
+      "violation": "Validates everything before touching the record, then returns a fresh object carrying only the status, discarding every unrelated field."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "cart-stores-caller-line-by-reference",
+      "phase": "phase-c",
+      "taskId": "b2-derived-aggregate-consistency",
+      "attackClass": "aliased state",
+      "contract": "addLine returns a new cart state containing the existing lines plus a copy of line.",
+      "violation": "Appends the caller's line object itself, so the cart's contents and its derived total change when the caller later edits that object."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "commit-publishes-every-pending-write",
+      "phase": "phase-c",
+      "taskId": "b2-pending-write-visibility",
+      "attackClass": "over-broad publication",
+      "contract": "Committing one transaction must not publish another.",
+      "violation": "Flushes every pending transaction when any one of them is committed, so an uncommitted write for a different key becomes visible."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "settings-falsy-override-ignored",
+      "phase": "phase-c",
+      "taskId": "notification-settings-regression",
+      "attackClass": "falsy-value bug",
+      "contract": "A per-request override must win over the workspace default for any setting a caller overrides.",
+      "violation": "Precedence is restored, but a layer value counts only when truthy, so a legitimate falsy override silently falls through to the workspace baseline."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "quote-rounds-subtotal-before-tax",
+      "phase": "phase-c",
+      "taskId": "discount-result-regression",
+      "attackClass": "premature rounding",
+      "contract": "The quoted total is rounded to two decimal places.",
+      "violation": "Rounds the discounted subtotal to cents before applying tax as well as after, so the quoted total drifts for prices and rates that do not land on a whole cent."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "rate-lookup-memoised-forever",
+      "phase": "phase-c",
+      "taskId": "subscription-price-mismatch",
+      "attackClass": "stale memoisation",
+      "contract": "A membership must capture the price that is in force for that plan at the moment it is opened, for repeated price changes.",
+      "violation": "Reads the live price book but memoises the first answer per plan for the lifetime of the process, so a later price change is never seen."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "assignment-bypasses-the-event-bus",
+      "phase": "phase-c",
+      "taskId": "task-update-duplication",
+      "attackClass": "wrong-layer patch",
+      "contract": "assignPickerCommand must publish exactly one observable PICKER_ASSIGNED update for that transition.",
+      "violation": "Removes both emits and writes to the projection directly from the service, so the transition is never published and no other subscriber can observe it."
+    },
+    {
+      "corpus": "fresh-false-pass",
+      "id": "completion-drops-the-technician",
+      "phase": "phase-c",
+      "taskId": "completion-state-regression",
+      "attackClass": "partial record preservation",
+      "contract": "Fix the behavior while preserving the unrelated assignment behaviour and the event payload shape.",
+      "violation": "Records the completion but rebuilds the order from a fixed field list, dropping the technician the assignment step had stored."
+    },
+    {
+      "corpus": "fresh-false-fail",
+      "id": "patch-uniform-range-error",
+      "phase": "phase-c",
+      "taskId": "b2-partial-validation-mutation",
+      "freedom": "error subclass freedom",
+      "contract": "A missing patch, missing/non-string status, or any other status must throw without changing any property of record. No exception subclass is named.",
+      "satisfies": "Rejects every invalid patch with a single RangeError before touching the record, where the stored reference distinguishes TypeError from RangeError."
+    },
+    {
+      "corpus": "fresh-false-fail",
+      "id": "migration-with-diagnostic-fields",
+      "phase": "phase-c",
+      "taskId": "b2-record-shape-migration-loss",
+      "freedom": "extra harmless fields",
+      "contract": "Additional non-destructive diagnostic fields are allowed.",
+      "satisfies": "Preserves every own enumerable field and adds two diagnostic fields the prompt explicitly permits, so a grader that demanded exact object equality would wrongly reject it."
+    },
+    {
+      "corpus": "fresh-false-fail",
+      "id": "path-boundary-via-relative",
+      "phase": "phase-b",
+      "taskId": "report-output-path-boundary",
+      "freedom": "different normalization strategy",
+      "contract": "Reject every path that resolves outside outDir; a safely contained absolute path is legitimate.",
+      "satisfies": "Decides containment with path.relative rather than a resolved-prefix comparison, so no string prefix logic is involved at all."
+    },
+    {
+      "corpus": "fresh-false-fail",
+      "id": "idempotency-promise-chain-mutex",
+      "phase": "phase-b",
+      "taskId": "idempotency-key-race",
+      "freedom": "different locking primitive",
+      "contract": "Exactly one concurrent caller may receive true; different keys must not block each other; reserve deterministically before an asynchronous lookup can let another caller enter.",
+      "satisfies": "Serialises each key behind its own promise chain instead of claiming a slot in a Set, so the synchronisation primitive is entirely different while the contract still holds."
+    },
+    {
+      "corpus": "fresh-false-fail",
+      "id": "clamp-table-driven-validation",
+      "phase": "phase-b",
+      "taskId": "clamp-number-util",
+      "freedom": "different validation architecture",
+      "contract": "Convert all three arguments with Number(...), reject non-finite converted values with TypeError, reject min > max with RangeError.",
+      "satisfies": "Drives conversion and validation from a declarative table of named arguments rather than an inline guard sequence."
+    },
+    {
+      "corpus": "fresh-false-fail",
+      "id": "completion-persisted-in-the-transition-layer",
+      "phase": "phase-c",
+      "taskId": "completion-state-regression",
+      "freedom": "different ownership layer",
+      "contract": "A successful completion must durably record the terminal state and return the recorded state.",
+      "satisfies": "Moves ownership of the terminal write into the transition module, a third valid location distinct from both the service (reference) and the command (alternative)."
+    },
+    {
+      "corpus": "fresh-false-fail",
+      "id": "webhook-classification-table",
+      "phase": "phase-b",
+      "taskId": "webhook-retry-terminal-state",
+      "freedom": "different validation architecture",
+      "contract": "2xx delivers; 400, 401, 403, 404 and 410 are terminal; 408, 425, 429 and 5xx retry to five attempts; any other status is terminal.",
+      "satisfies": "Classifies a status through an ordered rule table and a single dispatch, rather than a chain of conditionals."
+    },
+    {
+      "corpus": "fresh-false-fail",
+      "id": "csv-via-a-replacement-formatter",
+      "phase": "phase-b",
+      "taskId": "csv-export-feature",
+      "freedom": "different ownership layer",
+      "contract": "Keep JSON output and the formatter registry API working.",
+      "satisfies": "Leaves the original formatter module untouched and re-registers a compliant CSV formatter through the public registry API, which the prompt requires to keep working."
+    },
+    {
+      "corpus": "fresh-false-fail",
+      "id": "seat-claim-by-token-slots",
+      "phase": "phase-c",
+      "taskId": "b2-concurrent-seat-lost-update",
+      "freedom": "different locking primitive",
+      "contract": "Concurrent calls must never produce more successful bookings than available seats; available and bookedBy must agree after completion.",
+      "satisfies": "Claims a numbered seat token synchronously from a pool instead of decrementing a counter, so the atomic step is a different primitive."
+    },
+    {
+      "corpus": "fresh-false-fail",
+      "id": "settings-resolved-through-a-descriptor",
+      "phase": "phase-c",
+      "taskId": "notification-settings-regression",
+      "freedom": "different validation architecture",
+      "contract": "A per-request override must win over the workspace default for any key; unoverridden keys keep their default; the caller's object is not modified.",
+      "satisfies": "Resolves each key through a descriptor naming the layer that answers for it, rather than folding layers into one object."
+    },
+    {
+      "corpus": "fresh-false-fail",
+      "id": "bulk-archive-partitioned-first",
+      "phase": "phase-c",
+      "taskId": "b2-bulk-op-tenant-bypass",
+      "freedom": "different validation architecture",
+      "contract": "Return one result per requested ID in input order; a missing or foreign item must not be mutated.",
+      "satisfies": "Classifies every requested id up front and only then archives the eligible ones, rather than deciding and mutating in a single pass."
+    },
+    {
+      "corpus": "fresh-false-fail",
+      "id": "pagination-cursor-as-encoded-offset",
+      "phase": "phase-b",
+      "taskId": "pagination-cursor-feature",
+      "freedom": "different normalization strategy",
+      "contract": "Cursors must continue from the item after the last item previously returned and must not duplicate or skip items; reject malformed/stale cursors with RangeError.",
+      "satisfies": "Encodes the anchor as a checksummed token rather than a bare id, and validates the checksum before resolving the anchor."
+    },
+    {
+      "corpus": "audit2-false-pass",
+      "id": "inventory-live-object-mutate-restore",
+      "phase": "phase-b",
+      "taskId": "inventory-orientation-task",
+      "hole": "final-state observation",
+      "contract": "Validation must happen before saveItem, so a rejected adjustment leaves the stored item unchanged.",
+      "violation": "getItem hands back the live stored object, so the adjustment is written straight into the store without ever calling saveItem, then restored on rejection. The store is transiently wrong and no persistence call is recorded."
+    },
+    {
+      "corpus": "audit2-false-pass",
+      "id": "pending-write-known-key-allowlist",
+      "phase": "phase-c",
+      "taskId": "b2-pending-write-visibility",
+      "hole": "fixed grader values",
+      "contract": "begin(key, value) creates a transaction but must not change what read(key) returns.",
+      "violation": "Hides a pending write only for a fixed set of key names and publishes every other pending write immediately."
+    },
+    {
+      "corpus": "audit2-false-pass",
+      "id": "bulk-archive-startswith-tenant",
+      "phase": "phase-c",
+      "taskId": "b2-bulk-op-tenant-bypass",
+      "hole": "fixed grader values",
+      "contract": "bulkArchiveItems may archive only items whose stored tenantId exactly matches the caller tenant.",
+      "violation": "Compares tenants with startsWith, so any tenant whose id begins with the caller's id is treated as the caller's own."
+    },
+    {
+      "corpus": "audit2-false-pass",
+      "id": "cart-total-mutate-restore",
+      "phase": "phase-c",
+      "taskId": "b2-derived-aggregate-consistency",
+      "hole": "final-state observation",
+      "contract": "Reject invalid input without mutating the original state.",
+      "violation": "Writes to the caller's state.total before validating the line and restores it on rejection, so the original state is transiently wrong."
+    },
+    {
+      "corpus": "audit2-false-pass",
+      "id": "patch-nested-tags-push-pop",
+      "phase": "phase-c",
+      "taskId": "b2-partial-validation-mutation",
+      "hole": "shallow mutation boundary",
+      "contract": "An invalid patch must throw without changing any property of record.",
+      "violation": "Pushes onto the record's nested tags array before validating and pops it back on rejection, so only a shallow write observer misses it."
+    },
+    {
+      "corpus": "audit2-false-pass",
+      "id": "migration-nested-metadata-mutation",
+      "phase": "phase-c",
+      "taskId": "b2-record-shape-migration-loss",
+      "hole": "shallow mutation boundary",
+      "contract": "It must not mutate the input.",
+      "violation": "Mutates the input's nested metadata array during the migration and restores it afterwards, which a shallow freeze cannot see."
+    },
+    {
+      "corpus": "fresh-false-fail",
+      "id": "quote-tofixed-rounding",
+      "phase": "phase-c",
+      "taskId": "discount-result-regression",
+      "freedom": "different rounding implementation",
+      "contract": "The quoted total is rounded to two decimal places; any standard rounding of the exact value to the nearest cent is acceptable.",
+      "satisfies": "Rounds with Number(x.toFixed(2)) instead of Math.round(x*100)/100. The two disagree by one cent on the three half-cent combinations in the grader sweep, and both are correct roundings of the exact value."
+    },
+    {
+      "corpus": "audit2-round2-attacks",
+      "id": "inventory-defineproperty-write",
+      "phase": "phase-b",
+      "taskId": "inventory-orientation-task",
+      "attackClass": "observation bypass",
+      "contract": "Validation must happen before saveItem, so a rejected adjustment leaves the stored item unchanged.",
+      "violation": "Writes the adjustment into the live stored item with Object.defineProperty rather than assignment, so a write observer that only traps assignment misses it, then restores on rejection."
+    },
+    {
+      "corpus": "audit2-round2-attacks",
+      "id": "patch-deep-nested-counter",
+      "phase": "phase-c",
+      "taskId": "b2-partial-validation-mutation",
+      "attackClass": "deeper mutation boundary",
+      "contract": "An invalid patch must throw without changing any property of record.",
+      "violation": "Increments a counter two levels inside the caller's record before validating and restores it on rejection."
+    },
+    {
+      "corpus": "audit2-round2-attacks",
+      "id": "cart-line-element-mutate-restore",
+      "phase": "phase-c",
+      "taskId": "b2-derived-aggregate-consistency",
+      "attackClass": "deeper mutation boundary",
+      "contract": "Reject invalid input without mutating the original state.",
+      "violation": "Writes to an element inside the caller's lines array before validating and restores it on rejection."
+    },
+    {
+      "corpus": "audit2-round2-attacks",
+      "id": "migration-nested-tag-swap",
+      "phase": "phase-c",
+      "taskId": "b2-record-shape-migration-loss",
+      "attackClass": "deeper mutation boundary",
+      "contract": "It must not mutate the input.",
+      "violation": "Overwrites an element of the input's nested metadata array during the migration and puts it back afterwards."
+    },
+    {
+      "corpus": "audit2-round2-attacks",
+      "id": "bulk-archive-shape-match-tenant",
+      "phase": "phase-c",
+      "taskId": "b2-bulk-op-tenant-bypass",
+      "attackClass": "weakened comparison",
+      "contract": "bulkArchiveItems may archive only items whose stored tenantId exactly matches the caller tenant.",
+      "violation": "Treats two tenants as the same when their identifiers merely have the same shape -- equal length and equal first character -- rather than comparing them."
+    },
+    {
+      "corpus": "audit2-round2-attacks",
+      "id": "pending-write-batch-flush",
+      "phase": "phase-c",
+      "taskId": "b2-pending-write-visibility",
+      "attackClass": "premature publication",
+      "contract": "begin(key, value) creates a transaction but must not change what read(key) returns.",
+      "violation": "Flushes an earlier pending write as soon as a second transaction is begun, so a write nobody committed becomes visible."
+    },
+    {
+      "corpus": "audit2-round2-attacks",
+      "id": "refund-publishes-for-injected-ledger",
+      "phase": "phase-c",
+      "taskId": "b2-order-refund-terminal-leak",
+      "attackClass": "conditional ordering",
+      "contract": "processRefund may set an order to REFUNDED only after the ledger call succeeds.",
+      "violation": "Publishes the terminal state before the ledger whenever a ledger function was injected, and rolls back on failure."
+    },
+    {
+      "corpus": "audit2-round2-attacks",
+      "id": "basis-rounded-before-proportion",
+      "phase": "phase-c",
+      "taskId": "discount-result-regression",
+      "attackClass": "premature rounding",
+      "contract": "A PERCENT adjustment is that percentage of the base price, and the quoted total is rounded to two decimal places.",
+      "violation": "Rounds the basis to whole currency units before the proportion is taken, so the reduction is computed from a figure the customer was never quoted."
+    },
+    {
+      "corpus": "audit2-round2-attacks",
+      "id": "chain-query-stops-at-second",
+      "phase": "phase-c",
+      "taskId": "subscription-price-mismatch",
+      "attackClass": "shape assumption",
+      "contract": "A membership must capture the price that is in force for that plan at the moment it is opened.",
+      "violation": "Walks the chain in order but only ever consults the first two registers' answers combined, preferring whichever is non-null last, which reinstates the archived card whenever it carries the key."
+    },
+    {
+      "corpus": "audit2-round2-attacks",
+      "id": "delivery-plan-drops-after-first",
+      "phase": "phase-c",
+      "taskId": "task-update-duplication",
+      "attackClass": "over-broad suppression",
+      "contract": "Each transition must publish exactly one observable update; a later reassignment adds exactly one more.",
+      "violation": "Carries a signal on one channel the first time and on none afterwards, so every transition after the first is silently lost."
+    },
+    {
+      "corpus": "audit2-round2-attacks",
+      "id": "durable-write-skips-reassignment",
+      "phase": "phase-c",
+      "taskId": "completion-state-regression",
+      "attackClass": "partial persistence",
+      "contract": "A successful completion must durably record the terminal state, and unrelated assignment behaviour is preserved.",
+      "violation": "Writes settled entries through but stops writing active ones, so a completion persists while the assignment that preceded it does not."
+    },
+    {
+      "corpus": "audit2-round2-alternatives",
+      "id": "patch-clone-and-return",
+      "phase": "phase-c",
+      "taskId": "b2-partial-validation-mutation",
+      "freedom": "different mutation-control design",
+      "contract": "An invalid patch must throw without changing any property of record; a valid patch may return a new record.",
+      "satisfies": "Validates against a structural clone of the record and never touches the caller's object at all, rather than validating first and mutating after."
+    },
+    {
+      "corpus": "audit2-round2-alternatives",
+      "id": "bulk-archive-membership-set",
+      "phase": "phase-c",
+      "taskId": "b2-bulk-op-tenant-bypass",
+      "freedom": "different authorization enforcement",
+      "contract": "Only items whose stored tenantId exactly matches the caller tenant may be archived.",
+      "satisfies": "Enforces ownership by building the caller's set of owned ids up front and testing membership, rather than comparing tenant strings per item."
+    },
+    {
+      "corpus": "audit2-round2-alternatives",
+      "id": "commit-store-journalled",
+      "phase": "phase-c",
+      "taskId": "b2-pending-write-visibility",
+      "freedom": "different persistence architecture",
+      "contract": "A pending write must not change what read returns; committing one must not publish another.",
+      "satisfies": "Keeps an append-only journal of committed entries and answers reads by scanning it backwards, instead of holding a visible map."
+    },
+    {
+      "corpus": "audit2-round2-alternatives",
+      "id": "layer-merge-object-assign-order",
+      "phase": "phase-c",
+      "taskId": "notification-settings-regression",
+      "freedom": "different validation architecture",
+      "contract": "A per-request override wins for any key; unoverridden keys keep the baseline.",
+      "satisfies": "Folds the chain with Object.assign over a null-prototype accumulator in reverse order, and works for a chain of any length."
+    },
+    {
+      "corpus": "audit2-round2-alternatives",
+      "id": "register-chain-memoised-with-invalidation",
+      "phase": "phase-c",
+      "taskId": "subscription-price-mismatch",
+      "freedom": "different cache strategy",
+      "contract": "A membership captures the price in force at the moment it is opened, for repeated price changes.",
+      "satisfies": "Memoises each answer but keys the memo on the register's own answer, so a changed book invalidates the entry instead of masking it."
+    },
+    {
+      "corpus": "audit2-round2-alternatives",
+      "id": "delivery-plan-by-exclusion",
+      "phase": "phase-c",
+      "taskId": "task-update-duplication",
+      "freedom": "different event ownership",
+      "contract": "A signal is published exactly once per transition.",
+      "satisfies": "Selects the carrying channel by excluding the legacy route rather than by naming the bus, so a future channel is carried without changing this module."
+    },
+    {
+      "corpus": "audit2-round2-alternatives",
+      "id": "durable-write-through-a-queue",
+      "phase": "phase-c",
+      "taskId": "completion-state-regression",
+      "freedom": "different persistence architecture",
+      "contract": "A successful completion must durably record the terminal state and return the recorded state.",
+      "satisfies": "Routes every write through a drained queue rather than calling the store directly, which is how a batching writer would be built, and drains before returning."
+    },
+    {
+      "corpus": "audit2-round2-alternatives",
+      "id": "migration-entries-roundtrip",
+      "phase": "phase-c",
+      "taskId": "b2-record-shape-migration-loss",
+      "freedom": "different mutation-control design",
+      "contract": "Preserve every own enumerable field; do not mutate the input.",
+      "satisfies": "Rebuilds the record from Object.entries and appends the version as a final entry, touching neither the input nor its nested values."
+    },
+    {
+      "corpus": "audit2-round2-attacks",
+      "id": "layer-merge-writes-into-baseline",
+      "phase": "phase-c",
+      "taskId": "notification-settings-regression",
+      "attackClass": "accumulator aliasing",
+      "contract": "Do not change the workspace baseline itself; a setting that is not overridden must keep its baseline value.",
+      "violation": "Uses the least specific layer's own values object as the accumulator, so the first overridden call writes the override permanently into the workspace baseline and every later default lookup returns it."
+    },
+    {
+      "corpus": "audit3-cache-ownership-attacks",
+      "id": "patch-id-nullish-fallback-redirect",
+      "phase": "phase-b",
+      "taskId": "stale-cache-invalidation-bug",
+      "attackClass": "caller-controlled ownership redirection",
+      "contract": "A successful update must ensure every later read for that user observes the update while leaving other users' cached profiles untouched.",
+      "violation": "Invalidates userProfileCacheKey(patch.id ?? userId) instead of userProfileCacheKey(userId), so a patch carrying its own id field (matching another real user, or an arbitrary bogus value) redirects which cache entry is cleared and the real target's cached profile stays stale."
+    },
+    {
+      "corpus": "audit3-cache-ownership-attacks",
+      "id": "patch-id-precedes-correction-redirect",
+      "phase": "phase-b",
+      "taskId": "stale-cache-invalidation-bug",
+      "attackClass": "caller-controlled ownership redirection",
+      "contract": "A successful update must ensure every later read for that user observes the update while leaving other users' cached profiles untouched.",
+      "violation": "Merges the patch and invalidates against the merge's own id field before correcting it back to the real userId for storage, so the same ownership-redirection defect appears through a different code shape than a `??` fallback."
+    },
+    {
+      "corpus": "audit3-cache-ownership-alternatives",
+      "id": "invalidate-by-real-target",
+      "phase": "phase-b",
+      "taskId": "stale-cache-invalidation-bug",
+      "freedom": "matches the reference's invalidate-then-return shape",
+      "contract": "A successful update must ensure every later read for that user observes the update while leaving other users' cached profiles untouched.",
+      "satisfies": "Always invalidates userProfileCacheKey(userId), ignoring any id field a patch happens to carry."
+    },
+    {
+      "corpus": "audit3-cache-ownership-alternatives",
+      "id": "write-through-cache-update",
+      "phase": "phase-b",
+      "taskId": "stale-cache-invalidation-bug",
+      "freedom": "write-through cache architecture instead of invalidate-then-refetch",
+      "contract": "A successful update must ensure every later read for that user observes the update while leaving other users' cached profiles untouched.",
+      "satisfies": "Writes the fresh profile straight into the cache under userProfileCacheKey(userId) instead of invalidating and waiting for the next read to repopulate it -- a structurally different, still-correct design keyed on the userId argument throughout."
+    }
+  ],
+  "round2Seed": "0x2a0d17"
+}

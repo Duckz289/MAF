@@ -1,8 +1,14 @@
-# b3-event-handler-owner-trace
+# completion-state-regression
 
-This task is part of the NEWLY_AUTHORED_RECONSTRUCTION benchmark. Modify the public repository to satisfy the behavior demonstrated by its existing entrypoint and source seed. Preserve existing public API compatibility and keep unrelated behavior unchanged.
+Completing a work order returns a completed-looking order, but the dispatch board does not agree.
+Run `node bin/demo.mjs`: the completion reports `COMPLETED`, yet the board still counts zero
+completed orders and leaves the order in its open column.
 
-## Acceptance
+A successful completion must durably record `status: "COMPLETED"` and a non-null `completedAt` for
+that order, return the recorded state, and publish exactly one completion update. Every later read
+of that order — however the reader reaches it — must see the completed state. Completing an order
+that does not exist must still reject, and must not publish an update.
 
-The entrypoint must complete successfully for its documented scenario, and the implementation must generalize to equivalent valid inputs rather than hard-coding the displayed example.
-Public source files currently include: src\bootstrap.mjs, src\admin\admin-report.mjs, src\admin\admin-task-controller.mjs, src\analytics\event-logger.mjs, src\analytics\report-builder.mjs, src\analytics\usage-tracker.mjs
+Fix this for arbitrary work orders while preserving the command API, the event payload shape
+(`orderId`, `technicianId` and `region`), and the unrelated assignment, scheduling and
+technician-load behaviour.

@@ -1,8 +1,7 @@
-# report-output-path-boundary
+# Keep report output inside its configured directory
 
-This task is part of the NEWLY_AUTHORED_RECONSTRUCTION benchmark. Modify the public repository to satisfy the behavior demonstrated by its existing entrypoint and source seed. Preserve existing public API compatibility and keep unrelated behavior unchanged.
-
-## Acceptance
-
-The entrypoint must complete successfully for its documented scenario, and the implementation must generalize to equivalent valid inputs rather than hard-coding the displayed example.
-Public source files currently include: src\report-writer.mjs
+`writeReportFile(outDir, requestedPath, content)` may accept a relative path or an absolute path that
+resolves inside `outDir`. Resolve the target, create its parent directories, write UTF-8 content,
+and return the resolved absolute path. Reject traversal, sibling-prefix tricks, and every other path
+that resolves outside `outDir` with `RangeError`. A safely contained absolute path is legitimate and
+must not be rejected merely for being absolute.

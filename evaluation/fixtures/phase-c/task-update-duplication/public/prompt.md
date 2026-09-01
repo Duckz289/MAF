@@ -1,8 +1,14 @@
-# b3-duplicate-service-owner
+# task-update-duplication
 
-This task is part of the NEWLY_AUTHORED_RECONSTRUCTION benchmark. Modify the public repository to satisfy the behavior demonstrated by its existing entrypoint and source seed. Preserve existing public API compatibility and keep unrelated behavior unchanged.
+One assignment command produces two assignment updates. Run `node bin/demo.mjs`: assigning a single
+picker to a single pick list records two updates on the floor summary, while completing a pick
+records one.
 
-## Acceptance
+`assignPickerCommand(pickListId, pickerId)` must persist the assignee and publish exactly one
+observable `PICKER_ASSIGNED` update for that transition. Reassigning the same pick list to a
+different picker is a distinct transition and must add exactly one more update, naming the new
+picker. Independent pick lists must each produce one update per assignment.
 
-The entrypoint must complete successfully for its documented scenario, and the implementation must generalize to equivalent valid inputs rather than hard-coding the displayed example.
-Public source files currently include: src\bootstrap.mjs, src\admin\admin-report.mjs, src\admin\admin-task-controller.mjs, src\analytics\event-logger.mjs, src\analytics\report-builder.mjs, src\analytics\usage-tracker.mjs
+Remove the duplicate effect without suppressing valid later assignments. Preserve the command API,
+the pick-list storage behaviour, the event payload shape (`pickListId` and `pickerId`), and the
+unrelated pick-completion, stock and shift-report behaviour.

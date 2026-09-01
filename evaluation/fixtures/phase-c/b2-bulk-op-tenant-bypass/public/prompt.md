@@ -1,8 +1,7 @@
-# b2-bulk-op-tenant-bypass
+# Enforce tenant ownership in bulk archive
 
-This task is part of the NEWLY_AUTHORED_RECONSTRUCTION benchmark. Modify the public repository to satisfy the behavior demonstrated by its existing entrypoint and source seed. Preserve existing public API compatibility and keep unrelated behavior unchanged.
-
-## Acceptance
-
-The entrypoint must complete successfully for its documented scenario, and the implementation must generalize to equivalent valid inputs rather than hard-coding the displayed example.
-Public source files currently include: bin\demo.mjs, src\archive-item.mjs, src\bulk-archive.mjs, src\item-store.mjs
+`bulkArchiveItems(tenantId, itemIds)` may archive only items whose stored `tenantId` exactly matches
+the caller tenant. Return one result per requested ID in input order: `{ id, archived: true }` when
+archived, otherwise `{ id, archived: false, reason: "NOT_FOUND" | "TENANT_MISMATCH" }`. A missing
+or foreign item must not be mutated, and one rejected item must not prevent eligible items in the
+same batch from being archived.

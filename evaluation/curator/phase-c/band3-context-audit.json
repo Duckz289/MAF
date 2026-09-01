@@ -1,0 +1,132 @@
+[
+  {
+    "id": "notification-settings-regression",
+    "entrypoint": "bin/demo.mjs",
+    "defectOwner": "src/config/layer-merge.mjs",
+    "decoys": [
+      "src/config/resolution-policy.mjs",
+      "src/config/scope-chain.mjs",
+      "src/delivery/batch-planner.mjs",
+      "src/delivery/channel-adapters.mjs",
+      "src/render/digest-template.mjs"
+    ],
+    "symptomTerms": [
+      "digest",
+      "Digest",
+      "batch",
+      "Batch",
+      "deliveries",
+      "delivery",
+      "settings",
+      "setting",
+      "override",
+      "overrides",
+      "default",
+      "defaults",
+      "precedence"
+    ]
+  },
+  {
+    "id": "discount-result-regression",
+    "entrypoint": "bin/demo.mjs",
+    "defectOwner": "src/pricing/measurement-basis.mjs",
+    "decoys": [
+      "src/pricing/reduction-plan.mjs",
+      "src/pricing/proportion-basis.mjs",
+      "src/pricing/adjustment-engine.mjs",
+      "src/promotions/promo-codes.mjs",
+      "src/pricing/rounding.mjs"
+    ],
+    "symptomTerms": [
+      "quote",
+      "Quote",
+      "adjustment",
+      "Adjustment",
+      "tax",
+      "Tax",
+      "PERCENT",
+      "FLAT",
+      "total",
+      "round",
+      "rounded"
+    ]
+  },
+  {
+    "id": "subscription-price-mismatch",
+    "entrypoint": "bin/demo.mjs",
+    "defectOwner": "src/catalog/lookup-strategy.mjs",
+    "decoys": [
+      "src/catalog/live-register.mjs",
+      "src/catalog/archived-register.mjs",
+      "src/pricing/price-book.mjs",
+      "src/pricing/published-rates.mjs",
+      "src/statements/statement-lines.mjs"
+    ],
+    "symptomTerms": [
+      "membership",
+      "Membership",
+      "price",
+      "Price",
+      "plan",
+      "Plan",
+      "enrol",
+      "Enrol",
+      "rate",
+      "Rate",
+      "capture",
+      "captured"
+    ]
+  },
+  {
+    "id": "task-update-duplication",
+    "entrypoint": "bin/demo.mjs",
+    "defectOwner": "src/events/delivery-plan.mjs",
+    "decoys": [
+      "src/events/channel-registry.mjs",
+      "src/events/direct-routes.mjs",
+      "src/events/register-listeners.mjs",
+      "src/projections/floor-summary.mjs",
+      "src/listeners/picker-assigned-listener.mjs"
+    ],
+    "symptomTerms": [
+      "assignment",
+      "assign",
+      "assigned",
+      "update",
+      "updates",
+      "picker",
+      "pickList",
+      "PICKER_ASSIGNED",
+      "publish",
+      "published",
+      "summary",
+      "transition"
+    ]
+  },
+  {
+    "id": "completion-state-regression",
+    "entrypoint": "bin/demo.mjs",
+    "defectOwner": "src/workorders/persistence-policy.mjs",
+    "decoys": [
+      "src/workorders/entry-lifecycle.mjs",
+      "src/workorders/work-order-transitions.mjs",
+      "src/workorders/work-order-repository.mjs",
+      "src/projections/completion-board.mjs",
+      "src/listeners/order-completed-listener.mjs"
+    ],
+    "symptomTerms": [
+      "completion",
+      "complete",
+      "completed",
+      "COMPLETED",
+      "completedAt",
+      "order",
+      "orders",
+      "board",
+      "record",
+      "recorded",
+      "publish",
+      "update"
+    ]
+  }
+]

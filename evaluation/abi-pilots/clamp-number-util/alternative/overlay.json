@@ -1,1 +1,3 @@
-{"src/number-utils.mjs":"export const roundTo = (value, decimals = 0) => Number(value.toFixed(decimals));\nexport const isInRange = (value, min, max) => Math.min(max, Math.max(min, value)) === value;\n"}
+{
+  "src/number-utils.mjs": "export const roundTo = (value, decimals = 0) => Number(value.toFixed(decimals));\nexport const isInRange = (value, min, max) => Math.min(max, Math.max(min, value)) === value;\n"
+}

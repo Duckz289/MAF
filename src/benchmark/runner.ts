@@ -7,6 +7,13 @@ import type {
 } from "../domain/strategy";
 import { assertStrategyObservation } from "../domain/strategy";
 import { redactSensitiveData, redactSensitiveText } from "../domain/security";
+import { evaluateBenchmarkSamples } from "../evaluation/benchmark-bridge";
+import {
+  nullIndependentVerifier,
+  type IndependentVerificationResult,
+  type IndependentVerifier,
+} from "../evaluation/independent-verification";
+import type { EvaluationMetrics } from "../evaluation/types";
 
 export type BenchmarkStrategy = "NATIVE" | "MAF_ADAPTIVE";
 export type BenchmarkVerificationResult = "VERIFIED" | "QUARANTINED" | "FAILED";
@@ -26,6 +33,13 @@ export interface BenchmarkTask {
   id: string;
   prompt: string;
   expectedVerification: string;
+  /**
+   * Workspaces the CONTROLLER allocated for each participant, keyed by strategy. The independent
+   * verifier inspects these paths after execution. They are deliberately part of the task rather
+   * than of a participant's execution report: a path a participant could name is a path it could
+   * fabricate.
+   */
+  candidateWorkspaces?: Partial<Record<BenchmarkStrategy, string>>;
   /** Optional M12 scope turns benchmark outcomes into shadow evidence, never global claims. */
   strategyScope?: StrategyScope;
   family?: BenchmarkFamily;
@@ -81,6 +95,11 @@ export interface BenchmarkExecution {
   };
   runId?: string;
   candidateId?: string;
+  /** Infrastructure signals. Absent means the execution completed; a non-COMPLETED status or an
+   *  error string makes the run INVALID for protocol accounting and can never become a DVS. */
+  executionStatus?: "COMPLETED" | "INFRA_FAILURE" | "TIMEOUT" | "CANCELLED" | "QUOTA_EXHAUSTED";
+  providerError?: string;
+  infrastructureError?: string;
   trustState?: StrategyObservation["trustState"];
   qualityOutcome?: StrategyObservation["qualityOutcome"];
   security?: ExternalCheckOutcome;
@@ -106,12 +125,28 @@ export interface BenchmarkSample extends BenchmarkExecution {
 export interface BenchmarkReport {
   generatedAt: string;
   samples: BenchmarkSample[];
+  /**
+   * Sample statistics over what the PARTICIPANTS reported about themselves. These describe the
+   * executions, not their correctness: `verificationResult` is a participant's own claim.
+   *
+   * Do not read `meanCostOfVerifiedSuccessesUsd` as a cost per success in the protocol sense. It is
+   * the arithmetic mean of the costs of the samples that claimed success, which says what a claimed
+   * success cost while ignoring everything spent not getting one. The protocol quantity is
+   * `evaluation.cost.costPerDvsUsd`: total cost of all runs in scope divided by the number of
+   * independently verified successes. The two are different questions and will differ in value.
+   */
   metrics: {
     sampleCount: number;
-    verifiedSuccessRate: number;
-    costPerVerifiedSuccess: number | null;
-    verifiedRunsWithKnownCost: number;
+    /** Fraction of samples whose participant claimed verification. Self-reported. */
+    selfReportedVerifiedRate: number;
+    /** Arithmetic mean of the known costs of self-reported successes. NOT cost per DVS. */
+    meanCostOfVerifiedSuccessesUsd: number | null;
+    selfReportedSuccessesWithKnownCost: number;
   };
+  /** Protocol accounting for this comparison, derived from the samples through
+   *  src/evaluation/benchmark-bridge.ts. This is where DVS, false-safe, invalid-run separation and
+   *  cost-per-DVS are actually applied to an evaluation flow. */
+  evaluation: EvaluationMetrics;
   /** Shadow evidence only; promotion still applies M12 scoped minimums. */
   strategyEvidence: StrategyObservation[];
 }
@@ -308,6 +343,15 @@ export const normalizeBenchmarkExecution = (value: unknown): BenchmarkExecution 
   if (!optionalString(raw.runId) || !optionalString(raw.candidateId))
     throw new Error("Benchmark executor returned malformed run/candidate identity");
   if (
+    raw.executionStatus !== undefined &&
+    !["COMPLETED", "INFRA_FAILURE", "TIMEOUT", "CANCELLED", "QUOTA_EXHAUSTED"].includes(
+      raw.executionStatus as string,
+    )
+  )
+    throw new Error("Benchmark executor returned an invalid execution status");
+  if (!optionalString(raw.providerError) || !optionalString(raw.infrastructureError))
+    throw new Error("Benchmark executor returned malformed infrastructure errors");
+  if (
     raw.signalSnapshots.length > 0 &&
     (typeof raw.runId !== "string" ||
       raw.signalSnapshots.some((entry) => (entry as Record<string, unknown>).runId !== raw.runId))
@@ -456,6 +500,19 @@ export const normalizeBenchmarkExecution = (value: unknown): BenchmarkExecution 
     ...(typeof raw.candidateId === "string"
       ? { candidateId: boundedText(raw.candidateId, 200) }
       : {}),
+    ...(raw.executionStatus !== undefined
+      ? {
+          executionStatus: raw.executionStatus as NonNullable<
+            BenchmarkExecution["executionStatus"]
+          >,
+        }
+      : {}),
+    ...(typeof raw.providerError === "string"
+      ? { providerError: boundedText(raw.providerError, 500) }
+      : {}),
+    ...(typeof raw.infrastructureError === "string"
+      ? { infrastructureError: boundedText(raw.infrastructureError, 500) }
+      : {}),
     ...(raw.trustState !== undefined
       ? { trustState: raw.trustState as NonNullable<BenchmarkExecution["trustState"]> }
       : {}),
@@ -544,6 +601,7 @@ const safeBenchmarkTask = (task: BenchmarkTask): BenchmarkTask => ({
         },
       }
     : {}),
+  ...(task.candidateWorkspaces ? { candidateWorkspaces: { ...task.candidateWorkspaces } } : {}),
   ...(task.family ? { family: task.family } : {}),
   ...(task.sequence
     ? {
@@ -564,8 +622,26 @@ const safeBenchmarkTask = (task: BenchmarkTask): BenchmarkTask => ({
     : {}),
 });
 
+/** The revision the comparison ran against, taken from the executor-reported state chain. Absent
+ *  evidence stays UNKNOWN rather than being invented. */
+const sourceRevisionOf = (samples: BenchmarkSample[]): string =>
+  samples.find((sample) => sample.sequenceEvidence?.baseStateDigest)?.sequenceEvidence
+    ?.baseStateDigest ?? "UNKNOWN";
+
 export class BenchmarkRunner {
-  async compare(task: BenchmarkTask, executors: BenchmarkExecutor[]): Promise<BenchmarkReport> {
+  /**
+   * Compares one NATIVE and one MAF_ADAPTIVE participant on a task.
+   *
+   * `options.verifier` is the controller-side independent verifier. It runs AFTER the participants
+   * have finished, over a workspace the controller owns, and it is the only thing that can
+   * establish correctness evidence. Omitting it does not make runs succeed on the participants'
+   * word: every run then carries NOT_CHECKED evidence and no run can be a Durable Verified Success.
+   */
+  async compare(
+    task: BenchmarkTask,
+    executors: BenchmarkExecutor[],
+    options: { verifier?: IndependentVerifier } = {},
+  ): Promise<BenchmarkReport> {
     const nativeCount = executors.filter((executor) => executor.strategy === "NATIVE").length;
     const adaptiveCount = executors.filter(
       (executor) => executor.strategy === "MAF_ADAPTIVE",
@@ -622,18 +698,36 @@ export class BenchmarkRunner {
       assertStrategyObservation(observation);
       return [observation];
     });
+    // Independent verification runs here: after participant execution, before any accounting. It is
+    // deliberately not given the participant's execution object, so nothing it decides can depend on
+    // what the participant claimed.
+    const verifier = options.verifier ?? nullIndependentVerifier;
+    const verifications = new Map<BenchmarkSample, IndependentVerificationResult>();
+    for (const sample of samples) {
+      verifications.set(
+        sample,
+        await verifier.verify({
+          taskId: projectedTask.id,
+          expectedVerification: projectedTask.expectedVerification,
+          ...(projectedTask.candidateWorkspaces?.[sample.strategy]
+            ? { workspacePath: projectedTask.candidateWorkspaces[sample.strategy] as string }
+            : {}),
+        }),
+      );
+    }
     return {
       generatedAt,
       samples,
+      evaluation: evaluateBenchmarkSamples(samples, sourceRevisionOf(samples), verifications),
       metrics: {
         sampleCount: samples.length,
-        verifiedSuccessRate: samples.length === 0 ? 0 : successes.length / samples.length,
-        costPerVerifiedSuccess:
+        selfReportedVerifiedRate: samples.length === 0 ? 0 : successes.length / samples.length,
+        meanCostOfVerifiedSuccessesUsd:
           knownCostSuccesses.length === 0
             ? null
             : knownCostSuccesses.reduce((total, sample) => total + (sample.reportedCost ?? 0), 0) /
               knownCostSuccesses.length,
-        verifiedRunsWithKnownCost: knownCostSuccesses.length,
+        selfReportedSuccessesWithKnownCost: knownCostSuccesses.length,
       },
       strategyEvidence,
     };
@@ -643,9 +737,11 @@ export class BenchmarkRunner {
     return `${JSON.stringify(report, null, 2)}\n`;
   }
 
+  /** Runs a suite. `options.verifier` is threaded to every comparison; see `compare`. */
   async runSuite(
     tasks: BenchmarkTask[],
     executors: BenchmarkExecutor[],
+    options: { verifier?: IndependentVerifier } = {},
   ): Promise<BenchmarkSuiteReport> {
     if (tasks.length === 0) throw new Error("Benchmark suite requires at least one task");
     if (executors.some((executor) => !executor.identity))
@@ -662,7 +758,7 @@ export class BenchmarkRunner {
     >();
     // Deliberately sequential, with a required state chain: labels alone are not long-horizon proof.
     for (const task of tasks) {
-      const report = await this.compare(task, executors);
+      const report = await this.compare(task, executors, options);
       reports.push(report);
       if (!task.sequence) continue;
       const prior = sequenceState.get(task.sequence.id);

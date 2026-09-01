@@ -1,0 +1,1 @@
+export const ADJUSTMENT_KINDS = { PERCENT: "PERCENT", FLAT: "FLAT" };
