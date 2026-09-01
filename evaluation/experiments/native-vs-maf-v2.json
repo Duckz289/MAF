@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "protocolVersion": "2.0.0-preregistered",
+  "status": "PRE_REGISTERED_NOT_FROZEN",
+  "purpose": "Paired Native-vs-MAF evaluation of Durable Verified Success on the frozen 29-task suite",
+  "supersedes": {
+    "protocolVersion": "1.0.0-preregistered",
+    "manifest": "evaluation/experiments/native-vs-maf-v1.json",
+    "protocolDoc": "EXPERIMENT_PROTOCOL.md",
+    "tag": "maf-experiment-protocol-v1",
+    "sha": "b183b20a08b1d4f6902bffea49fe139f80cad4e9",
+    "reason": "Protocol v1 pre-registered the experiment design and validated its plumbing only against mock/dry-run executors; it defined no real BenchmarkExecutor for either arm, so no scoring run could actually execute. Protocol v2 adds real-provider execution plumbing and provenance/cost capture only -- see EXPERIMENT_PROTOCOL_V2.md. No experimental parameter changed."
+  },
+  "frozenSuite": {
+    "tag": "maf-suite-freeze-v1",
+    "sha": "92f13ae67802dd0049ca001f70839a9451120900",
+    "taskCount": 29,
+    "taskSource": "evaluation/contracts/tasks.json",
+    "immutable": true
+  },
+  "experimentBranch": "experiment/native-vs-maf-v2",
+  "arms": {
+    "NATIVE": {
+      "benchmarkStrategy": "NATIVE",
+      "description": "The coding agent running in its ordinary execution mode with no MAF orchestration or intervention. Its own execution artifact is still graded by the same independent, controller-side verification pipeline used for MAF.",
+      "orchestration": "NONE",
+      "identity": {
+        "executionMode": "NATIVE",
+        "baseline": "NATIVE_FRONTIER",
+        "reviewPolicy": "NONE"
+      },
+      "realExecution": {
+        "executor": "evaluation/experiments/real/lib/native-executor.ts (NativeExperimentExecutor)",
+        "participantAdapter": "src/infrastructure/claude-code-adapter.ts (ClaudeCodeAdapter), promptPreamble overridden to empty so no MAF framing text is sent",
+        "receivesHiddenGrader": false,
+        "receivesReferenceCandidate": false,
+        "receivesHiddenAssertions": false,
+        "receivesAdversarialCorpus": false
+      }
+    },
+    "MAF": {
+      "benchmarkStrategy": "MAF_ADAPTIVE",
+      "description": "The same coding agent running under the MAF adaptive mode controller (src/domain/mode-controller.ts) with control/assurance behavior enabled: adaptive STRICT/GUIDED/SOLO_NATIVE mode transitions driven by runtime signals, and controller-side independent verification after execution.",
+      "orchestration": "MAF_ADAPTIVE",
+      "identity": {
+        "executionMode": "GUIDED",
+        "baseline": "CHALLENGER",
+        "reviewPolicy": "NONE"
+      },
+      "treatmentPolicy": {
+        "note": "Frozen policy dimensions for Protocol v1, unchanged in v2. Runtime mode transitions the controller makes within this policy are adaptive by design (see EXPERIMENT_PROTOCOL.md section 6); the POLICY governing those transitions is what is frozen here, not any single run's transitions.",
+        "interventionPolicy": "AdaptiveModeController default policy (src/domain/mode-controller.ts), unmodified for this protocol",
+        "contextStrategy": "LocalRepositoryIndex (src/infrastructure/project-brain.ts) + EvidenceRuntimeSignalCollector (src/application/runtime-signal-collector.ts) default configuration, unmodified; scoped to file-listing context only, without the full ContextBuilder/ProjectBrain knowledge-base stack RunService uses in the general MAF runtime -- see EXPERIMENT_PROTOCOL_V2.md 'MAF context scoping'",
+        "retryPolicy": "Executor-reported retryCount only, plus one bounded recovery retry (src/domain/recovery.ts classifyFailure/isAutoRetryable, matching RunService's own defaultRecoveryPolicy.maxRecoveryAttempts = 1) when a run's failure classifies as auto-retryable; no additional MAF-imposed retry ceiling beyond that",
+        "verificationPolicy": "Controller-side CuratorIndependentVerifier (src/evaluation/curator-verifier.ts): hidden grader + SMOKE regression, run after participant execution, never observed by the participant",
+        "escalation": "STRICT -> GUIDED -> SOLO_NATIVE per AdaptiveModeController transition rules; no manual escalation for this protocol. Enforcement limitation disclosed in EXPERIMENT_PROTOCOL_V2.md: the Claude Code CLI runs one non-interactive invocation per session (livePolicyUpdate=false, safeSessionRestart=false), so a decided transition is recorded as DEFERRED_BOUNDARY evidence but cannot be enforced on an already-running session.",
+        "recoveryBehavior": "src/domain/recovery.ts classifyFailure-driven provider-transient handling only; no additional MAF-side recovery beyond what the adapter itself reports",
+        "modelRouting": "NONE — same frontier model and effort as NATIVE for every paired run",
+        "sandboxing": "Same controller-owned, per-run temporary workspace and execution environment as NATIVE",
+        "costControls": "src/domain/budget.ts HARD allocation mode at the frozen per-run budget ceiling below; no separate MAF-only budget"
+      },
+      "realExecution": {
+        "executor": "evaluation/experiments/real/lib/maf-executor.ts (MafExperimentExecutor)",
+        "participantAdapter": "src/infrastructure/claude-code-adapter.ts (ClaudeCodeAdapter), default prompt preamble",
+        "receivesHiddenGrader": false,
+        "receivesReferenceCandidate": false,
+        "receivesHiddenAssertions": false,
+        "receivesAdversarialCorpus": false
+      }
+    }
+  },
+  "controlledVariables": [
+    "model",
+    "modelVersion",
+    "effort",
+    "taskPrompt",
+    "startingRepositorySeed",
+    "budgetPolicy",
+    "timeoutPolicy",
+    "provider",
+    "executionEnvironment",
+    "availableBaseTools",
+    "hiddenGrader"
+  ],
+  "modelConfiguration": {
+    "model": "claude-sonnet-5",
+    "provider": "anthropic",
+    "effort": "high",
+    "thinking": "adaptive",
+    "resolved": true,
+    "note": "Same model/version/effort used for both NATIVE and MAF_ADAPTIVE arms of every paired run. Resolved per the mission header (MODEL: Claude Sonnet 5, Effort: High). Unchanged from v1.",
+    "resolution": {
+      "requestedModel": "claude-sonnet-5",
+      "resolutionSource": "Claude Code CLI stream-json assistant message `message.model`, when the CLI reports one",
+      "resolvedModelStatus": "Recorded per run as RESOLVED (a concrete dated snapshot id was observed) or ALIAS_ONLY (only the requested alias is known); never invented"
+    }
+  },
+  "runsPerTask": 3,
+  "totalScoringRunsPlanned": 174,
+  "runCountRationale": "29 tasks x 2 arms x 3 repetitions = 174 participant runs. Unchanged from v1 -- see EXPERIMENT_PROTOCOL.md section 15.",
+  "timeoutMs": 1800000,
+  "timeoutRationale": "30 minutes per participant run. Unchanged from v1. Wired through evaluation/experiments/real/lib/agent-session-runner.ts, which races the participant's event stream against this timeout and classifies the run TIMEOUT (cancelling the session) rather than relying on any implicit CLI-side timeout.",
+  "budget": {
+    "perRunCeilingUsd": 8,
+    "mode": "HARD",
+    "note": "Same $8.00/run HARD ceiling as v1. Enforcement mechanism and its limitations are disclosed explicitly in evaluation/experiments/real/lib/budget-guard.ts and EXPERIMENT_PROTOCOL_V2.md 'Budget enforcement': the controller passes --max-budget-usd to the Claude Code CLI (src/infrastructure/claude-code-adapter.ts ClaudeCodeConfig.maxBudgetUsd) and relies on the CLI's own internal accounting for real-time enforcement; the controller additionally performs a non-blocking, post-hoc comparison of the final reported cost against the ceiling via src/domain/budget.ts computeAllocation. The controller does not itself meter or interrupt spend mid-run."
+  },
+  "randomization": {
+    "seedSource": "evaluation/experiments/generate-randomization.mjs",
+    "manifestFile": "evaluation/experiments/randomization.json",
+    "method": "xmur3-seeded mulberry32 Fisher-Yates shuffle of the frozen 29 task IDs; arm order derived from shuffled-position parity (even index = NATIVE_FIRST, odd index = MAF_FIRST)",
+    "counterbalanced": true,
+    "note": "Reuses the exact v1 randomization.json unchanged -- not regenerated for v2. See evaluation/experiments/validate-manifest-v2.mjs."
+  },
+  "metrics": {
+    "primary": ["DVS_RATE_AMONG_VALID_RUNS"],
+    "secondary": [
+      "COST_PER_DVS",
+      "MEAN_ELAPSED_OF_DVS_RUNS_TIME_TO_SAFE",
+      "INVALID_RUN_RATE",
+      "HIDDEN_GRADER_PASS_RATE",
+      "REGRESSION_PASS_RATE",
+      "CANDIDATE_INTEGRITY_FAILURE_RATE",
+      "FALSE_SAFE_RATE_AMONG_VALID_RUNS",
+      "MAF_INTERVENTION_COUNT",
+      "RETRY_COUNT",
+      "EXECUTION_COST_USD",
+      "VERIFICATION_COST_USD",
+      "TOTAL_WALL_CLOCK_DURATION_MS"
+    ],
+    "diagnostic": [
+      "DVS_RATE_AMONG_ALL_RUNS",
+      "MEAN_ELAPSED_OF_VALID_RUNS",
+      "BOTH_PASS",
+      "MAF_ONLY_PASS",
+      "NATIVE_ONLY_PASS",
+      "BOTH_FAIL",
+      "INVALID_MAF",
+      "INVALID_NATIVE",
+      "INVALID_BOTH",
+      "COHERENCE_ISSUES_COUNT"
+    ]
+  },
+  "subgroupAnalyses": ["phase-b", "phase-c:band1", "phase-c:band2", "phase-c:band3"],
+  "invalidRunPolicy": {
+    "definition": "evaluation/protocol.json invalidRuns semantics, unmodified: invalid runs never count as DVS and are reported separately from the valid-run denominator",
+    "modelArmFailure": "An arm failure the participant itself caused (task not attempted correctly, candidate produced but grader FAILs, participant crashes on its own logic) is a valid run with a non-DVS outcome; it is never rerun",
+    "infrastructureFailure": "executionStatus in {INFRA_FAILURE, TIMEOUT, CANCELLED, QUOTA_EXHAUSTED} or a providerError/infrastructureError present, per src/evaluation/types.ts isInfrastructureFailure",
+    "rerunPermitted": "Only for runs classified as EXPERIMENT_INFRASTRUCTURE_FAILURE (provider outage, quota exhaustion, tool/workspace/runner crash unrelated to either arm's own behavior); never for an ordinary arm failure",
+    "rerunPreservesOriginal": true
+  },
+  "stoppingRule": {
+    "type": "FIXED_N_NO_EARLY_STOPPING",
+    "description": "Run the fixed N=3 repetitions for every one of the 29 tasks x 2 arms; do not stop early because an aggregate trend appears in either direction",
+    "exceptions": [
+      "safety or integrity failure (leakage, nondeterminism, private-material exposure) — stop the affected task or the whole run per EXPERIMENT_PROTOCOL.md section 20",
+      "provider outage exceeding a reasonable retry window",
+      "budget ceiling reached"
+    ]
+  },
+  "contaminationRule": "After scoring begins, the benchmark suite, graders, MAF policy, Native configuration, model/version, effort, timeout, task prompts, run count, and statistical plan are frozen. A material defect found mid-run stops the affected experiment and is recorded as an incident rather than silently patched; a benchmark defect produces a suite v2, a protocol defect produces a protocol v2 (this document).",
+  "provenanceSchemaRef": "EXPERIMENT_PROTOCOL_V2.md 'Provenance schema' (extends EXPERIMENT_PROTOCOL.md section 20)",
+  "realPreflight": {
+    "status": "NON_SCORING",
+    "tag": "NOT_PART_OF_EXPERIMENT",
+    "taskSource": "evaluation/experiments/real/fixtures/preflight-phase (synthetic, not part of the frozen 29-task suite)",
+    "runner": "evaluation/experiments/run-real-preflight.ts",
+    "npmScript": "experiment:real-preflight",
+    "billedConfirmationFlag": "--confirm-billed-run",
+    "defaultBehavior": "Validates manifest/config, checks Claude Code CLI availability without any model call, builds the synthetic controller-owned workspaces, constructs the real Native and MAF executors and the independent verifier, prints the planned executions, and stops before any provider invocation.",
+    "billedBehavior": "Executes exactly 1 synthetic NON_SCORING Native run and 1 synthetic NON_SCORING MAF run against the preflight fixture only -- never a frozen Phase B/C task.",
+    "scope": "1 NATIVE run + 1 MAF run against evaluation/experiments/real/fixtures/preflight-phase/preflight-task only"
+  },
+  "dryRun": {
+    "status": "NON_SCORING",
+    "tag": "NOT_PART_OF_EXPERIMENT",
+    "taskSource": "evaluation/experiments/dry-run (synthetic, not part of the frozen 29-task suite)",
+    "runner": "evaluation/experiments/run-dry-run.ts",
+    "reportPath": "evaluation/experiments/dry-run/report.json",
+    "note": "Unchanged v1 mock-executor plumbing check, preserved as-is; superseded for real-execution verification by realPreflight above."
+  }
+}

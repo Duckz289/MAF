@@ -44,8 +44,10 @@
     "validate:fixtures": "node evaluation/validate-fixtures.mjs && node evaluation/validate-reconstruction.mjs",
     "validate:evaluation:audit-regression": "node evaluation/run-audit-regression.mjs",
     "experiment:validate-manifest": "node evaluation/experiments/validate-manifest.mjs",
+    "experiment:validate-manifest-v2": "node evaluation/experiments/validate-manifest-v2.mjs",
     "experiment:generate-randomization": "node evaluation/experiments/generate-randomization.mjs",
-    "experiment:dry-run": "tsx evaluation/experiments/run-dry-run.ts"
+    "experiment:dry-run": "tsx evaluation/experiments/run-dry-run.ts",
+    "experiment:real-preflight": "tsx evaluation/experiments/run-real-preflight.ts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.3.0",

@@ -9,6 +9,8 @@ interface ClaudeSession extends AgentSession {
   queue: AgentEvent[];
   waiters: Array<() => void>;
   ended: boolean;
+  /** Resolved model identifier observed on a streamed assistant message, if the CLI reported one. */
+  resolvedModel?: string;
 }
 
 export interface ClaudeCodeConfig {
@@ -16,7 +18,17 @@ export interface ClaudeCodeConfig {
   model?: string;
   maxBudgetUsd?: number;
   permissionMode?: "acceptEdits" | "dontAsk" | "plan";
+  /**
+   * Fixed sentence prepended to every prompt ahead of `initialContext`. Defaults to the historical
+   * MAF framing text below. Callers that need a participant to receive no MAF framing at all (e.g.
+   * a true native-baseline benchmark arm) may pass an empty string; the default is unchanged for
+   * every other caller.
+   */
+  promptPreamble?: string;
 }
+
+const DEFAULT_PROMPT_PREAMBLE =
+  "MAF provides the following starting context. Keep your native planning and repository search.";
 
 export class ClaudeCodeAdapter implements AgentAdapter {
   readonly name = "claude-code";
@@ -87,7 +99,16 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         ? ["--max-budget-usd", String(this.config.maxBudgetUsd)]
         : []),
     ];
-    const child = spawn(this.config.command ?? "claude", args, {
+    const requestedCommand = this.config.command ?? "claude";
+    // Testability-only hook: a `.mjs`/`.cjs`/`.js` command is a fake CLI script, not a native
+    // executable. `spawn(..., {shell: false})` cannot run one portably (Windows in particular
+    // cannot execute a script file directly without a shell, which this adapter deliberately never
+    // enables), so run it through the current Node binary instead. `claude` and any other real
+    // executable are spawned exactly as before.
+    const isScriptCommand = /\.(?:mjs|cjs|js)$/iu.test(requestedCommand);
+    const spawnCommand = isScriptCommand ? process.execPath : requestedCommand;
+    const spawnArgs = isScriptCommand ? [requestedCommand, ...args] : args;
+    const child = spawn(spawnCommand, spawnArgs, {
       cwd: active.input.workspacePath,
       windowsHide: true,
       env: {
@@ -128,12 +149,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         });
       this.wake(active);
     });
-    const prompt = [
-      "MAF provides the following starting context. Keep your native planning and repository search.",
-      active.input.initialContext,
-      "Task:",
-      message,
-    ].join("\n\n");
+    const preamble = this.config.promptPreamble ?? DEFAULT_PROMPT_PREAMBLE;
+    const prompt = [preamble, active.input.initialContext, "Task:", message]
+      .filter((part) => part.length > 0)
+      .join("\n\n");
     child.stdin.end(prompt);
   }
 
@@ -163,7 +182,17 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       const payload = JSON.parse(line) as Record<string, unknown>;
       const timestamp = new Date().toISOString();
       if (payload.type === "assistant") {
-        const message = payload.message as { content?: Array<Record<string, unknown>> } | undefined;
+        const message = payload.message as
+          | { content?: Array<Record<string, unknown>>; model?: unknown }
+          | undefined;
+        // The Claude Code CLI echoes the underlying Anthropic Messages API response for each
+        // assistant turn, which carries the concrete resolved model identifier (e.g. a dated
+        // snapshot id) on `message.model`. Capturing it here is the only way this adapter can ever
+        // report anything more specific than the requested alias; if the CLI never includes it, the
+        // resolved model stays unknown rather than being invented.
+        if (typeof message?.model === "string" && message.model.length > 0) {
+          session.resolvedModel = message.model;
+        }
         for (const content of message?.content ?? []) {
           if (content.type === "text")
             this.push(session, { type: "message", data: { text: content.text }, timestamp });
@@ -188,12 +217,23 @@ export class ClaudeCodeAdapter implements AgentAdapter {
             outputTokens: Number(usage.output_tokens ?? 0),
             cachedTokens: Number(usage.cache_read_input_tokens ?? 0),
             costUsd: typeof payload.total_cost_usd === "number" ? payload.total_cost_usd : null,
+            ...(session.resolvedModel ? { resolvedModel: session.resolvedModel } : {}),
           },
           timestamp,
         });
         this.push(session, {
           type: "complete",
-          data: { result: payload.result, nativeSessionId: payload.session_id },
+          data: {
+            result: payload.result,
+            nativeSessionId: payload.session_id,
+            // The CLI's own structured terminal classification (e.g. "success",
+            // "error_max_turns", "error_during_execution"), when it reports one. This is still
+            // self-reported evidence -- the CLI's own claim about its own turn, not independent
+            // verification -- but it is a structured field rather than a free-text heuristic, so
+            // callers that need a self-reported completion signal should read this instead of
+            // pattern-matching `result` text.
+            ...(typeof payload.subtype === "string" ? { subtype: payload.subtype } : {}),
+          },
           timestamp,
         });
         return;
