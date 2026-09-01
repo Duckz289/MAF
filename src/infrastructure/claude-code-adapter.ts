@@ -11,11 +11,40 @@ interface ClaudeSession extends AgentSession {
   ended: boolean;
   /** Resolved model identifier observed on a streamed assistant message, if the CLI reported one. */
   resolvedModel?: string;
+  /** The executable actually handed to spawn(), for provenance. */
+  spawnedCommand?: string;
+  /** The exact argument vector actually handed to spawn(), for provenance. */
+  spawnedArgs?: string[];
 }
+
+/** What a session actually spawned. Absent until `send()` has run. */
+export interface ClaudeCodeSpawnRecord {
+  command: string;
+  args: string[];
+}
+
+/** Effort levels the Claude Code CLI's `--effort` flag accepts. */
+export type ClaudeCodeEffort = "low" | "medium" | "high" | "xhigh" | "max";
+
+export const claudeCodeEfforts: readonly ClaudeCodeEffort[] = [
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+];
 
 export interface ClaudeCodeConfig {
   command?: string;
   model?: string;
+  /**
+   * Reasoning effort for the session, forwarded as the CLI's `--effort` argument.
+   *
+   * The first billed Protocol v2 preflight recorded `effort: "high"` in its provenance while never
+   * emitting the argument at all, so both arms actually ran at the CLI's own default. A protocol
+   * that declares effort a controlled variable has to send it, not merely claim it.
+   */
+  effort?: ClaudeCodeEffort;
   maxBudgetUsd?: number;
   permissionMode?: "acceptEdits" | "dontAsk" | "plan";
   /**
@@ -95,6 +124,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       "--permission-mode",
       this.config.permissionMode ?? "acceptEdits",
       ...(this.config.model ? ["--model", this.config.model] : []),
+      ...(this.config.effort ? ["--effort", this.config.effort] : []),
       ...(this.config.maxBudgetUsd !== undefined
         ? ["--max-budget-usd", String(this.config.maxBudgetUsd)]
         : []),
@@ -108,6 +138,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     const isScriptCommand = /\.(?:mjs|cjs|js)$/iu.test(requestedCommand);
     const spawnCommand = isScriptCommand ? process.execPath : requestedCommand;
     const spawnArgs = isScriptCommand ? [requestedCommand, ...args] : args;
+    // Recorded so a caller can prove WHICH executable and WHICH arguments actually ran. The first
+    // billed preflight could not establish either after the fact.
+    active.spawnedCommand = spawnCommand;
+    active.spawnedArgs = [...spawnArgs];
     const child = spawn(spawnCommand, spawnArgs, {
       cwd: active.input.workspacePath,
       windowsHide: true,
@@ -139,14 +173,22 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         timestamp: new Date().toISOString(),
       }),
     );
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
       active.ended = true;
-      if (code !== 0)
+      // A signal-terminated process reports code === null. Coercing that to 1 (as this did before)
+      // made a killed process indistinguishable from a genuine exit(1) in every downstream record,
+      // destroying the single most useful discriminator when diagnosing a failed run. Both facts are
+      // now reported separately, and neither is invented when absent.
+      if (code !== 0 || signal !== null) {
         this.push(active, {
           type: "error",
-          data: { exitCode: code ?? 1 },
+          data: {
+            exitCode: code,
+            terminationSignal: signal,
+          },
           timestamp: new Date().toISOString(),
         });
+      }
       this.wake(active);
     });
     const preamble = this.config.promptPreamble ?? DEFAULT_PROMPT_PREAMBLE;
@@ -171,6 +213,17 @@ export class ClaudeCodeAdapter implements AgentAdapter {
 
   async cancel(session: AgentSession): Promise<void> {
     this.requireSession(session.id).child?.kill("SIGTERM");
+  }
+
+  /**
+   * What this session actually spawned. Returns undefined before `send()` has run, or once the
+   * session has been drained and released. Exposed so an experiment controller can record the
+   * executable and argument vector that really ran rather than the one it intended to run.
+   */
+  spawnRecord(session: AgentSession): ClaudeCodeSpawnRecord | undefined {
+    const active = this.sessions.get(session.id);
+    if (!active?.spawnedCommand || !active.spawnedArgs) return undefined;
+    return { command: active.spawnedCommand, args: [...active.spawnedArgs] };
   }
 
   async resume(): Promise<AgentSession> {
@@ -226,6 +279,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
           data: {
             result: payload.result,
             nativeSessionId: payload.session_id,
+            // The CLI's own error flag on the terminal result. Without it, an ERROR result and a
+            // SUCCESS result were indistinguishable to callers (both merely had type "result"),
+            // which is half of the terminal-state collapse the first billed preflight exposed.
+            ...(typeof payload.is_error === "boolean" ? { isError: payload.is_error } : {}),
             // The CLI's own structured terminal classification (e.g. "success",
             // "error_max_turns", "error_during_execution"), when it reports one. This is still
             // self-reported evidence -- the CLI's own claim about its own turn, not independent
