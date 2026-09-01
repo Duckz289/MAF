@@ -61,6 +61,22 @@ const baseSide = (overrides: Partial<ExecutorSideChannel> = {}): ExecutorSideCha
     costStatus: "KNOWN",
   },
   candidateWorkspace: "/tmp/fake-workspace",
+  rawReportedModel: "claude-sonnet-5-20250929",
+  modelProvenanceNote: "test",
+  effortArgumentEmitted: true,
+  attempts: [],
+  ceilings: {
+    runTimeoutMs: 1_800_000,
+    runDeadline: "2026-09-01T00:30:00.000Z",
+    remainingRunTimeMsAtEnd: 1_795_000,
+    runBudgetUsd: 8,
+    remainingRunBudgetUsdAtEnd: 7.5,
+    providerInvocationsAllowed: 1,
+    providerInvocationsStarted: 1,
+    providerInvocationsRefused: 0,
+  },
+  firstFailure: null,
+  failureClassification: "COMPLETED",
   ...overrides,
 });
 

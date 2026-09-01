@@ -92,10 +92,29 @@ export const successScript = (overrides: Partial<Record<string, unknown>> = {}):
     },
     timestamp: timestamp(),
   },
-  { type: "complete", data: { result: "done", subtype: "success" }, timestamp: timestamp() },
+  {
+    type: "complete",
+    data: { result: "done", subtype: "success", isError: false },
+    timestamp: timestamp(),
+  },
 ];
 
-export const arrivedFailureScript = (): AgentEvent[] => [
+/** Structured success whose cost was never reported. Must stay UNKNOWN, never become 0. */
+export const successUnknownCostScript = (): AgentEvent[] => [
+  {
+    type: "usage",
+    data: { inputTokens: 10, outputTokens: 5, cachedTokens: 0, costUsd: null },
+    timestamp: timestamp(),
+  },
+  {
+    type: "complete",
+    data: { result: "done", subtype: "success", isError: false },
+    timestamp: timestamp(),
+  },
+];
+
+/** The participant's own limit: a VALID run with a non-DVS outcome, never rerun. */
+export const participantLimitScript = (): AgentEvent[] => [
   {
     type: "usage",
     data: { inputTokens: 80, outputTokens: 40, cachedTokens: 0, costUsd: 0.03 },
@@ -103,15 +122,73 @@ export const arrivedFailureScript = (): AgentEvent[] => [
   },
   {
     type: "complete",
-    data: { result: "I could not fix this", subtype: "error_during_execution" },
+    data: { result: "hit turn limit", subtype: "error_max_turns", isError: true },
     timestamp: timestamp(),
   },
 ];
 
-export const providerErrorScript = (message = "ECONNRESET: socket hang up"): AgentEvent[] => [
-  { type: "error", data: { message }, timestamp: timestamp() },
+/**
+ * A bare nonzero process exit with no structured result and no diagnostic stderr -- the exact shape
+ * that caused the first billed preflight's authorization overrun. Must classify CLI_PROCESS_FAILURE
+ * and must NOT be auto-retryable.
+ */
+export const bareNonzeroExitScript = (exitCode = 1): AgentEvent[] => [
+  { type: "error", data: { exitCode, terminationSignal: null }, timestamp: timestamp() },
 ];
 
-export const nonRetryableErrorScript = (): AgentEvent[] => [
-  { type: "error", data: { message: "invalid api key: unauthorized" }, timestamp: timestamp() },
+/** Signal termination: exitCode is null and must never be coerced to 1. */
+export const signalTerminationScript = (signal = "SIGKILL"): AgentEvent[] => [
+  { type: "error", data: { exitCode: null, terminationSignal: signal }, timestamp: timestamp() },
+];
+
+/** Provider/upstream failure evidenced on stderr -- the one auto-retryable class. */
+export const providerFailureScript = (
+  stderrText = "API error: 529 overloaded_error, service unavailable",
+): AgentEvent[] => [
+  { type: "tool", data: { stream: "stderr", text: stderrText }, timestamp: timestamp() },
+  { type: "error", data: { exitCode: 1, terminationSignal: null }, timestamp: timestamp() },
+];
+
+/** Auth/configuration failure evidenced on stderr. Never auto-retryable. */
+export const authFailureScript = (): AgentEvent[] => [
+  {
+    type: "tool",
+    data: {
+      stream: "stderr",
+      text: "Authentication failed: not logged in. Please run `claude auth login`.",
+    },
+    timestamp: timestamp(),
+  },
+  { type: "error", data: { exitCode: 1, terminationSignal: null }, timestamp: timestamp() },
+];
+
+/** A structured SUCCESS result followed by an unrelated nonzero exit. */
+export const successThenNonzeroExitScript = (): AgentEvent[] => [
+  ...successScript(),
+  { type: "error", data: { exitCode: 1, terminationSignal: null }, timestamp: timestamp() },
+];
+
+/** A provider failure that also reports a cost, for cumulative-budget tests. */
+export const costedProviderFailureScript = (costUsd: number): AgentEvent[] => [
+  {
+    type: "usage",
+    data: { inputTokens: 50, outputTokens: 25, cachedTokens: 0, costUsd },
+    timestamp: timestamp(),
+  },
+  {
+    type: "tool",
+    data: { stream: "stderr", text: "API error: 529 overloaded_error" },
+    timestamp: timestamp(),
+  },
+  { type: "error", data: { exitCode: 1, terminationSignal: null }, timestamp: timestamp() },
+];
+
+/** A provider failure whose cost was never observed, for the fail-closed retry test. */
+export const uncostedProviderFailureScript = (): AgentEvent[] => [
+  {
+    type: "tool",
+    data: { stream: "stderr", text: "API error: 529 overloaded_error" },
+    timestamp: timestamp(),
+  },
+  { type: "error", data: { exitCode: 1, terminationSignal: null }, timestamp: timestamp() },
 ];
