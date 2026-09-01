@@ -86,10 +86,7 @@
               "term": "runEscalationSweep",
               "files": 2,
               "ownerAmong": false,
-              "matched": [
-                "src/app/console.mjs",
-                "src/workflows/escalation-policy.mjs"
-              ]
+              "matched": ["src/app/console.mjs", "src/workflows/escalation-policy.mjs"]
             },
             {
               "term": "runEscalationSweep(settings)",
@@ -101,10 +98,7 @@
               "term": "sendDigest",
               "files": 2,
               "ownerAmong": false,
-              "matched": [
-                "src/app/console.mjs",
-                "src/workflows/daily-digest.mjs"
-              ]
+              "matched": ["src/app/console.mjs", "src/workflows/daily-digest.mjs"]
             },
             {
               "term": "sendDigest(agent, subjects, settings)",
@@ -315,18 +309,13 @@
               "term": "quoteShipment",
               "files": 2,
               "ownerAmong": false,
-              "matched": [
-                "src/app/terminal.mjs",
-                "src/quoting/quote-service.mjs"
-              ]
+              "matched": ["src/app/terminal.mjs", "src/quoting/quote-service.mjs"]
             },
             {
               "term": "quoteShipment(basePrice, adjustment, taxRate)",
               "files": 1,
               "ownerAmong": false,
-              "matched": [
-                "src/quoting/quote-service.mjs"
-              ]
+              "matched": ["src/quoting/quote-service.mjs"]
             },
             {
               "term": "taxRate",
@@ -366,37 +355,28 @@
               "next": "src/pricing/charge-builder.mjs",
               "neighbours": 4,
               "symptomPlausibleNeighbours": 2,
-              "alternatives": [
-                "src/quoting/quote-request.mjs"
-              ]
+              "alternatives": ["src/quoting/quote-request.mjs"]
             },
             {
               "module": "src/pricing/charge-builder.mjs",
               "next": "src/pricing/adjustment-engine.mjs",
               "neighbours": 3,
               "symptomPlausibleNeighbours": 3,
-              "alternatives": [
-                "src/pricing/money.mjs",
-                "src/catalog/lane-catalog.mjs"
-              ]
+              "alternatives": ["src/pricing/money.mjs", "src/catalog/lane-catalog.mjs"]
             },
             {
               "module": "src/pricing/adjustment-engine.mjs",
               "next": "src/pricing/adjustment-rules.mjs",
               "neighbours": 3,
               "symptomPlausibleNeighbours": 2,
-              "alternatives": [
-                "src/pricing/rounding.mjs"
-              ]
+              "alternatives": ["src/pricing/rounding.mjs"]
             },
             {
               "module": "src/pricing/adjustment-rules.mjs",
               "next": "src/pricing/reduction-plan.mjs",
               "neighbours": 2,
               "symptomPlausibleNeighbours": 1,
-              "alternatives": [
-                "src/pricing/adjustment-kinds.mjs"
-              ]
+              "alternatives": ["src/pricing/adjustment-kinds.mjs"]
             },
             {
               "module": "src/pricing/reduction-plan.mjs",
@@ -581,19 +561,14 @@
               "next": "src/app/desk-operations.mjs",
               "neighbours": 3,
               "symptomPlausibleNeighbours": 2,
-              "alternatives": [
-                "src/statements/statement-builder.mjs"
-              ]
+              "alternatives": ["src/statements/statement-builder.mjs"]
             },
             {
               "module": "src/app/desk-operations.mjs",
               "next": "src/enrolment/enrol-member.mjs",
               "neighbours": 4,
               "symptomPlausibleNeighbours": 2,
-              "alternatives": [
-                "src/pricing/price-book.mjs",
-                "src/plans/plan-catalog.mjs"
-              ]
+              "alternatives": ["src/pricing/price-book.mjs", "src/plans/plan-catalog.mjs"]
             },
             {
               "module": "src/enrolment/enrol-member.mjs",
@@ -607,10 +582,7 @@
               "next": "src/pricing/rate-quote.mjs",
               "neighbours": 4,
               "symptomPlausibleNeighbours": 3,
-              "alternatives": [
-                "src/enrolment/membership-ledger.mjs",
-                "src/plans/plan-catalog.mjs"
-              ]
+              "alternatives": ["src/enrolment/membership-ledger.mjs", "src/plans/plan-catalog.mjs"]
             },
             {
               "module": "src/pricing/rate-quote.mjs",
@@ -624,18 +596,14 @@
               "next": "src/catalog/register-chain.mjs",
               "neighbours": 2,
               "symptomPlausibleNeighbours": 1,
-              "alternatives": [
-                "src/plans/plan-catalog.mjs"
-              ]
+              "alternatives": ["src/plans/plan-catalog.mjs"]
             },
             {
               "module": "src/catalog/register-chain.mjs",
               "next": "src/catalog/store-selection.mjs",
               "neighbours": 3,
               "symptomPlausibleNeighbours": 1,
-              "alternatives": [
-                "src/catalog/live-register.mjs"
-              ]
+              "alternatives": ["src/catalog/live-register.mjs"]
             },
             {
               "module": "src/catalog/store-selection.mjs",
@@ -752,18 +720,13 @@
               "term": "assignPickerCommand",
               "files": 2,
               "ownerAmong": false,
-              "matched": [
-                "src/app/floor-operations.mjs",
-                "src/picking/assign-picker-command.mjs"
-              ]
+              "matched": ["src/app/floor-operations.mjs", "src/picking/assign-picker-command.mjs"]
             },
             {
               "term": "assignPickerCommand(pickListId, pickerId)",
               "files": 1,
               "ownerAmong": false,
-              "matched": [
-                "src/picking/assign-picker-command.mjs"
-              ]
+              "matched": ["src/picking/assign-picker-command.mjs"]
             },
             {
               "term": "node bin/demo.mjs",
@@ -819,10 +782,7 @@
               "next": "src/events/signal-relay.mjs",
               "neighbours": 4,
               "symptomPlausibleNeighbours": 3,
-              "alternatives": [
-                "src/picking/pick-list-store.mjs",
-                "src/events/event-types.mjs"
-              ]
+              "alternatives": ["src/picking/pick-list-store.mjs", "src/events/event-types.mjs"]
             },
             {
               "module": "src/events/signal-relay.mjs",
@@ -989,9 +949,7 @@
               "term": "status: \"COMPLETED\"",
               "files": 1,
               "ownerAmong": false,
-              "matched": [
-                "src/workorders/work-order-transitions.mjs"
-              ]
+              "matched": ["src/workorders/work-order-transitions.mjs"]
             },
             {
               "term": "technicianId",
