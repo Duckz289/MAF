@@ -147,12 +147,17 @@ export async function analyzeOrientation({
   const broadStarts = symptomBearingFiles.filter((relative) => relative !== defectOwner);
 
   const landing =
-    bestOf(preciseStarts) ?? bestOf(broadStarts) ?? (ownerPath && { start: entrypoint, route: ownerPath, depth: ownerPath.length - 1 });
-  const landingPrecision = landing === null ? null : preciseStarts.includes(landing.start)
-    ? "PRECISE_SEARCH"
-    : landing.start === entrypoint && landing.route === ownerPath
-      ? "ENTRYPOINT_FALLBACK"
-      : "SYMPTOM_MENTION";
+    bestOf(preciseStarts) ??
+    bestOf(broadStarts) ??
+    (ownerPath && { start: entrypoint, route: ownerPath, depth: ownerPath.length - 1 });
+  const landingPrecision =
+    landing === null
+      ? null
+      : preciseStarts.includes(landing.start)
+        ? "PRECISE_SEARCH"
+        : landing.start === entrypoint && landing.route === ownerPath
+          ? "ENTRYPOINT_FALLBACK"
+          : "SYMPTOM_MENTION";
   const investigationPath = landing?.route ?? ownerPath;
 
   // --- competing hypotheses along the route from the landing point to the owner --------------------
