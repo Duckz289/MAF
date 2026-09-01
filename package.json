@@ -42,7 +42,10 @@
     "validate:evaluation:cross-suite": "node evaluation/audit-cross-suite.mjs",
     "validate:evaluation:full": "npm run validate:evaluation && npm run validate:evaluation:phase-b && npm run validate:evaluation:phase-c:band12 && npm run validate:evaluation:phase-c:band3 && npm run validate:evaluation:attacks && npm run validate:evaluation:false-fail && npm run validate:evaluation:determinism && npm run validate:evaluation:cross-suite",
     "validate:fixtures": "node evaluation/validate-fixtures.mjs && node evaluation/validate-reconstruction.mjs",
-    "validate:evaluation:audit-regression": "node evaluation/run-audit-regression.mjs"
+    "validate:evaluation:audit-regression": "node evaluation/run-audit-regression.mjs",
+    "experiment:validate-manifest": "node evaluation/experiments/validate-manifest.mjs",
+    "experiment:generate-randomization": "node evaluation/experiments/generate-randomization.mjs",
+    "experiment:dry-run": "tsx evaluation/experiments/run-dry-run.ts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.3.0",

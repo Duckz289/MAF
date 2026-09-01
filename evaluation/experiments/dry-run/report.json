@@ -1,0 +1,229 @@
+{
+  "status": "NON_SCORING",
+  "tag": "NOT_PART_OF_EXPERIMENT",
+  "generatedAt": "2026-09-01T08:11:45.838Z",
+  "note": "Synthetic plumbing check only. Never counted toward experiment statistics or DVS rate.",
+  "experimentManifest": "evaluation/experiments/native-vs-maf-v1.json",
+  "report": {
+    "generatedAt": "2026-09-01T08:11:45.390Z",
+    "samples": [
+      {
+        "agent": "dry-run-native-mock",
+        "model": "none",
+        "provider": "local",
+        "initialMode": "NATIVE",
+        "finalMode": "NATIVE",
+        "modeTransitions": [],
+        "signalSnapshots": [],
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cachedTokens": 0,
+        "reportedCost": null,
+        "latencyMs": 0.8919999999999959,
+        "retryCount": 0,
+        "verificationAttempts": 1,
+        "repairAttempts": 0,
+        "verifierFailures": 0,
+        "verificationResult": "VERIFIED",
+        "filesChanged": ["src/greet.mjs"],
+        "modulesTouched": [],
+        "contextExpansion": 0,
+        "orchestrationOverheadMs": 0,
+        "runId": "dry-run:NATIVE:dry-run-task",
+        "candidateId": "dry-run-candidate:NATIVE",
+        "executionStatus": "COMPLETED",
+        "task": {
+          "id": "dry-run-task",
+          "prompt": "Fix greet() in src/greet.mjs to return the expected Hello greeting.",
+          "expectedVerification": "greet(\"World\") === \"Hello, World!\"",
+          "candidateWorkspaces": {
+            "NATIVE": "C:\\Users\\Admin\\AppData\\Local\\Temp\\maf-dry-run-native-NKNbf8",
+            "MAF_ADAPTIVE": "C:\\Users\\Admin\\AppData\\Local\\Temp\\maf-dry-run-maf-JpaZZU"
+          }
+        },
+        "strategy": "NATIVE",
+        "costStatus": "UNKNOWN",
+        "verifiedSuccess": true
+      },
+      {
+        "agent": "dry-run-maf-mock",
+        "model": "none",
+        "provider": "local",
+        "initialMode": "STRICT",
+        "finalMode": "GUIDED",
+        "modeTransitions": [
+          {
+            "from": "STRICT",
+            "to": "GUIDED",
+            "reason": "dry-run synthetic escalation, exercised only to verify orchestration plumbing",
+            "signalSnapshotId": "dry-run-snapshot-1"
+          }
+        ],
+        "signalSnapshots": [
+          {
+            "id": "dry-run-snapshot-1",
+            "runId": "dry-run:MAF_ADAPTIVE:dry-run-task",
+            "sequence": 1,
+            "checkpoint": "dry-run-checkpoint",
+            "timestamp": "2026-09-01T08:11:45.396Z",
+            "signals": {},
+            "evidence": []
+          }
+        ],
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cachedTokens": 0,
+        "reportedCost": null,
+        "latencyMs": 1.5701999999999998,
+        "retryCount": 0,
+        "verificationAttempts": 1,
+        "repairAttempts": 0,
+        "verifierFailures": 0,
+        "verificationResult": "VERIFIED",
+        "filesChanged": ["src/greet.mjs"],
+        "modulesTouched": [],
+        "contextExpansion": 0,
+        "orchestrationOverheadMs": 5,
+        "runId": "dry-run:MAF_ADAPTIVE:dry-run-task",
+        "candidateId": "dry-run-candidate:MAF_ADAPTIVE",
+        "executionStatus": "COMPLETED",
+        "task": {
+          "id": "dry-run-task",
+          "prompt": "Fix greet() in src/greet.mjs to return the expected Hello greeting.",
+          "expectedVerification": "greet(\"World\") === \"Hello, World!\"",
+          "candidateWorkspaces": {
+            "NATIVE": "C:\\Users\\Admin\\AppData\\Local\\Temp\\maf-dry-run-native-NKNbf8",
+            "MAF_ADAPTIVE": "C:\\Users\\Admin\\AppData\\Local\\Temp\\maf-dry-run-maf-JpaZZU"
+          }
+        },
+        "strategy": "MAF_ADAPTIVE",
+        "costStatus": "UNKNOWN",
+        "verifiedSuccess": true
+      }
+    ],
+    "evaluation": {
+      "runs": 2,
+      "validRuns": 2,
+      "invalidRuns": 0,
+      "infrastructureFailures": 0,
+      "runsWithCoherenceIssues": 0,
+      "dvs": 2,
+      "dvsRateAmongValidRuns": 1,
+      "dvsRateAmongAllRuns": 1,
+      "falseSafe": 0,
+      "falseSafeRateAmongValidRuns": 0,
+      "cost": {
+        "basis": "ALL_RUNS_IN_SCOPE",
+        "runsInScope": 2,
+        "runsWithKnownCost": 0,
+        "runsWithUnknownCost": 2,
+        "coverage": 0,
+        "knownCostUsd": 0,
+        "costPerDvsUsd": null,
+        "lowerBoundCostPerDvsUsd": null,
+        "status": "UNKNOWN"
+      },
+      "duration": {
+        "meanElapsedOfDvsRunsMs": 1.2310999999999979,
+        "dvsRunsMeasured": 2,
+        "meanElapsedOfValidRunsMs": 1.2310999999999979,
+        "validRunsMeasured": 2
+      },
+      "paired": [
+        {
+          "taskId": "dry-run-task",
+          "outcome": "BOTH_PASS",
+          "native": {
+            "runId": "dry-run:NATIVE:dry-run-task",
+            "condition": "NATIVE",
+            "model": "none",
+            "provider": "local",
+            "taskId": "dry-run-task",
+            "executionStatus": "COMPLETED",
+            "candidateExists": true,
+            "candidateIntegrity": "VALID",
+            "runValidity": "VALID",
+            "evidenceSource": "INDEPENDENT",
+            "hiddenGrader": "PASS",
+            "regression": "PASS",
+            "regressionEvidence": {
+              "scope": "SMOKE",
+              "method": "MODULE_LOAD_AND_ENTRYPOINT",
+              "coverage": "PARTIAL",
+              "establishes": "every module the candidate ships imports without throwing, and every public entrypoint the fixture ships runs to a clean exit",
+              "doesNotEstablish": "the correctness of any exported behavior outside the hidden grader's specific assertions and outside whatever the entrypoint's own call graph happens to exercise"
+            },
+            "selfReported": {
+              "verificationResult": "VERIFIED",
+              "claimedChangedFiles": ["src/greet.mjs"],
+              "verifierFailures": 0
+            },
+            "claimedDone": true,
+            "claimedTrusted": false,
+            "elapsedMs": 0.8919999999999959,
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "cachedTokens": 0
+            },
+            "sourceRevision": "UNKNOWN",
+            "costStatus": "PARTIAL",
+            "dvs": true,
+            "infrastructureFailure": false,
+            "falseSafe": false,
+            "effectiveRunValidity": "VALID",
+            "coherenceIssues": []
+          },
+          "maf": {
+            "runId": "dry-run:MAF_ADAPTIVE:dry-run-task",
+            "condition": "MAF",
+            "model": "none",
+            "provider": "local",
+            "taskId": "dry-run-task",
+            "executionStatus": "COMPLETED",
+            "candidateExists": true,
+            "candidateIntegrity": "VALID",
+            "runValidity": "VALID",
+            "evidenceSource": "INDEPENDENT",
+            "hiddenGrader": "PASS",
+            "regression": "PASS",
+            "regressionEvidence": {
+              "scope": "SMOKE",
+              "method": "MODULE_LOAD_AND_ENTRYPOINT",
+              "coverage": "PARTIAL",
+              "establishes": "every module the candidate ships imports without throwing, and every public entrypoint the fixture ships runs to a clean exit",
+              "doesNotEstablish": "the correctness of any exported behavior outside the hidden grader's specific assertions and outside whatever the entrypoint's own call graph happens to exercise"
+            },
+            "selfReported": {
+              "verificationResult": "VERIFIED",
+              "claimedChangedFiles": ["src/greet.mjs"],
+              "verifierFailures": 0
+            },
+            "claimedDone": true,
+            "claimedTrusted": false,
+            "elapsedMs": 1.5701999999999998,
+            "usage": {
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "cachedTokens": 0
+            },
+            "sourceRevision": "UNKNOWN",
+            "costStatus": "PARTIAL",
+            "dvs": true,
+            "infrastructureFailure": false,
+            "falseSafe": false,
+            "effectiveRunValidity": "VALID",
+            "coherenceIssues": []
+          }
+        }
+      ]
+    },
+    "metrics": {
+      "sampleCount": 2,
+      "selfReportedVerifiedRate": 1,
+      "meanCostOfVerifiedSuccessesUsd": null,
+      "selfReportedSuccessesWithKnownCost": 0
+    },
+    "strategyEvidence": []
+  }
+}

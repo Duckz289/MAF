@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "protocolVersion": "1.0.0-preregistered",
+  "status": "PRE_REGISTERED_NOT_FROZEN",
+  "purpose": "Paired Native-vs-MAF evaluation of Durable Verified Success on the frozen 29-task suite",
+  "frozenSuite": {
+    "tag": "maf-suite-freeze-v1",
+    "sha": "92f13ae67802dd0049ca001f70839a9451120900",
+    "taskCount": 29,
+    "taskSource": "evaluation/contracts/tasks.json",
+    "immutable": true
+  },
+  "experimentBranch": "experiment/native-vs-maf-v1",
+  "arms": {
+    "NATIVE": {
+      "benchmarkStrategy": "NATIVE",
+      "description": "The coding agent running in its ordinary execution mode with no MAF orchestration or intervention. Its own execution artifact is still graded by the same independent, controller-side verification pipeline used for MAF.",
+      "orchestration": "NONE",
+      "identity": {
+        "executionMode": "NATIVE",
+        "baseline": "NATIVE_FRONTIER",
+        "reviewPolicy": "NONE"
+      }
+    },
+    "MAF": {
+      "benchmarkStrategy": "MAF_ADAPTIVE",
+      "description": "The same coding agent running under the MAF adaptive mode controller (src/domain/mode-controller.ts) with control/assurance behavior enabled: adaptive STRICT/GUIDED/SOLO_NATIVE mode transitions driven by runtime signals, and controller-side independent verification after execution.",
+      "orchestration": "MAF_ADAPTIVE",
+      "identity": {
+        "executionMode": "GUIDED",
+        "baseline": "CHALLENGER",
+        "reviewPolicy": "NONE"
+      },
+      "treatmentPolicy": {
+        "note": "Frozen policy dimensions for Protocol v1. Runtime mode transitions the controller makes within this policy are adaptive by design (see EXPERIMENT_PROTOCOL.md section 6); the POLICY governing those transitions is what is frozen here, not any single run's transitions.",
+        "interventionPolicy": "AdaptiveModeController default policy (src/domain/mode-controller.ts), unmodified for this protocol",
+        "contextStrategy": "LocalRepositoryIndex + EvidenceRuntimeSignalCollector default configuration, unmodified",
+        "retryPolicy": "Executor-reported retryCount only; no additional MAF-imposed retry ceiling beyond the adaptive controller's own mode-driven behavior",
+        "verificationPolicy": "Controller-side CuratorIndependentVerifier (src/evaluation/curator-verifier.ts): hidden grader + SMOKE regression, run after participant execution, never observed by the participant",
+        "escalation": "STRICT -> GUIDED -> SOLO_NATIVE per AdaptiveModeController transition rules; no manual escalation for this protocol",
+        "recoveryBehavior": "src/domain/recovery.ts classifyFailure-driven provider-transient handling only; no additional MAF-side recovery beyond what the adapter itself reports",
+        "modelRouting": "NONE — same frontier model and effort as NATIVE for every paired run",
+        "sandboxing": "Same controller-owned, per-run temporary workspace and execution environment as NATIVE",
+        "costControls": "src/domain/budget.ts HARD allocation mode at the frozen per-run budget ceiling below; no separate MAF-only budget"
+      }
+    }
+  },
+  "controlledVariables": [
+    "model",
+    "modelVersion",
+    "effort",
+    "taskPrompt",
+    "startingRepositorySeed",
+    "budgetPolicy",
+    "timeoutPolicy",
+    "provider",
+    "executionEnvironment",
+    "availableBaseTools",
+    "hiddenGrader"
+  ],
+  "modelConfiguration": {
+    "model": "claude-sonnet-5",
+    "provider": "anthropic",
+    "effort": "high",
+    "thinking": "adaptive",
+    "resolved": true,
+    "note": "Same model/version/effort used for both NATIVE and MAF_ADAPTIVE arms of every paired run. Resolved per the mission header (MODEL: Claude Sonnet 5, Effort: High)."
+  },
+  "runsPerTask": 3,
+  "totalScoringRunsPlanned": 174,
+  "runCountRationale": "29 tasks x 2 arms x 3 repetitions = 174 participant runs. See EXPERIMENT_PROTOCOL.md section 15 for the N=1/3/5 cost-and-runtime scenario table and rationale; N=3 matches the repetition count protocol.json already uses for local ABI stress validation (execution.repetitions) and is the minimum that lets task-level aggregation (majority-of-3) reduce single-run stochasticity before pairing.",
+  "timeoutMs": 1800000,
+  "timeoutRationale": "30 minutes per participant run. Distinct from the local ABI grader timeout (evaluation/protocol.json execution.timeoutMs = 120000, which bounds fast deterministic fixture checks, not frontier agent execution) and from the independent verifier's own grader/regression timeouts (src/evaluation/curator-verifier.ts DEFAULT_GRADER_TIMEOUT_MS=30000, DEFAULT_REGRESSION_TIMEOUT_MS=20000), which run after participant timing has already stopped.",
+  "budget": {
+    "perRunCeilingUsd": 8,
+    "mode": "HARD",
+    "note": "Enforced via src/domain/budget.ts computeAllocation/authorizeSpend HARD mode, identically for both arms. See EXPERIMENT_PROTOCOL.md section 9 for the derivation and the N=1/3/5 total-experiment cost scenarios computed from Claude Sonnet 5 published per-token pricing."
+  },
+  "randomization": {
+    "seedSource": "evaluation/experiments/generate-randomization.mjs",
+    "manifestFile": "evaluation/experiments/randomization.json",
+    "method": "xmur3-seeded mulberry32 Fisher-Yates shuffle of the frozen 29 task IDs; arm order derived from shuffled-position parity (even index = NATIVE_FIRST, odd index = MAF_FIRST)",
+    "counterbalanced": true
+  },
+  "metrics": {
+    "primary": ["DVS_RATE_AMONG_VALID_RUNS"],
+    "secondary": [
+      "COST_PER_DVS",
+      "MEAN_ELAPSED_OF_DVS_RUNS_TIME_TO_SAFE",
+      "INVALID_RUN_RATE",
+      "HIDDEN_GRADER_PASS_RATE",
+      "REGRESSION_PASS_RATE",
+      "CANDIDATE_INTEGRITY_FAILURE_RATE",
+      "FALSE_SAFE_RATE_AMONG_VALID_RUNS",
+      "MAF_INTERVENTION_COUNT",
+      "RETRY_COUNT",
+      "EXECUTION_COST_USD",
+      "VERIFICATION_COST_USD",
+      "TOTAL_WALL_CLOCK_DURATION_MS"
+    ],
+    "diagnostic": [
+      "DVS_RATE_AMONG_ALL_RUNS",
+      "MEAN_ELAPSED_OF_VALID_RUNS",
+      "BOTH_PASS",
+      "MAF_ONLY_PASS",
+      "NATIVE_ONLY_PASS",
+      "BOTH_FAIL",
+      "INVALID_MAF",
+      "INVALID_NATIVE",
+      "INVALID_BOTH",
+      "COHERENCE_ISSUES_COUNT"
+    ]
+  },
+  "subgroupAnalyses": ["phase-b", "phase-c:band1", "phase-c:band2", "phase-c:band3"],
+  "invalidRunPolicy": {
+    "definition": "evaluation/protocol.json invalidRuns semantics, unmodified: invalid runs never count as DVS and are reported separately from the valid-run denominator",
+    "modelArmFailure": "An arm failure the participant itself caused (task not attempted correctly, candidate produced but grader FAILs, participant crashes on its own logic) is a valid run with a non-DVS outcome; it is never rerun",
+    "infrastructureFailure": "executionStatus in {INFRA_FAILURE, TIMEOUT, CANCELLED, QUOTA_EXHAUSTED} or a providerError/infrastructureError present, per src/evaluation/types.ts isInfrastructureFailure",
+    "rerunPermitted": "Only for runs classified as EXPERIMENT_INFRASTRUCTURE_FAILURE (provider outage, quota exhaustion, tool/workspace/runner crash unrelated to either arm's own behavior); never for an ordinary arm failure",
+    "rerunPreservesOriginal": true
+  },
+  "stoppingRule": {
+    "type": "FIXED_N_NO_EARLY_STOPPING",
+    "description": "Run the fixed N=3 repetitions for every one of the 29 tasks x 2 arms; do not stop early because an aggregate trend appears in either direction",
+    "exceptions": [
+      "safety or integrity failure (leakage, nondeterminism, private-material exposure) — stop the affected task or the whole run per EXPERIMENT_PROTOCOL.md section 20",
+      "provider outage exceeding a reasonable retry window",
+      "budget ceiling reached"
+    ]
+  },
+  "contaminationRule": "After scoring begins, the benchmark suite, graders, MAF policy, Native configuration, model/version, effort, timeout, task prompts, run count, and statistical plan are frozen. A material defect found mid-run stops the affected experiment and is recorded as an incident rather than silently patched; a benchmark defect produces a suite v2, a protocol defect produces a protocol v2.",
+  "provenanceSchemaRef": "EXPERIMENT_PROTOCOL.md section 21",
+  "dryRun": {
+    "status": "NON_SCORING",
+    "tag": "NOT_PART_OF_EXPERIMENT",
+    "taskSource": "evaluation/experiments/dry-run (synthetic, not part of the frozen 29-task suite)",
+    "runner": "evaluation/experiments/run-dry-run.ts",
+    "reportPath": "evaluation/experiments/dry-run/report.json"
+  }
+}
