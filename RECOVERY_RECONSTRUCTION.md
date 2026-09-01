@@ -533,3 +533,35 @@ non-Claude verification pass before an irreversible suite freeze remains recomme
 reason, independent of anything measured above.
 
 `FRONTIER_MODELS_EXECUTED: NO`
+
+# Suite freeze (`maf-suite-freeze-v1`)
+
+A final, non-Claude pre-freeze audit returned verdict `READY_FOR_SUITE_FREEZE` for the state at
+`repair/pre-freeze-small-fixes-v1` (commit `92f13ae67802dd0049ca001f70839a9451120900`), the tip of
+the pre-freeze small repairs recorded above. On that verdict, this exact commit was frozen as the
+benchmark-suite freeze candidate:
+
+- Freeze tag: `maf-suite-freeze-v1` (annotated, immutable)
+- Freeze commit: `92f13ae67802dd0049ca001f70839a9451120900`
+- Canonical branch: `recovery/post-loss-canonical`, pointing exactly at the freeze commit
+- Milestone tags preserving the reconstruction/repair lineage: `maf-recovery-base-36791bc`,
+  `maf-reconstruction-v2-bb326527`, `maf-audit1-repair-5084aba`, `maf-audit2-repair-62277b5`
+- The now-redundant branch refs `recovery/full-post-ed71448-reconstruction`,
+  `recovery/rebuild-post-36791bc-v2`, `repair/independent-audit-bb32652-v1`,
+  `repair/second-audit-root-causes-v1`, and `repair/pre-freeze-small-fixes-v1` were deleted after
+  each was verified to be a pure ancestor of the freeze commit with zero unique commits; their tips
+  remain reachable through `recovery/post-loss-canonical` and the milestone tags above.
+
+This record itself lives on a separate branch, `docs/freeze-record-v1`, branched from
+`recovery/post-loss-canonical` after the freeze, so the canonical branch keeps pointing at exactly
+the verified freeze commit rather than moving past it.
+
+`FRONTIER_MODELS_EXECUTED: NO` at the time of this freeze.
+
+## Freeze policy
+
+`maf-suite-freeze-v1` is immutable and must never be moved to another commit. Native-vs-MAF
+benchmark results must be evaluated against this exact frozen suite. If a material benchmark
+defect is discovered after frontier runs begin, v1 must not be silently modified: mark affected
+experiments invalid where required, create a new suite version, cut a new freeze tag (e.g.
+`maf-suite-freeze-v2`), and rerun the affected experiments against it.
