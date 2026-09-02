@@ -48,6 +48,7 @@ import { evaluateCampaignGate, theoreticalMaximumCampaignUsd } from "./lib/campa
 import { evaluateExecutionGate, type ManifestParameters } from "./lib/execution-gate";
 import { verifyFrozenArtifacts, resolveRunnerTagSha } from "./lib/tag-verification";
 import { runFrozenAnalysis } from "./lib/analysis-binding";
+import { pinClaudeExecutable } from "./lib/executable-gate";
 import { inspectEffectiveClaudeConfig } from "./lib/effective-config-gate";
 import { checkEnvironmentRouting } from "../real/lib/preflight-gate";
 
@@ -65,6 +66,9 @@ const value = (name: string): string | undefined => {
 const out = (line = ""): void => {
   process.stdout.write(`${line}\n`);
 };
+
+/** Pins an exact binary for the version/auth probe and for any future participant execution. */
+const claudePathOverride = value("claude-path");
 
 const requireCampaign = (): string => {
   const dir = value("campaign");
@@ -196,7 +200,10 @@ const commandValidate = async (): Promise<void> => {
   const manifestCheck = checkManifestParameters(manifest);
   out(`  [${manifestCheck.passed ? "PASS" : "FAIL"}] manifest: ${manifestCheck.detail}`);
 
-  const effectiveConfig = await inspectEffectiveClaudeConfig({ forwardedEnvironmentKeys: [] });
+  const effectiveConfig = await inspectEffectiveClaudeConfig({
+    forwardedEnvironmentKeys: [],
+    workspacePaths: [repoRoot],
+  });
   for (const check of effectiveConfig.checks) {
     out(`  [${check.passed ? "PASS" : "FAIL"}] ${check.id}: ${check.detail}`);
   }
@@ -232,7 +239,7 @@ const commandInit = async (): Promise<void> => {
   const store = new ScoringStateStore({ root });
   const runnerSha = await resolveRunnerTagSha(RUNNER_TAG, { repoRoot });
 
-  await store.writeCampaign({
+  const result = await store.createCampaign({
     campaignId: randomUUID(),
     createdAt: new Date().toISOString(),
     suiteTag: SUITE_TAG,
@@ -252,7 +259,17 @@ const commandInit = async (): Promise<void> => {
     protocolFrozen: true,
     knownSourceMetadataNote: KNOWN_SOURCE_METADATA_NOTE,
   });
-  await store.writeSchedule(schedule);
+
+  if (!result.created) {
+    header("campaign init REFUSED");
+    out(result.detail);
+    out();
+    out("Recorded observations are paid evidence; init never replaces them. To continue this");
+    out("campaign use:  scoring resume --campaign <dir>");
+    process.exitCode = 1;
+    return;
+  }
+  await store.createSchedule(schedule);
 
   header("campaign initialized");
   out(`root:            ${root}`);
@@ -260,6 +277,41 @@ const commandInit = async (): Promise<void> => {
   out(`slots:           ${schedule.slots.length}`);
   out(
     `ceiling:         ${ceilingRaw === undefined ? "NOT SET (billed scoring refused)" : `$${ceilingRaw}`}`,
+  );
+};
+
+// ----------------------------------------------------------------- resume
+
+const commandResume = async (): Promise<void> => {
+  const root = requireCampaign();
+  const schedule = await buildSchedule();
+  const store = new ScoringStateStore({ root });
+
+  const opened = await store.openCampaign({
+    suiteSha: SUITE_SHA,
+    protocolSha: PROTOCOL_V2_SHA,
+    analysisSha: ANALYSIS_SHA,
+    scheduleDigest: schedule.scheduleDigest,
+  });
+
+  header("resume existing campaign");
+  if (!opened.opened) {
+    out(`REFUSED: ${opened.detail}`);
+    process.exitCode = 1;
+    return;
+  }
+  const states = await store.inspectAll(schedule);
+  const complete = states.filter((s) => s.status === "COMPLETE").length;
+  out(`campaign:        ${opened.campaign.campaignId}`);
+  out(`created:         ${opened.campaign.createdAt}`);
+  out(`schedule digest: ${opened.campaign.scheduleDigest} (matches frozen inputs)`);
+  out(`progress:        ${complete} / ${schedule.slots.length} slots complete`);
+  out(
+    `ceiling:         ${
+      opened.campaign.campaignCeilingUsd === null
+        ? "NOT SET (billed scoring refused)"
+        : `$${opened.campaign.campaignCeilingUsd}`
+    }`,
   );
 };
 
@@ -380,11 +432,18 @@ const commandExecute = async (): Promise<void> => {
     // The adapter's spawn env allowlist contains no ANTHROPIC_* key
     // (src/infrastructure/claude-code-adapter.ts), asserted by tests/claude-code-adapter-env.test.ts.
     forwardedEnvironmentKeys: [],
+    // Participant workspaces are materialised from repository fixtures, so a `.claude` directory
+    // committed into the repo would be copied into the participant's cwd and take effect there.
+    workspacePaths: [repoRoot],
   });
 
-  // Auth is NOT probed here. Probing spawns the CLI, and this mission authorizes zero provider
-  // interaction of any kind; the gate treats an unprobed auth state as a failure, which is the
-  // correct fail-closed default.
+  // Resolve ONE executable and probe it. `--version` and `auth status` are local, free, and invoke
+  // no model; running them here is what lets first-party authentication be proven before any money
+  // is committed, and it guarantees the binary that was checked is the binary that would run.
+  const pinned = await pinClaudeExecutable(
+    claudePathOverride ? { preferredPath: claudePathOverride } : {},
+  );
+
   const decision = await evaluateExecutionGate({
     repoRoot,
     billedConfirmed: flag("confirm-billed-scoring"),
@@ -392,14 +451,12 @@ const commandExecute = async (): Promise<void> => {
     slotStates: states,
     campaignGate,
     auth: {
-      loggedIn: false,
-      apiProvider: null,
-      authMethod: null,
-      executablePath: null,
-      executableVersion: null,
-      detail:
-        "authentication was not probed: this runner revision performs no provider interaction of " +
-        "any kind, so it fails closed rather than reporting an unverified pass",
+      loggedIn: pinned.loggedIn,
+      apiProvider: pinned.apiProvider,
+      authMethod: pinned.authMethod,
+      executablePath: pinned.path,
+      executableVersion: pinned.version,
+      detail: pinned.detail,
     },
     routing: checkEnvironmentRouting(),
     effectiveConfig,
@@ -656,6 +713,8 @@ const main = async (): Promise<void> => {
       return commandExecute();
     case "batch-plan":
       return commandBatchPlan();
+    case "resume":
+      return commandResume();
     case "request-rerun":
       return commandRequestRerun();
     case "adjudicate":
@@ -667,6 +726,7 @@ const main = async (): Promise<void> => {
       out("  plan           print the deterministic 174-run schedule (no provider calls)");
       out("  validate       post-freeze frozen-artifact + schedule + manifest validation");
       out("  init           create a campaign state directory");
+      out("  resume         reopen an existing campaign after validating its frozen identity");
       out("  status         operational progress and spend (never a DVS trend)");
       out("  next           the next pending slots in frozen order");
       out("  batch-plan     dry plan for the next task-sized batch (3 NATIVE + 3 MAF), no calls");

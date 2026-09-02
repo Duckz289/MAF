@@ -239,18 +239,109 @@ export class ScoringStateStore {
 
   // ---------------------------------------------------------------- campaign
 
-  async writeCampaign(metadata: CampaignMetadata): Promise<void> {
+  /**
+   * Creates a campaign, refusing to touch one that already exists.
+   *
+   * Overwriting was a real hazard: `init` on an existing directory silently replaced campaign.json
+   * and schedule.json, which would orphan every recorded observation under a new campaign identity
+   * and reset the spend accounting the cost gate depends on -- destroying paid evidence with a
+   * command that reads like a no-op. Exclusive create makes that impossible; reopening an existing
+   * campaign is `openCampaign`, which validates identity instead of replacing it.
+   */
+  async createCampaign(
+    metadata: CampaignMetadata,
+  ): Promise<{ created: boolean; existing: CampaignMetadata | null; detail: string }> {
     await ensureDirectory(this.root);
-    await writeRecord(this.campaignPath(), RECORD_KINDS.campaign, metadata);
+    const { created } = await writeRecordExclusive(
+      this.campaignPath(),
+      RECORD_KINDS.campaign,
+      metadata,
+    );
+    if (created) return { created: true, existing: null, detail: "campaign created" };
+    const outcome = await this.readCampaign();
+    return {
+      created: false,
+      existing: outcome.status === "OK" ? outcome.record.payload : null,
+      detail:
+        outcome.status === "OK"
+          ? `a campaign already exists here (id ${outcome.record.payload.campaignId}, created ` +
+            `${outcome.record.payload.createdAt}). Refusing to overwrite it; use resume to continue it.`
+          : `a campaign file already exists here but is ${outcome.status}; refusing to overwrite it`,
+    };
+  }
+
+  /**
+   * Reopens an existing campaign, proving its immutable identity still matches the frozen inputs.
+   *
+   * A campaign collected under a different suite, protocol, analysis or schedule is a different
+   * experiment; continuing it as if it were this one would silently merge incompatible evidence.
+   */
+  async openCampaign(expected: {
+    suiteSha: string;
+    protocolSha: string;
+    analysisSha: string;
+    scheduleDigest: string;
+  }): Promise<
+    | { opened: true; campaign: CampaignMetadata }
+    | { opened: false; campaign: CampaignMetadata | null; mismatches: string[]; detail: string }
+  > {
+    const outcome = await this.readCampaign();
+    if (outcome.status !== "OK") {
+      return {
+        opened: false,
+        campaign: null,
+        mismatches: [],
+        detail: `no readable campaign at this path (${outcome.status}); run init first`,
+      };
+    }
+    const campaign = outcome.record.payload;
+    const mismatches: string[] = [];
+    const compare = (label: string, actual: string, wanted: string): void => {
+      if (actual !== wanted) mismatches.push(`${label}: stored=${actual} expected=${wanted}`);
+    };
+    compare("suiteSha", campaign.suiteSha, expected.suiteSha);
+    compare("protocolSha", campaign.protocolSha, expected.protocolSha);
+    compare("analysisSha", campaign.analysisSha, expected.analysisSha);
+    compare("scheduleDigest", campaign.scheduleDigest, expected.scheduleDigest);
+    if (mismatches.length > 0) {
+      return {
+        opened: false,
+        campaign,
+        mismatches,
+        detail:
+          "the stored campaign was collected under different frozen inputs and cannot be resumed " +
+          `as this one: ${mismatches.join("; ")}`,
+      };
+    }
+    return { opened: true, campaign };
   }
 
   async readCampaign(): Promise<ReadOutcome<CampaignMetadata>> {
     return readRecord<CampaignMetadata>(this.campaignPath(), RECORD_KINDS.campaign);
   }
 
-  async writeSchedule(schedule: ScoringSchedule): Promise<void> {
+  /** Writes the schedule once. Like the campaign, an existing schedule is never replaced. */
+  async createSchedule(
+    schedule: ScoringSchedule,
+  ): Promise<{ created: boolean; matches: boolean; detail: string }> {
     await ensureDirectory(this.root);
-    await writeRecord(this.schedulePath(), RECORD_KINDS.schedule, schedule);
+    const { created } = await writeRecordExclusive(
+      this.schedulePath(),
+      RECORD_KINDS.schedule,
+      schedule,
+    );
+    if (created) return { created: true, matches: true, detail: "schedule written" };
+    const existing = await this.readSchedule();
+    const matches =
+      existing.status === "OK" &&
+      existing.record.payload.scheduleDigest === schedule.scheduleDigest;
+    return {
+      created: false,
+      matches,
+      detail: matches
+        ? "an identical schedule already exists here"
+        : "a DIFFERENT schedule already exists here; refusing to overwrite recorded campaign state",
+    };
   }
 
   async readSchedule(): Promise<ReadOutcome<ScoringSchedule>> {
@@ -544,13 +635,24 @@ export class ScoringStateStore {
     };
   }
 
-  /** Refreshes a held lease so a long, legitimate run is not mistaken for an abandoned one. */
-  async heartbeat(reservationFile: string, reservation: ReservationRecord): Promise<void> {
-    await writeRecord(reservationFile, RECORD_KINDS.reservation, {
-      ...reservation,
-      heartbeatAt: new Date(this.now()).toISOString(),
-    });
-  }
+  /**
+   * The lease exists to cover exactly ONE window: claim -> provider-start intent.
+   *
+   * Before this repair the store also exposed a `heartbeat()` that nothing ever called, which made
+   * the lease look like it protected long-running work when it did not. It does not need to. Once an
+   * intent record exists, `inspectSlot` reports RECOVERY_REQUIRED regardless of lease age -- the
+   * dangling-intent check runs BEFORE any liveness check -- so a 30-minute participant run can never
+   * be reclaimed out from under itself no matter how stale its reservation looks.
+   *
+   * That leaves only the pre-intent window, which the participant runner now keeps to two exclusive
+   * file creates by declaring intent immediately after claiming and before any slow work. A lease
+   * that expires in that window is genuinely abandoned, and reclaiming it is provably safe because
+   * the absence of an intent record is durable proof no participant was ever spawned.
+   *
+   * So there is nothing to heartbeat, and the dead method is gone rather than left as a misleading
+   * affordance.
+   */
+  readonly leaseCoversPreIntentWindowOnly = true;
 
   // --------------------------------------------------- provider start intent
 

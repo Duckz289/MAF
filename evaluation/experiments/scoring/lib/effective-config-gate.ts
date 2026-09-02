@@ -184,6 +184,17 @@ export interface EffectiveConfigOptions {
    * this module states a fact about the real adapter rather than restating its allowlist here.
    */
   forwardedEnvironmentKeys?: readonly string[];
+  /**
+   * Directories the participant will actually run in.
+   *
+   * Claude Code loads `<cwd>/.claude/settings.json` in addition to the user-level file, so a
+   * workspace-local settings file can redirect the participant even when the user profile is
+   * spotless. The participant's cwd is a controller-created workspace, but the fixture it is
+   * populated from lives in the repository -- so a `.claude` directory committed into a task fixture
+   * would be copied straight into the workspace and silently take effect. Scanning the actual
+   * participant directories closes that.
+   */
+  workspacePaths?: readonly string[];
 }
 
 export const inspectEffectiveClaudeConfig = async (
@@ -225,28 +236,35 @@ export const inspectEffectiveClaudeConfig = async (
     detail: `${key} would be forwarded to the participant process`,
   }));
 
-  // 3. The CLI's own active configuration.
+  // 3. The CLI's own active configuration: user-level AND every participant workspace.
   const inspectedFiles: string[] = [];
   const configFindings: ConfigFinding[] = [];
-  for (const filename of ACTIVE_CONFIG_FILENAMES) {
-    const filePath = path.join(configDir, filename);
-    if (!(await fileExists(filePath))) continue;
-    inspectedFiles.push(filePath);
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(await readFile(filePath, "utf8"));
-    } catch (error) {
-      // An unreadable active config is not evidence of cleanliness; fail closed.
-      configFindings.push({
-        source: filePath,
-        key: "(unparseable)",
-        detail: `active configuration could not be parsed, so it cannot be proven clean: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      });
-      continue;
+  const configDirs = [
+    configDir,
+    ...(options.workspacePaths ?? []).map((w) => path.join(w, ".claude")),
+  ];
+
+  for (const dir of configDirs) {
+    for (const filename of ACTIVE_CONFIG_FILENAMES) {
+      const filePath = path.join(dir, filename);
+      if (!(await fileExists(filePath))) continue;
+      inspectedFiles.push(filePath);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(await readFile(filePath, "utf8"));
+      } catch (error) {
+        // An unreadable active config is not evidence of cleanliness; fail closed.
+        configFindings.push({
+          source: filePath,
+          key: "(unparseable)",
+          detail: `active configuration could not be parsed, so it cannot be proven clean: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        });
+        continue;
+      }
+      configFindings.push(...scanSettingsObject(parsed, filePath));
     }
-    configFindings.push(...scanSettingsObject(parsed, filePath));
   }
 
   const excludedPaths = [

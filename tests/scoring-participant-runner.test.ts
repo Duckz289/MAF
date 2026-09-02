@@ -10,6 +10,11 @@ import {
   verifySpawnArgv,
 } from "../evaluation/experiments/scoring/lib/participant-runner";
 import { buildScoringSchedule, type RunSlot } from "../evaluation/experiments/scoring/lib/schedule";
+import {
+  issueProviderAuthorization,
+  type ExecutionGateDecision,
+  type ProviderAuthorization,
+} from "../evaluation/experiments/scoring/lib/execution-gate";
 import { ScoringStateStore } from "../evaluation/experiments/scoring/lib/state-store";
 import { checkProvenanceCompleteness } from "../evaluation/experiments/scoring/lib/scoring-provenance";
 import {
@@ -45,6 +50,44 @@ const schedule = buildScoringSchedule({
   runsPerTask: 3,
 });
 const FROZEN_TASK_IDS = ["alpha-task", "beta-task"];
+const CAMPAIGN_ID = "campaign-under-test";
+
+const authorizedDecision = (): ExecutionGateDecision => ({
+  authorized: true,
+  checks: [],
+  failures: [],
+  protocolFreezeAuthority: "GIT_TAG",
+  protocolFrozen: true,
+  knownSourceMetadataNote: "note",
+  summary: "all gates passed",
+});
+
+const refusedDecision = (): ExecutionGateDecision => ({
+  authorized: false,
+  checks: [{ id: "RUNNER_FROZEN", passed: false, detail: "runner tag absent" }],
+  failures: [{ id: "RUNNER_FROZEN", passed: false, detail: "runner tag absent" }],
+  protocolFreezeAuthority: "GIT_TAG",
+  protocolFrozen: true,
+  knownSourceMetadataNote: "note",
+  summary: "1 of 14 gates failed",
+});
+
+/** Mints a real capability for the given pair. There is no way to forge one. */
+const authorizationFor = (
+  pair: { native: RunSlot; maf: RunSlot },
+  overrides: Partial<{ campaignId: string; scheduleDigest: string }> = {},
+): ProviderAuthorization => {
+  const auth = issueProviderAuthorization({
+    decision: authorizedDecision(),
+    campaignId: overrides.campaignId ?? CAMPAIGN_ID,
+    scheduleDigest: overrides.scheduleDigest ?? schedule.scheduleDigest,
+    nativeSlotDigest: pair.native.slotDigest,
+    mafSlotDigest: pair.maf.slotDigest,
+    executablePath: fakeCliPath,
+  });
+  if (!auth) throw new Error("expected a capability to be issued");
+  return auth;
+};
 
 let root: string;
 
@@ -65,7 +108,11 @@ const firstPair = () => {
  * script-command hook runs the fixture through node, and the fixture only ever emits canned
  * stream-json.
  */
-const runWithFakeCli = async (options: { store: ScoringStateStore; runnerSha?: string | null }) =>
+const runWithFakeCli = async (options: {
+  store: ScoringStateStore;
+  runnerSha?: string | null;
+  authorization?: ProviderAuthorization;
+}) =>
   executePairedSlots(
     {
       repoRoot,
@@ -73,6 +120,8 @@ const runWithFakeCli = async (options: { store: ScoringStateStore; runnerSha?: s
       frozenTaskIds: FROZEN_TASK_IDS,
       claudeCommand: fakeCliPath,
       runnerSha: options.runnerSha ?? null,
+      campaignId: CAMPAIGN_ID,
+      scheduleDigest: schedule.scheduleDigest,
       fixtureRootResolver: () => preflightFixture,
       // No hidden grader exists for the synthetic task ids, so verification reports NOT_CHECKED --
       // which is exactly right: a run the controller could not independently verify must never be
@@ -83,6 +132,7 @@ const runWithFakeCli = async (options: { store: ScoringStateStore; runnerSha?: s
     {
       prompt: "Fix formatName so it returns `${last}, ${first}`.",
       expectedVerification: 'formatName("Ada", "Lovelace") === "Lovelace, Ada"',
+      authorization: options.authorization ?? authorizationFor(firstPair()),
     },
   );
 
@@ -281,6 +331,123 @@ describe("real executor composition against a FAKE CLI", () => {
   });
 });
 
+describe("the provider boundary enforces authorization itself", () => {
+  const baseConfig = (store: ScoringStateStore) => ({
+    repoRoot,
+    store,
+    frozenTaskIds: FROZEN_TASK_IDS,
+    claudeCommand: fakeCliPath,
+    runnerSha: null,
+    campaignId: CAMPAIGN_ID,
+    scheduleDigest: schedule.scheduleDigest,
+    fixtureRootResolver: () => preflightFixture,
+    verifierLocate: () => null,
+  });
+
+  it("refuses a direct call with NO authorization, before any claim or spawn", async () => {
+    const store = new ScoringStateStore({ root });
+    const pair = firstPair();
+    await expect(
+      executePairedSlots(baseConfig(store), pair, {
+        prompt: "x",
+        expectedVerification: "y",
+        // Simulates a caller that forgot the capability entirely.
+        authorization: undefined as unknown as ProviderAuthorization,
+      }),
+    ).rejects.toThrow(/no provider authorization was supplied/u);
+
+    // Nothing was claimed and nothing was spawned.
+    expect((await store.inspectSlot(pair.native.slotId)).status).toBe("PLANNED");
+    expect((await store.inspectSlot(pair.maf.slotId)).status).toBe("PLANNED");
+  });
+
+  it("refuses a capability minted from a REFUSED gate decision", () => {
+    // Such a capability cannot even be created -- the mint returns null.
+    expect(
+      issueProviderAuthorization({
+        decision: refusedDecision(),
+        campaignId: CAMPAIGN_ID,
+        scheduleDigest: schedule.scheduleDigest,
+        nativeSlotDigest: firstPair().native.slotDigest,
+        mafSlotDigest: firstPair().maf.slotDigest,
+        executablePath: fakeCliPath,
+      }),
+    ).toBeNull();
+  });
+
+  it("refuses an authorization issued for a DIFFERENT pair, before spawning", async () => {
+    const store = new ScoringStateStore({ root });
+    const pair = firstPair();
+    const otherPair = pairSlots(schedule.slots.filter((s) => s.taskId === "beta-task"))[0] as {
+      native: RunSlot;
+      maf: RunSlot;
+    };
+    await expect(
+      executePairedSlots(baseConfig(store), pair, {
+        prompt: "x",
+        expectedVerification: "y",
+        authorization: authorizationFor(otherPair),
+      }),
+    ).rejects.toThrow(/issued for a different execution/u);
+    expect((await store.inspectSlot(pair.native.slotId)).status).toBe("PLANNED");
+  });
+
+  it("refuses an authorization from a different campaign", async () => {
+    const store = new ScoringStateStore({ root });
+    await expect(
+      executePairedSlots(baseConfig(store), firstPair(), {
+        prompt: "x",
+        expectedVerification: "y",
+        authorization: authorizationFor(firstPair(), { campaignId: "another-campaign" }),
+      }),
+    ).rejects.toThrow(/campaign/u);
+  });
+
+  it("reaches the FAKE CLI only with a correctly bound authorization", async () => {
+    const store = new ScoringStateStore({ root });
+    const result = await runWithFakeCli({ store });
+    expect(result.status).toBe("EXECUTED");
+  });
+});
+
+describe("pre-spawn failure settles intents instead of stranding them", () => {
+  it("records never-started outcomes when preparation fails after intent", async () => {
+    const store = new ScoringStateStore({ root });
+    const pair = firstPair();
+    const result = await executePairedSlots(
+      {
+        repoRoot,
+        store,
+        frozenTaskIds: FROZEN_TASK_IDS,
+        claudeCommand: fakeCliPath,
+        runnerSha: null,
+        campaignId: CAMPAIGN_ID,
+        scheduleDigest: schedule.scheduleDigest,
+        // A fixture path that does not exist: preparation fails after intents are written.
+        fixtureRootResolver: () => path.join(root, "no-such-fixture"),
+        verifierLocate: () => null,
+      },
+      pair,
+      {
+        prompt: "x",
+        expectedVerification: "y",
+        authorization: authorizationFor(pair),
+      },
+    );
+
+    expect(result.status).toBe("REFUSED");
+    if (result.status === "REFUSED") expect(result.reason).toBe("PRE_SPAWN_FAILURE");
+
+    // The slots must NOT be stranded in RECOVERY_REQUIRED: nothing could have been billed, and the
+    // outcome records say so explicitly.
+    for (const slot of [pair.native, pair.maf]) {
+      const state = await store.inspectSlot(slot.slotId);
+      expect(state.danglingIntents).toHaveLength(0);
+      expect(state.status).not.toBe("RECOVERY_REQUIRED");
+    }
+  });
+});
+
 describe("NON_SCORING and out-of-suite tasks can never be executed", () => {
   it("throws before any claim when the task is not in the frozen suite", async () => {
     const store = new ScoringStateStore({ root });
@@ -293,11 +460,13 @@ describe("NON_SCORING and out-of-suite tasks can never be executed", () => {
           frozenTaskIds: ["some-other-task"],
           claudeCommand: fakeCliPath,
           runnerSha: null,
+          campaignId: CAMPAIGN_ID,
+          scheduleDigest: schedule.scheduleDigest,
           fixtureRootResolver: () => preflightFixture,
           verifierLocate: () => null,
         },
         pair,
-        { prompt: "x", expectedVerification: "y" },
+        { prompt: "x", expectedVerification: "y", authorization: authorizationFor(pair) },
       ),
     ).rejects.toThrow(/not a member of the frozen 29-task suite/u);
     // No reservation was created.
@@ -324,11 +493,24 @@ describe("NON_SCORING and out-of-suite tasks can never be executed", () => {
           frozenTaskIds: ["preflight-task"],
           claudeCommand: fakeCliPath,
           runnerSha: null,
+          campaignId: CAMPAIGN_ID,
+          scheduleDigest: preflightSchedule.scheduleDigest,
           fixtureRootResolver: () => preflightFixture,
           verifierLocate: () => null,
         },
         pair,
-        { prompt: "x", expectedVerification: "y" },
+        {
+          prompt: "x",
+          expectedVerification: "y",
+          authorization: issueProviderAuthorization({
+            decision: authorizedDecision(),
+            campaignId: CAMPAIGN_ID,
+            scheduleDigest: preflightSchedule.scheduleDigest,
+            nativeSlotDigest: pair.native.slotDigest,
+            mafSlotDigest: pair.maf.slotDigest,
+            executablePath: fakeCliPath,
+          }) as ProviderAuthorization,
+        },
       ),
     ).rejects.toThrow(/NOT_PART_OF_EXPERIMENT/u);
   });

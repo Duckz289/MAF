@@ -42,6 +42,7 @@ import {
   SUITE_TAG,
 } from "./frozen-refs";
 import type { Arm, RunSlot } from "./schedule";
+import { assertAuthorizedForPair, type ProviderAuthorization } from "./execution-gate";
 import { assertScoringEligible, type ScoringProvenanceRecord } from "./scoring-provenance";
 import { captureSourceRevision, assertStartingStateParity } from "./source-revision";
 import type { ScoringStateStore } from "./state-store";
@@ -113,6 +114,10 @@ export interface ParticipantRunnerConfig {
   /** Resolved once by the gate and reused verbatim, so the audited binary is the executed binary. */
   claudeCommand?: string;
   runnerSha: string | null;
+  /** Campaign this execution belongs to; the authorization is bound to it. */
+  campaignId: string;
+  /** Schedule the pair was drawn from; the authorization is bound to it. */
+  scheduleDigest: string;
   /** Directory holding the frozen suite's pristine task fixtures. */
   fixtureRootResolver: (taskId: string) => string;
   /** Locates a task's hidden grader phase for the independent verifier. */
@@ -184,12 +189,31 @@ const buildScoringProvenance = (input: {
 export const executePairedSlots = async (
   config: ParticipantRunnerConfig,
   pair: PairedSlotPair,
-  options: { prompt: string; expectedVerification: string },
+  options: {
+    prompt: string;
+    expectedVerification: string;
+    /**
+     * Capability minted by a complete execution-gate evaluation. REQUIRED: this is the provider
+     * boundary, and it enforces authorization itself rather than trusting that some earlier caller
+     * did. There is no second spawn entrypoint that skips this.
+     */
+    authorization: ProviderAuthorization;
+  },
 ): Promise<PairedExecutionResult> => {
   const { store } = config;
 
-  // Membership is checked before anything else: a NON_SCORING or out-of-suite task must never reach
-  // an executor, let alone a paid one.
+  // 0. Authorization FIRST, bound to this exact campaign, schedule and pair. A capability issued
+  //    for a different pair -- or a stale one from before the budget moved -- is refused here,
+  //    before any claim, workspace or spawn.
+  assertAuthorizedForPair(options.authorization, {
+    campaignId: config.campaignId,
+    scheduleDigest: config.scheduleDigest,
+    nativeSlotDigest: pair.native.slotDigest,
+    mafSlotDigest: pair.maf.slotDigest,
+  });
+
+  // Membership: a NON_SCORING or out-of-suite task must never reach an executor, let alone a paid
+  // one.
   for (const slot of [pair.native, pair.maf]) {
     assertScoringEligible({
       taskId: slot.taskId,
@@ -210,16 +234,16 @@ export const executePairedSlots = async (
     return { status: "REFUSED", reason: mafClaim.reason, detail: mafClaim.detail };
   }
 
-  // 2. Starting state: one pristine fixture, proven identical for both arms.
-  const fixturePath = config.fixtureRootResolver(pair.native.taskId);
-  const nativeSource = await captureSourceRevision({ fixturePath });
-  const mafSource = await captureSourceRevision({ fixturePath });
-  assertStartingStateParity(nativeSource, mafSource);
-
   const nativeState = await store.inspectSlot(pair.native.slotId);
   const mafState = await store.inspectSlot(pair.maf.slotId);
 
-  // 3. Declare intent for BOTH arms BEFORE the single call that can spend money.
+  // 2. Declare intent for BOTH arms IMMEDIATELY after claiming, before any slow work.
+  //
+  //    Ordering matters for lease safety. The reservation lease only governs the claim -> intent
+  //    window; once an intent exists the slot is fail-closed forever. Hashing a fixture tree could
+  //    take longer than the lease, so doing it before the intent would open a window in which
+  //    another process could reclaim a slot this one is about to spawn under. Declaring intent first
+  //    keeps that window to two exclusive file creates.
   const nativeIntent = await store.declareProviderStartIntent({
     slot: pair.native,
     generation: nativeState.generation,
@@ -234,6 +258,45 @@ export const executePairedSlots = async (
     requestedModel: FROZEN_PARAMETERS.model,
     effort: FROZEN_PARAMETERS.effort,
   });
+
+  // 3. Starting state: one pristine fixture, proven identical for both arms.
+  //
+  //    This now runs AFTER the intents exist, so a failure here would otherwise leave two dangling
+  //    intents demanding human adjudication for a run that provably never spawned. The catch below
+  //    settles them explicitly as never-started -- which is only sound because nothing between the
+  //    intent and `runPair` can spawn a participant. A genuine crash writes no outcome at all and
+  //    correctly remains ambiguous.
+  let nativeSource: Awaited<ReturnType<typeof captureSourceRevision>>;
+  let mafSource: Awaited<ReturnType<typeof captureSourceRevision>>;
+  const fixturePath = config.fixtureRootResolver(pair.native.taskId);
+  try {
+    nativeSource = await captureSourceRevision({ fixturePath });
+    mafSource = await captureSourceRevision({ fixturePath });
+    assertStartingStateParity(nativeSource, mafSource);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    for (const [slot, intent] of [
+      [pair.native, nativeIntent],
+      [pair.maf, mafIntent],
+    ] as const) {
+      await store.recordAttemptOutcome({
+        slotId: slot.slotId,
+        attemptId: intent.attemptId,
+        generation: intent.generation,
+        finishedAt: new Date().toISOString(),
+        classification: "NEVER_STARTED_PRE_SPAWN_FAILURE",
+        costUsd: 0,
+        costStatus: "KNOWN",
+      });
+    }
+    return {
+      status: "REFUSED",
+      reason: "PRE_SPAWN_FAILURE",
+      detail:
+        `preparation failed before any participant was spawned, so both intents were settled as ` +
+        `never-started rather than left ambiguous: ${reason}`,
+    };
+  }
 
   // 4. The audited paired execution. Both arms receive identical frozen controlled variables; the
   //    only differences are the treatment ones Protocol v2 declares.

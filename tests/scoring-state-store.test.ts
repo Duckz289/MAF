@@ -296,7 +296,7 @@ describe("atomic and append-preserving persistence (Phase 7/8)", () => {
 
   it("round-trips a campaign and a schedule record", async () => {
     const store = storeFor("process-a");
-    await store.writeSchedule(schedule);
+    await store.createSchedule(schedule);
     const read = await store.readSchedule();
     expect(read.status).toBe("OK");
     if (read.status === "OK") {
@@ -306,7 +306,7 @@ describe("atomic and append-preserving persistence (Phase 7/8)", () => {
 
   it("rejects a record read under the wrong kind", async () => {
     const store = storeFor("process-a");
-    await store.writeSchedule(schedule);
+    await store.createSchedule(schedule);
     const { readRecord } = await import("../evaluation/experiments/scoring/lib/atomic-io");
     const wrong = await readRecord(path.join(root, "schedule.json"), RECORD_KINDS.campaign);
     expect(wrong.status).toBe("CORRUPT");
