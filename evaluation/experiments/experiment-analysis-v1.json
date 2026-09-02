@@ -1,0 +1,80 @@
+{
+  "analysisVersion": "1.0.0",
+  "status": "FROZEN_PRE_SCORING",
+  "freezeAuthority": "GIT_TAG",
+  "analysisTag": "maf-experiment-analysis-v1",
+  "canonicalDocument": "evaluation/experiments/EXPERIMENT_ANALYSIS_V1.md",
+  "referenceImplementation": "evaluation/experiments/analysis/analysis-v1.ts",
+  "independentNumericalChecker": "evaluation/experiments/analysis/newcombe-method10-independent.py",
+  "suiteTag": "maf-suite-freeze-v1",
+  "suiteSha": "92f13ae67802dd0049ca001f70839a9451120900",
+  "protocolTag": "maf-experiment-protocol-v2",
+  "protocolSha": "b086b21e1e66f4a3c039d5c60079d9311eb82e15",
+  "protocolV1Tag": "maf-experiment-protocol-v1",
+  "protocolV1Sha": "b183b20a08b1d4f6902bffea49fe139f80cad4e9",
+  "createdBeforeScoring": true,
+  "frozenScoringTasksExecuted": 0,
+  "scoringResultsPresent": 0,
+  "primaryMetric": "DVS_RATE_AMONG_VALID_RUNS",
+  "primaryMetricLevel": "RUN",
+  "primaryMetricFormula": "dvsSuccessesAmongValidRuns / validRuns, computed separately per arm",
+  "cellAggregationPolicy": {
+    "plannedRepetitions": 3,
+    "valid3": "ordinary majority (>=2 of 3 DVS => true)",
+    "valid2Identical": "that common DVS value",
+    "valid2Split": "UNRESOLVED",
+    "valid1": "UNRESOLVED",
+    "valid0WithObservations": "INVALID_CELL",
+    "valid0WithoutObservations": "UNOBSERVED",
+    "invalidNeverConvertedToDvsFalse": true,
+    "noImputation": true
+  },
+  "pairedTaskEligibility": {
+    "pairingUnit": "task",
+    "includeIff": "both Native and MAF task-arm cells are DETERMINATE",
+    "excludeUnresolvedOrInvalidOnEitherArm": true,
+    "reportExcludedCountsAndReasons": true,
+    "noImputation": true
+  },
+  "mcnemarMethod": "EXACT_BINOMIAL_TWO_SIDED_P_EQUALS_HALF",
+  "mcnemar": {
+    "pairingUnit": "task",
+    "variant": "two-sided exact McNemar / two-sided exact binomial on discordant pairs under p=0.5",
+    "neverSwitchToAsymptotic": true,
+    "persist": ["n00", "n01", "n10", "n11", "discordantPairs", "pValue"],
+    "zeroDiscordancePolicy": "pValue=1 by construction; not evidence of equivalence"
+  },
+  "pairedDifferenceCiMethod": "NEWCOMBE_1998_STAT_MED_17_2635_METHOD_10",
+  "pairedDifferenceCi": {
+    "citation": "Newcombe RG (1998). Improved confidence intervals for the difference between binomial proportions based on paired data. Statistics in Medicine 17:2635-2650. Method 10.",
+    "differenceDirection": "MAF_MINUS_NATIVE",
+    "inputs": "n11, n10, n01, n00 on the eligible paired-task set",
+    "innerIntervals": "Wilson 1927 score interval on each paired marginal",
+    "phi": "continuity-corrected phi: if A=0 then 0; else if eh-fg>0 then max(eh-fg-n/2,0)/sqrt(A); else (eh-fg)/sqrt(A)",
+    "boundaryPolicy": "clamp radicands at 0; clamp interval to [-1,1]; n=0 => INAPPLICABLE",
+    "zeroDiscordancePolicy": "non-degenerate Method 10 interval around 0; not a proof of equivalence",
+    "roundingPolicy": "persist IEEE-754 binary64; print 6 decimal places"
+  },
+  "confidenceLevel": 0.95,
+  "wilsonZ": 1.959963984540054,
+  "invalidHandling": {
+    "invalidNeverCountsTowardDvs": true,
+    "invalidReportedSeparatelyFromValidDenominator": true,
+    "invalidNeverImputedAsFailureToCompleteAMajority": true
+  },
+  "noImputation": true,
+  "unequalDenominatorPolicy": "leave run-level and descriptive task-level denominators unequal when invalidation is asymmetric; paired inference uses only the determinate paired-task intersection",
+  "finalizationRule": {
+    "finalRequires": [
+      "completedSlots == expectedSlots",
+      "allowFinal == true",
+      "no UNOBSERVED task-arm cell"
+    ],
+    "otherwise": "PROVISIONAL",
+    "stoppingDecisionUse": "NOT_FOR_STOPPING_DECISIONS"
+  },
+  "secondaryMetrics": "unchanged from Protocol v1/v2; this specification does not resolve, promote, or redefine them",
+  "protocolV2Modified": false,
+  "suiteModified": false,
+  "treatmentSemanticsModified": false
+}

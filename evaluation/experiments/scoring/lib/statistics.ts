@@ -8,7 +8,10 @@
 // it is implemented exactly. Where it does not, the function returns an UNDERSPECIFIED result
 // naming the ambiguity, and the caller reports it for a protocol-level decision.
 //
-// Two such gaps exist and are documented at `KNOWN_STATISTICAL_AMBIGUITIES` below.
+// Three such gaps exist and are documented at `KNOWN_STATISTICAL_AMBIGUITIES` below. Their
+// pre-scoring resolution is frozen separately as Analysis v1
+// (evaluation/experiments/EXPERIMENT_ANALYSIS_V1.md, tag maf-experiment-analysis-v1) and must not
+// be inlined here as a silent rewrite of Protocol v2.
 
 import type { Arm } from "./schedule";
 
