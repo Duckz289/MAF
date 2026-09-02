@@ -27,8 +27,8 @@ import {
 import type { EffectiveConfigReport } from "./effective-config-gate";
 import {
   inspectWorktree,
-  resolveRunnerTagSha,
   verifyFrozenArtifacts,
+  verifyRunnerFreeze,
   type TagVerificationOptions,
 } from "./tag-verification";
 import type { CampaignGateDecision } from "./campaign-budget";
@@ -37,6 +37,7 @@ import type { SlotState } from "./state-store";
 export type GateCheckId =
   | "FROZEN_TAGS"
   | "ANALYSIS_FROZEN"
+  | "REMOTE_VERIFICATION_PERFORMED"
   | "RUNNER_FROZEN"
   | "RUNNER_MATCHES_HEAD"
   | "WORKTREE_CLEAN"
@@ -171,18 +172,32 @@ export const evaluateExecutionGate = async (
           : analysisCheck.detail,
   });
 
-  const runnerSha = await resolveRunnerTagSha(RUNNER_TAG, tagOptions);
+  // Remote verification is mandatory for a billed run. The previous revision documented this but
+  // never enforced it, so a `skipRemote` caller could have reached authorization having proven only
+  // local state.
   checks.push({
-    id: "RUNNER_FROZEN",
-    passed: runnerSha !== null,
-    detail:
-      runnerSha === null
-        ? `runner tag ${RUNNER_TAG} does not exist. The scoring runner must be independently ` +
-          "audited and frozen before it may spend money; until then billed scoring is refused."
-        : `runner tag ${RUNNER_TAG} resolves to ${runnerSha}`,
+    id: "REMOTE_VERIFICATION_PERFORMED",
+    passed: frozen.remoteChecked,
+    detail: frozen.remoteChecked
+      ? "frozen tags were verified against origin, not only locally"
+      : "remote verification was skipped; a local-only freeze is not durable evidence and cannot " +
+        "authorize billed execution",
   });
 
   const worktree = await inspectWorktree(tagOptions);
+  // Runner freeze: exists locally AND remotely, both peeling to the same commit, and that commit is
+  // exactly the executing source revision.
+  const runnerFreeze = await verifyRunnerFreeze({
+    runnerTag: RUNNER_TAG,
+    headSha: worktree.headSha,
+    options: tagOptions,
+  });
+  checks.push({
+    id: "RUNNER_FROZEN",
+    passed: runnerFreeze.ok,
+    detail: runnerFreeze.detail,
+  });
+
   checks.push({
     id: "WORKTREE_CLEAN",
     passed: worktree.clean,
@@ -190,15 +205,15 @@ export const evaluateExecutionGate = async (
   });
   checks.push({
     id: "RUNNER_MATCHES_HEAD",
-    passed: runnerSha !== null && worktree.headSha !== null && runnerSha === worktree.headSha,
+    // Reported separately so an operator can see WHICH half failed, but derived from the same
+    // verification rather than a second, weaker comparison.
+    passed: runnerFreeze.ok || runnerFreeze.status === "HEAD_MISMATCH" ? runnerFreeze.ok : false,
     detail:
-      runnerSha === null
-        ? "cannot compare: the runner is not frozen"
-        : worktree.headSha === null
-          ? "cannot compare: HEAD could not be resolved"
-          : runnerSha === worktree.headSha
-            ? `executing source ${worktree.headSha} is exactly the frozen runner revision`
-            : `executing source ${worktree.headSha} is NOT the frozen runner revision ${runnerSha}`,
+      runnerFreeze.status === "HEAD_MISMATCH"
+        ? runnerFreeze.detail
+        : runnerFreeze.ok
+          ? `executing source ${worktree.headSha} is exactly the frozen runner revision`
+          : `cannot compare: ${runnerFreeze.status}`,
   });
 
   checks.push(checkManifestParameters(input.manifest));
@@ -311,6 +326,122 @@ export const assertAuthorizedForProviderCall = (decision: ExecutionGateDecision)
     throw new Error(
       `SCORING_EXECUTION_REFUSED: ${decision.summary}\n` +
         decision.failures.map((f) => `  - ${f.id}: ${f.detail}`).join("\n"),
+    );
+  }
+};
+
+// --------------------------------------------------- provider authorization
+
+/**
+ * Unforgeable proof that a specific pair was authorized by a complete gate evaluation.
+ *
+ * The audit found `executePairedSlots` could reach `runPair` -- and therefore a real provider --
+ * without itself requiring any gate decision. The CLI happened not to call it that way, but
+ * "the current caller is careful" is not a safety property: a second caller, a refactor, or a test
+ * helper reused in production would silently bypass every check. The boundary that spawns the
+ * provider must enforce authorization itself.
+ *
+ * The brand symbol is module-private and never exported, so no code outside this module can
+ * construct a value of this type -- not with an object literal, not with a cast that type-checks.
+ * The only way to obtain one is `issueProviderAuthorization`, which requires a fully AUTHORIZED
+ * decision. That makes this a capability rather than a flag.
+ */
+declare const PROVIDER_AUTHORIZATION_BRAND: unique symbol;
+
+export interface ProviderAuthorization {
+  readonly [PROVIDER_AUTHORIZATION_BRAND]: true;
+  /** The complete gate decision this capability was minted from. */
+  readonly decision: ExecutionGateDecision;
+  /** Campaign this authorization belongs to; prevents reuse against a different campaign. */
+  readonly campaignId: string;
+  /** Schedule the pair was drawn from; prevents reuse across a re-planned campaign. */
+  readonly scheduleDigest: string;
+  /** The exact pair authorized. Digests bind suite + protocol + task + arm + replicate. */
+  readonly nativeSlotDigest: string;
+  readonly mafSlotDigest: string;
+  /** The pinned executable this authorization was granted against. */
+  readonly executablePath: string;
+  readonly issuedAt: string;
+}
+
+export interface IssueAuthorizationInput {
+  decision: ExecutionGateDecision;
+  campaignId: string;
+  scheduleDigest: string;
+  nativeSlotDigest: string;
+  mafSlotDigest: string;
+  executablePath: string;
+}
+
+/**
+ * Mints a provider authorization, or returns null when the gate did not fully pass.
+ *
+ * Returning null rather than throwing lets a caller report the refusal with the gate's own failure
+ * list; `assertAuthorizedForPair` is what turns a missing capability into a hard error at the spawn
+ * boundary.
+ */
+export const issueProviderAuthorization = (
+  input: IssueAuthorizationInput,
+): ProviderAuthorization | null => {
+  if (!input.decision.authorized) return null;
+  if (!input.executablePath) return null;
+  if (!input.campaignId || !input.scheduleDigest) return null;
+  if (!input.nativeSlotDigest || !input.mafSlotDigest) return null;
+  return {
+    decision: input.decision,
+    campaignId: input.campaignId,
+    scheduleDigest: input.scheduleDigest,
+    nativeSlotDigest: input.nativeSlotDigest,
+    mafSlotDigest: input.mafSlotDigest,
+    executablePath: input.executablePath,
+    issuedAt: new Date().toISOString(),
+  } as ProviderAuthorization;
+};
+
+export interface AuthorizationContext {
+  campaignId: string;
+  scheduleDigest: string;
+  nativeSlotDigest: string;
+  mafSlotDigest: string;
+}
+
+/**
+ * Re-validates a capability against the execution it is about to permit.
+ *
+ * Holding a valid capability is not enough: it must be the capability for THIS pair, in THIS
+ * campaign, under THIS schedule. Without that binding, an authorization minted for a cheap pair
+ * could be replayed against a different one after the budget had moved on.
+ */
+export const assertAuthorizedForPair = (
+  authorization: ProviderAuthorization | undefined,
+  context: AuthorizationContext,
+): void => {
+  if (!authorization) {
+    throw new Error(
+      "SCORING_EXECUTION_REFUSED: no provider authorization was supplied. A participant may only " +
+        "be spawned with a capability minted by a complete execution-gate evaluation " +
+        "(issueProviderAuthorization); there is no unauthorized spawn path.",
+    );
+  }
+  assertAuthorizedForProviderCall(authorization.decision);
+
+  const mismatches: string[] = [];
+  if (authorization.campaignId !== context.campaignId) {
+    mismatches.push(`campaign ${authorization.campaignId} != ${context.campaignId}`);
+  }
+  if (authorization.scheduleDigest !== context.scheduleDigest) {
+    mismatches.push("schedule digest differs");
+  }
+  if (authorization.nativeSlotDigest !== context.nativeSlotDigest) {
+    mismatches.push("NATIVE slot digest differs");
+  }
+  if (authorization.mafSlotDigest !== context.mafSlotDigest) {
+    mismatches.push("MAF slot digest differs");
+  }
+  if (mismatches.length > 0) {
+    throw new Error(
+      "SCORING_EXECUTION_REFUSED: the supplied authorization was issued for a different " +
+        `execution and cannot be reused here (${mismatches.join("; ")}).`,
     );
   }
 };

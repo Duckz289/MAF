@@ -315,6 +315,7 @@ describe("billed scoring execution gate (Phases 14/15)", () => {
       "remote:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
       "remote:maf-experiment-analysis-v1": ANALYSIS_SHA,
       [`local:${RUNNER_TAG}`]: "c".repeat(40),
+      [`remote:${RUNNER_TAG}`]: "c".repeat(40),
       HEAD: "c".repeat(40),
       status: "",
     }),
@@ -363,6 +364,7 @@ describe("billed scoring execution gate (Phases 14/15)", () => {
       "remote:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
       "remote:maf-experiment-analysis-v1": ANALYSIS_SHA,
       [`local:${RUNNER_TAG}`]: "c".repeat(40),
+      [`remote:${RUNNER_TAG}`]: "c".repeat(40),
       HEAD: "d".repeat(40),
       status: "",
     });
@@ -381,6 +383,7 @@ describe("billed scoring execution gate (Phases 14/15)", () => {
       "remote:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
       "remote:maf-experiment-analysis-v1": ANALYSIS_SHA,
       [`local:${RUNNER_TAG}`]: "c".repeat(40),
+      [`remote:${RUNNER_TAG}`]: "c".repeat(40),
       HEAD: "c".repeat(40),
       status: " M src/thing.ts",
     });
@@ -435,6 +438,7 @@ describe("billed scoring execution gate (Phases 14/15)", () => {
       "local:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
       "remote:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
       [`local:${RUNNER_TAG}`]: "c".repeat(40),
+      [`remote:${RUNNER_TAG}`]: "c".repeat(40),
       HEAD: "c".repeat(40),
       status: "",
     };
@@ -454,6 +458,7 @@ describe("billed scoring execution gate (Phases 14/15)", () => {
       "local:maf-experiment-analysis-v1": "9".repeat(40),
       "remote:maf-experiment-analysis-v1": "9".repeat(40),
       [`local:${RUNNER_TAG}`]: "c".repeat(40),
+      [`remote:${RUNNER_TAG}`]: "c".repeat(40),
       HEAD: "c".repeat(40),
       status: "",
     };

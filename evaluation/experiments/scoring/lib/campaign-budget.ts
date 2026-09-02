@@ -76,23 +76,48 @@ export type CampaignGateStatus =
   | "CEILING_WOULD_BE_EXCEEDED"
   | "REMAINING_SPEND_UNKNOWABLE";
 
+/**
+ * Runs the runner authorizes in one indivisible step.
+ *
+ * The execution unit is a PAIR: one `runPair` call spawns a Native participant AND a MAF
+ * participant, each under its own frozen $8 HARD run budget. Once the pair is authorized, both arms
+ * run -- there is no point between them at which the campaign can reconsider. So the gate must
+ * price what it is actually authorizing.
+ *
+ * Checking a single $8 run before a $16 commitment was a real defect: with $9 of ceiling left the
+ * gate would authorize a pair that could spend $16, overrunning the operator's authorization by $7
+ * with no mechanism able to stop it mid-pair.
+ */
+export const RUNS_PER_PAIR = 2;
+
+/** Maximum a single authorized pair can spend: both arms at the frozen per-run ceiling. */
+export const pairMaxExposureUsd = (perRunCeilingUsd: number): number =>
+  RUNS_PER_PAIR * perRunCeilingUsd;
+
 export interface CampaignGateDecision {
   status: CampaignGateStatus;
   authorized: boolean;
   spend: CampaignSpend;
   ceilingUsd: number | null;
   perRunCeilingUsd: number;
+  /** What one authorized pair may spend at worst: 2 x the frozen per-run ceiling. */
+  pairMaxExposureUsd: number;
   /** Ceiling minus known spend. Null when spend is not knowable. */
   remainingUsd: number | null;
   detail: string;
 }
 
 /**
- * Decides whether ONE more slot may be authorized, BEFORE anything is spawned.
+ * Decides whether ONE more PAIR may be authorized, BEFORE anything is spawned.
  *
- * Deliberately pessimistic: it compares against the frozen per-run ceiling ($8), not against an
- * average or an estimate, because a run is permitted to spend the whole ceiling and a gate that
- * assumed less could authorize a run that then breached the operator's total.
+ * Deliberately pessimistic in two ways. It prices the full pair ($16), because that is the
+ * indivisible unit being authorized; and it prices it at the frozen ceiling rather than at an
+ * average or an estimate, because each arm is permitted to spend its whole $8 and a gate that
+ * assumed less could authorize an execution that then breached the operator's total.
+ *
+ * $16 is an EXPOSURE CEILING, never a charge. Actual spend is read back from the persisted Native
+ * and MAF costs after the pair completes, so a pair that really cost $2 consumes $2 of the campaign
+ * ceiling -- not $16.
  */
 export const evaluateCampaignGate = (input: {
   states: readonly SlotState[];
@@ -100,10 +125,12 @@ export const evaluateCampaignGate = (input: {
   perRunCeilingUsd: number;
 }): CampaignGateDecision => {
   const spend = summarizeCampaignSpend(input.states);
+  const exposure = pairMaxExposureUsd(input.perRunCeilingUsd);
   const base = {
     spend,
     ceilingUsd: input.ceilingUsd,
     perRunCeilingUsd: input.perRunCeilingUsd,
+    pairMaxExposureUsd: exposure,
   };
 
   if (input.ceilingUsd === null || input.ceilingUsd === undefined) {
@@ -141,7 +168,7 @@ export const evaluateCampaignGate = (input: {
   }
 
   const remainingUsd = input.ceilingUsd - spend.knownSpendUsd;
-  if (remainingUsd < input.perRunCeilingUsd) {
+  if (remainingUsd < exposure) {
     return {
       ...base,
       status: "CEILING_WOULD_BE_EXCEEDED",
@@ -149,8 +176,9 @@ export const evaluateCampaignGate = (input: {
       remainingUsd,
       detail:
         `only $${remainingUsd.toFixed(4)} remains of the $${input.ceilingUsd} operator-authorized ` +
-        `campaign ceiling, which is less than the frozen $${input.perRunCeilingUsd} a single run is ` +
-        "permitted to spend; stopping BEFORE spawn rather than risking a breach mid-run",
+        `campaign ceiling, which is less than the $${exposure} a single authorized pair may spend ` +
+        `(${RUNS_PER_PAIR} arms x the frozen $${input.perRunCeilingUsd} per-run ceiling). Stopping ` +
+        "BEFORE spawn: once a pair is authorized both arms run, and nothing can halt it mid-pair.",
     };
   }
 
@@ -161,7 +189,7 @@ export const evaluateCampaignGate = (input: {
     remainingUsd,
     detail:
       `$${remainingUsd.toFixed(4)} of the $${input.ceilingUsd} campaign ceiling remains, which ` +
-      `covers the frozen $${input.perRunCeilingUsd} per-run ceiling`,
+      `covers the $${exposure} maximum exposure of one pair (${RUNS_PER_PAIR} arms x $${input.perRunCeilingUsd})`,
   };
 };
 

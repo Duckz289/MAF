@@ -239,10 +239,124 @@ export const inspectWorktree = async (options: TagVerificationOptions): Promise<
 };
 
 /**
- * Resolves the runner's own freeze tag. Returns null when it does not exist -- the expected state
- * during development, and the reason billed scoring cannot be authorized yet.
+ * Resolves the runner's own freeze tag LOCALLY only.
+ *
+ * Kept for non-billed inspection (the `validate` command's INFO line). It must never gate a paid
+ * run on its own: a local tag proves nothing about what was published, and a runner freeze that
+ * exists only on one machine is not durable evidence. Billed execution uses
+ * `verifyRunnerFreeze` below.
  */
 export const resolveRunnerTagSha = async (
   runnerTag: string,
   options: TagVerificationOptions,
 ): Promise<string | null> => localPeeled(options.git ?? realGit, options.repoRoot, runnerTag);
+
+export type RunnerFreezeStatus =
+  | "OK"
+  | "MISSING_LOCAL"
+  | "MISSING_REMOTE"
+  | "LOCAL_REMOTE_DIVERGED"
+  | "HEAD_MISMATCH"
+  | "REMOTE_NOT_CHECKED"
+  | "HEAD_UNRESOLVED";
+
+export interface RunnerFreezeVerification {
+  ok: boolean;
+  status: RunnerFreezeStatus;
+  runnerTag: string;
+  localSha: string | null;
+  remoteSha: string | null;
+  headSha: string | null;
+  remoteChecked: boolean;
+  detail: string;
+}
+
+/**
+ * Full runner-freeze verification for a billed run.
+ *
+ * Six facts must hold together, and the audit found the previous implementation established only
+ * the first: the tag exists locally, exists on the remote, peels locally and remotely to the SAME
+ * commit, and that commit is EXACTLY the source revision now executing. Comparing peeled commits
+ * (never the annotated tag-object SHA) is what stops a tag re-pointed at a different commit from
+ * passing, since re-pointing preserves neither the peeled commit nor, usefully, anything else.
+ *
+ * `skipRemote` is honoured for developer inspection but recorded as `REMOTE_NOT_CHECKED`, which is
+ * never OK -- so a caller cannot accidentally buy a billed run with an unverified remote.
+ */
+export const verifyRunnerFreeze = async (input: {
+  runnerTag: string;
+  headSha: string | null;
+  options: TagVerificationOptions;
+}): Promise<RunnerFreezeVerification> => {
+  const { runnerTag, headSha } = input;
+  const git = input.options.git ?? realGit;
+  const localSha = await localPeeled(git, input.options.repoRoot, runnerTag);
+  const remoteChecked = input.options.skipRemote !== true;
+  const remoteSha = remoteChecked
+    ? await remotePeeled(git, input.options.repoRoot, runnerTag)
+    : null;
+
+  const base = { runnerTag, localSha, remoteSha, headSha, remoteChecked };
+
+  if (localSha === null) {
+    return {
+      ...base,
+      ok: false,
+      status: "MISSING_LOCAL",
+      detail:
+        `runner tag ${runnerTag} does not exist locally. The scoring runner must be independently ` +
+        "audited and frozen before it may spend money; until then billed scoring is refused.",
+    };
+  }
+  if (!remoteChecked) {
+    return {
+      ...base,
+      ok: false,
+      status: "REMOTE_NOT_CHECKED",
+      detail:
+        `the remote was not consulted for ${runnerTag}. A local-only freeze is not durable ` +
+        "evidence, so billed execution is refused regardless of the local tag.",
+    };
+  }
+  if (remoteSha === null) {
+    return {
+      ...base,
+      ok: false,
+      status: "MISSING_REMOTE",
+      detail: `runner tag ${runnerTag} is not published on origin; a local-only freeze is not durable evidence`,
+    };
+  }
+  if (localSha !== remoteSha) {
+    return {
+      ...base,
+      ok: false,
+      status: "LOCAL_REMOTE_DIVERGED",
+      detail: `runner tag ${runnerTag} peels locally to ${localSha} but to ${remoteSha} on origin`,
+    };
+  }
+  if (headSha === null) {
+    return {
+      ...base,
+      ok: false,
+      status: "HEAD_UNRESOLVED",
+      detail:
+        "the executing source revision could not be resolved, so it cannot be compared to the runner tag",
+    };
+  }
+  if (localSha !== headSha) {
+    return {
+      ...base,
+      ok: false,
+      status: "HEAD_MISMATCH",
+      detail:
+        `executing source ${headSha} is NOT the frozen runner revision ${localSha}; the audited ` +
+        "revision and the spending revision must be the same commit",
+    };
+  }
+  return {
+    ...base,
+    ok: true,
+    status: "OK",
+    detail: `runner tag ${runnerTag} verified local == remote == HEAD == ${localSha}`,
+  };
+};
