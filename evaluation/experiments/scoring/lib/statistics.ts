@@ -12,6 +12,13 @@
 // pre-scoring resolution is frozen separately as Analysis v1
 // (evaluation/experiments/EXPERIMENT_ANALYSIS_V1.md, tag maf-experiment-analysis-v1) and must not
 // be inlined here as a silent rewrite of Protocol v2.
+//
+// SUPERSEDED FOR ANALYSIS. Since Analysis v1 was frozen, the scoring runner computes every reported
+// number through `evaluation/experiments/analysis/analysis-v1.ts`, reached via
+// `scoring/lib/analysis-binding.ts`. `analyzeScoringRuns` below is NOT wired into any campaign and
+// must not be: two analysis implementations could drift, and only the frozen one governs. What
+// remains valuable here is the record of WHICH questions the protocol left open, which is why the
+// module is kept rather than deleted.
 
 import type { Arm } from "./schedule";
 

@@ -12,6 +12,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
+  ANALYSIS_SHA,
+  ANALYSIS_TAG,
   PROTOCOL_V1_SHA,
   PROTOCOL_V1_TAG,
   PROTOCOL_V2_SHA,
@@ -172,11 +174,16 @@ export const verifyFrozenTag = async (
   return { ...base, status: "OK", detail: `tag ${tag} verified local == remote == ${expectedSha}` };
 };
 
-/** The three frozen artifacts every scoring action depends on. */
+/**
+ * The four frozen artifacts every scoring action depends on: what was measured (suite), how it was
+ * designed (protocol v1), how it is executed (protocol v2), and how it will be analysed
+ * (analysis v1). A scoring observation that cannot name all four is not reproducible.
+ */
 export const FROZEN_TAG_EXPECTATIONS: readonly TagExpectation[] = [
   { tag: SUITE_TAG, expectedSha: SUITE_SHA },
   { tag: PROTOCOL_V1_TAG, expectedSha: PROTOCOL_V1_SHA },
   { tag: PROTOCOL_V2_TAG, expectedSha: PROTOCOL_V2_SHA },
+  { tag: ANALYSIS_TAG, expectedSha: ANALYSIS_SHA },
 ];
 
 export const verifyFrozenArtifacts = async (

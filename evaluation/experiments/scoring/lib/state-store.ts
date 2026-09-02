@@ -52,6 +52,10 @@ export interface CampaignMetadata {
   suiteSha: string;
   protocolTag: string;
   protocolSha: string;
+  /** The frozen statistical specification this campaign will be analysed under. */
+  analysisTag: string;
+  analysisSha: string;
+  analysisVersion: string;
   runnerVersion: string;
   runnerTag: string;
   /** Null while the runner is not yet frozen; billed execution is impossible in that state. */
@@ -113,6 +117,14 @@ export interface ObservationRecord<TProvenance = unknown> {
   randomizationPosition: number;
   sequencePosition: number;
   recordedAt: string;
+  /**
+   * The frozen analysis specification in force when this observation was recorded. Optional only so
+   * that records written before Analysis v1 existed remain readable; the participant runner always
+   * populates it, and `checkProvenanceCompleteness` requires it on the provenance record.
+   */
+  analysisTag?: string;
+  analysisSha?: string;
+  analysisVersion?: string;
   /** True when this observation is an infrastructure failure (protocol 17.1). */
   infrastructureInvalid: boolean;
   dvs: boolean;

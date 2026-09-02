@@ -19,6 +19,21 @@ export const PROTOCOL_V2_TAG = "maf-experiment-protocol-v2";
 export const PROTOCOL_V2_SHA = "b086b21e1e66f4a3c039d5c60079d9311eb82e15";
 
 /**
+ * Analysis v1: the pre-scoring statistical specification.
+ *
+ * This is the fourth frozen input, and it is load-bearing for exactly the reason the others are.
+ * The scoring-readiness audit found three genuine gaps in Protocol v1/v2's statistical plan
+ * (majority-of-3 under reduced N, the McNemar variant, and which Wilson-based difference method).
+ * Analysis v1 resolves them BEFORE any scoring data exists, which is what keeps the resolution a
+ * pre-registration rather than a choice fitted to observed results. A scoring record that cannot
+ * name the analysis specification it was collected under is not reproducible, so every campaign
+ * requires this tag exactly as it requires the suite and the protocol.
+ */
+export const ANALYSIS_TAG = "maf-experiment-analysis-v1";
+export const ANALYSIS_SHA = "de02da424e8d639213cf03aadfd9566ab3313adb";
+export const ANALYSIS_VERSION = "1.0.0";
+
+/**
  * The tag that must exist and point at the executing source revision before ANY billed scoring
  * call is permitted (mission Phase 15). It deliberately does not exist yet: until an independent
  * audit creates it, `execution-gate.ts` cannot authorize a provider invocation, which is what makes

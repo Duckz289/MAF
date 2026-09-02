@@ -205,6 +205,11 @@ const completeRecord = (): ScoringProvenanceRecord =>
       runnerTag: "maf-scoring-runner-v1",
       runnerSha: "c".repeat(40),
     },
+    analysis: {
+      analysisTag: "maf-experiment-analysis-v1",
+      analysisSha: "de02da424e8d639213cf03aadfd9566ab3313adb",
+      analysisVersion: "1.0.0",
+    },
     slot: {
       slotId: "clamp-number-util__NATIVE__r1",
       slotDigest: "d".repeat(64),
@@ -234,8 +239,43 @@ describe("scoring provenance completeness (Phase 16)", () => {
     expect(checkProvenanceCompleteness(completeRecord())).toEqual({ complete: true, missing: [] });
   });
 
+  it("requires the analysis identity, so every record names its statistical specification", () => {
+    const record = completeRecord();
+    expect(record.analysis.analysisTag).toBe("maf-experiment-analysis-v1");
+    expect(record.analysis.analysisSha).toBe("de02da424e8d639213cf03aadfd9566ab3313adb");
+    const without = completeRecord() as unknown as Record<string, unknown>;
+    delete without.analysis;
+    const result = checkProvenanceCompleteness(without as Partial<ScoringProvenanceRecord>);
+    expect(result.complete).toBe(false);
+    expect(result.missing).toEqual(
+      expect.arrayContaining([
+        "analysis.analysisTag",
+        "analysis.analysisSha",
+        "analysis.analysisVersion",
+      ]),
+    );
+  });
+
+  it("accepts an absent regressionEvidence only when regression was never checked", () => {
+    const unchecked = completeRecord() as unknown as Record<string, unknown>;
+    unchecked.regression = "UNKNOWN";
+    delete unchecked.regressionEvidence;
+    expect(
+      checkProvenanceCompleteness(unchecked as Partial<ScoringProvenanceRecord>).complete,
+    ).toBe(true);
+
+    // But a run that DID regress-check must describe the scope it checked.
+    const checked = completeRecord() as unknown as Record<string, unknown>;
+    checked.regression = "PASS";
+    delete checked.regressionEvidence;
+    expect(
+      checkProvenanceCompleteness(checked as Partial<ScoringProvenanceRecord>).missing,
+    ).toContain("regressionEvidence");
+  });
+
   it.each([
     ["runner", "runner.runnerTag"],
+    ["analysis", "analysis.analysisTag"],
     ["slot", "slot.slotId"],
     ["sourceRevision", "sourceRevision.contentDigest"],
   ])("detects a missing %s block", (key, expectedMissing) => {

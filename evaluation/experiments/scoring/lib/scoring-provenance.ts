@@ -28,6 +28,21 @@ export interface RunnerIdentity {
   runnerSha: string | null;
 }
 
+/**
+ * Which frozen statistical specification governs this observation.
+ *
+ * Carried on every record rather than only on the campaign, because records outlive campaigns: an
+ * observation copied into a report, an archive, or a re-analysis must still be able to say which
+ * analysis specification it was collected under. Without it, "DVS=false" is not interpretable --
+ * the reader cannot tell whether a reduced-N cell was resolved by majority, left UNRESOLVED, or
+ * imputed.
+ */
+export interface AnalysisIdentityRecord {
+  analysisTag: string;
+  analysisSha: string;
+  analysisVersion: string;
+}
+
 export interface ScoringSlotIdentity {
   slotId: string;
   slotDigest: string;
@@ -44,6 +59,7 @@ export interface ScoringProvenanceRecord extends ExperimentProvenanceRecord {
   /** Always SCORING here; NON_SCORING material is rejected by `assertScoringEligible`. */
   scoringStatus: "SCORING";
   runner: RunnerIdentity;
+  analysis: AnalysisIdentityRecord;
   slot: ScoringSlotIdentity;
   sourceRevision: SourceRevisionIdentity;
   /** Freeze authority, recorded because the frozen source's own metadata predates the tag. */
@@ -83,6 +99,9 @@ export const checkProvenanceCompleteness = (
   require(str(record.runner?.runnerTag), "runner.runnerTag");
   require(str(record.runner?.runnerVersion), "runner.runnerVersion");
   require(record.runner?.runnerSha !== undefined, "runner.runnerSha");
+  require(str(record.analysis?.analysisTag), "analysis.analysisTag");
+  require(str(record.analysis?.analysisSha), "analysis.analysisSha");
+  require(str(record.analysis?.analysisVersion), "analysis.analysisVersion");
   require(str(record.slot?.slotId), "slot.slotId");
   require(str(record.slot?.slotDigest), "slot.slotDigest");
   require(str(record.slot?.attemptId), "slot.attemptId");
@@ -114,7 +133,13 @@ export const checkProvenanceCompleteness = (
   require(str(record.candidateIntegrity), "candidateIntegrity");
   require(str(record.hiddenGrader), "hiddenGrader");
   require(str(record.regression), "regression");
-  require(record.regressionEvidence !== undefined, "regressionEvidence");
+  // `regressionEvidence` describes the SCOPE of a regression check that actually ran. When the
+  // controller never verified the candidate (an infrastructure failure, or no grader for the task),
+  // `regression` is UNKNOWN and there is genuinely no evidence to describe. Demanding the field
+  // anyway would push the runner toward fabricating an empty scope record, which is exactly the
+  // "absent verification silently becomes a result" failure this schema exists to prevent.
+  require(record.regression === "UNKNOWN" ||
+    record.regressionEvidence !== undefined, "regressionEvidence");
   require(str(record.failureClassification), "failureClassification");
   require(str(record.runValidity), "runValidity");
   require(typeof record.dvs === "boolean", "dvs");
