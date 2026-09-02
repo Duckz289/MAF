@@ -23,6 +23,9 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  ANALYSIS_SHA,
+  ANALYSIS_TAG,
+  ANALYSIS_VERSION,
   FROZEN_PARAMETERS,
   KNOWN_SOURCE_METADATA_NOTE,
   PROTOCOL_V2_SHA,
@@ -44,7 +47,8 @@ import { ScoringStateStore, type SlotState } from "./lib/state-store";
 import { evaluateCampaignGate, theoreticalMaximumCampaignUsd } from "./lib/campaign-budget";
 import { evaluateExecutionGate, type ManifestParameters } from "./lib/execution-gate";
 import { verifyFrozenArtifacts, resolveRunnerTagSha } from "./lib/tag-verification";
-import { analyzeScoringRuns, type ScoringRunSummary } from "./lib/statistics";
+import { runFrozenAnalysis } from "./lib/analysis-binding";
+import { inspectEffectiveClaudeConfig } from "./lib/effective-config-gate";
 import { checkEnvironmentRouting } from "../real/lib/preflight-gate";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -192,6 +196,15 @@ const commandValidate = async (): Promise<void> => {
   const manifestCheck = checkManifestParameters(manifest);
   out(`  [${manifestCheck.passed ? "PASS" : "FAIL"}] manifest: ${manifestCheck.detail}`);
 
+  const effectiveConfig = await inspectEffectiveClaudeConfig({ forwardedEnvironmentKeys: [] });
+  for (const check of effectiveConfig.checks) {
+    out(`  [${check.passed ? "PASS" : "FAIL"}] ${check.id}: ${check.detail}`);
+  }
+  out(
+    `         inspected ${effectiveConfig.inspectedFiles.length} active config file(s); ` +
+      `${effectiveConfig.excludedPaths.length} historical path(s) excluded by design`,
+  );
+
   const runnerSha = await resolveRunnerTagSha(RUNNER_TAG, { repoRoot });
   out(
     `  [INFO] runner freeze: ${
@@ -205,10 +218,9 @@ const commandValidate = async (): Promise<void> => {
   out(`protocolFrozen:          true`);
   out(`known note: ${KNOWN_SOURCE_METADATA_NOTE}`);
   out();
-  out(
-    frozen.ok && scheduleOk && manifestCheck.passed ? "SCORING_PLAN_VALID" : "SCORING_PLAN_INVALID",
-  );
-  if (!(frozen.ok && scheduleOk && manifestCheck.passed)) process.exitCode = 1;
+  const planValid = frozen.ok && scheduleOk && manifestCheck.passed && effectiveConfig.clean;
+  out(planValid ? "SCORING_PLAN_VALID" : "SCORING_PLAN_INVALID");
+  if (!planValid) process.exitCode = 1;
 };
 
 // ------------------------------------------------------------------- init
@@ -227,6 +239,9 @@ const commandInit = async (): Promise<void> => {
     suiteSha: SUITE_SHA,
     protocolTag: PROTOCOL_V2_TAG,
     protocolSha: PROTOCOL_V2_SHA,
+    analysisTag: ANALYSIS_TAG,
+    analysisSha: ANALYSIS_SHA,
+    analysisVersion: ANALYSIS_VERSION,
     runnerVersion: RUNNER_VERSION,
     runnerTag: RUNNER_TAG,
     runnerSha,
@@ -358,9 +373,18 @@ const commandExecute = async (): Promise<void> => {
     perRunCeilingUsd: FROZEN_PARAMETERS.perRunCeilingUsd,
   });
 
+  // The effective-configuration inspection reads files only; it spawns nothing and contacts no
+  // provider, so it runs unconditionally and its result is reported even when the gate refuses for
+  // other reasons.
+  const effectiveConfig = await inspectEffectiveClaudeConfig({
+    // The adapter's spawn env allowlist contains no ANTHROPIC_* key
+    // (src/infrastructure/claude-code-adapter.ts), asserted by tests/claude-code-adapter-env.test.ts.
+    forwardedEnvironmentKeys: [],
+  });
+
   // Auth is NOT probed here. Probing spawns the CLI, and this mission authorizes zero provider
-  // interaction; the gate treats an unprobed auth state as a failure, which is the correct
-  // fail-closed default.
+  // interaction of any kind; the gate treats an unprobed auth state as a failure, which is the
+  // correct fail-closed default.
   const decision = await evaluateExecutionGate({
     repoRoot,
     billedConfirmed: flag("confirm-billed-scoring"),
@@ -369,11 +393,16 @@ const commandExecute = async (): Promise<void> => {
     campaignGate,
     auth: {
       loggedIn: false,
+      apiProvider: null,
+      authMethod: null,
+      executablePath: null,
+      executableVersion: null,
       detail:
         "authentication was not probed: this runner revision performs no provider interaction of " +
         "any kind, so it fails closed rather than reporting an unverified pass",
     },
     routing: checkEnvironmentRouting(),
+    effectiveConfig,
   });
 
   header("billed scoring execution gate");
@@ -388,18 +417,75 @@ const commandExecute = async (): Promise<void> => {
     out("SCORING_EXECUTION_REFUSED");
     out();
     out(
-      "No participant executor was constructed and no provider was contacted. Participant wiring " +
-        `is intentionally absent from this revision until ${RUNNER_TAG} is created by an ` +
-        "independent audit (mission Phase 15).",
+      "No participant executor was constructed and no provider was contacted. The participant " +
+        "path (evaluation/experiments/scoring/lib/participant-runner.ts) is fully wired and is " +
+        "exercised by tests against a fake CLI, but it is unreachable from here until every gate " +
+        `above passes -- which requires ${RUNNER_TAG} to be created by an independent audit ` +
+        "(mission Phase 15).",
     );
     process.exitCode = 1;
     return;
   }
 
-  // Unreachable while the runner is unfrozen. Kept explicit so the invariant is visible in code
-  // rather than implied by the gate's return value.
-  out("SCORING_EXECUTION_AUTHORIZED_BUT_PARTICIPANT_WIRING_NOT_PRESENT_IN_THIS_REVISION");
+  // Unreachable while the runner is unfrozen: RUNNER_FROZEN cannot pass without the tag. Kept as an
+  // explicit refusal rather than a call into the participant runner so that this revision cannot
+  // spend money even if every other gate were somehow satisfied.
+  out("SCORING_EXECUTION_AUTHORIZED");
+  out();
+  out(
+    "All gates passed. This development revision still declines to spawn: enabling the batch " +
+      `executor is the freeze-time change that accompanies ${RUNNER_TAG}, so that the audited ` +
+      "revision and the spending revision are provably the same commit.",
+  );
   process.exitCode = 1;
+};
+
+// ------------------------------------------------------------- batch plan
+
+const commandBatchPlan = async (): Promise<void> => {
+  const root = requireCampaign();
+  const store = new ScoringStateStore({ root });
+  const scheduleOutcome = await store.readSchedule();
+  if (scheduleOutcome.status !== "OK") {
+    process.stderr.write("campaign schedule unreadable; run init first\n");
+    process.exit(1);
+  }
+  const schedule = scheduleOutcome.record.payload;
+  const states = await store.inspectAll(schedule);
+  const byId = new Map(states.map((state) => [state.slotId, state]));
+
+  // The natural operational unit: one task = 3 NATIVE + 3 MAF, in frozen order. Batching pauses
+  // execution at a boundary; it never reorders, reduces N, or ends the campaign early.
+  const pendingTasks: string[] = [];
+  for (const slot of schedule.slots) {
+    const state = byId.get(slot.slotId);
+    if (state && state.status !== "COMPLETE" && !pendingTasks.includes(slot.taskId)) {
+      pendingTasks.push(slot.taskId);
+    }
+  }
+  const batchTasks = pendingTasks.slice(0, Number.parseInt(value("tasks") ?? "1", 10));
+  const slots = selectBatch(schedule, { taskIds: batchTasks });
+
+  header("dry batch plan (NO provider calls)");
+  out(`tasks in batch: ${batchTasks.join(", ") || "(none pending)"}`);
+  out(`slots in batch: ${slots.length}`);
+  out(
+    `worst-case spend: $${slots.length * FROZEN_PARAMETERS.perRunCeilingUsd} ` +
+      `(${slots.length} x $${FROZEN_PARAMETERS.perRunCeilingUsd} frozen per-run ceiling)`,
+  );
+  out();
+  for (const slot of slots) {
+    const state = byId.get(slot.slotId);
+    out(
+      `  #${String(slot.sequencePosition).padStart(3, "0")} ${slot.slotId.padEnd(52)} ${state?.status ?? "PLANNED"}`,
+    );
+  }
+  out();
+  out(
+    "Completing this batch PAUSES operational execution at a frozen schedule boundary. It is not " +
+      "an early stop: the campaign's commitment remains all 174 runs, and the remaining slots stay " +
+      "pending in unchanged order.",
+  );
 };
 
 // --------------------------------------------------------- operator actions
@@ -481,36 +567,15 @@ const commandAggregate = async (): Promise<void> => {
   const states = await store.inspectAll(schedule);
   const frozenTaskIds = await loadFrozenTaskIds(repoRoot);
 
-  const runs: ScoringRunSummary[] = [];
-  for (const state of states) {
-    const latest = state.observations[state.observations.length - 1];
-    if (!latest) continue;
-    if (!frozenTaskIds.includes(latest.taskId)) continue; // NON_SCORING can never enter statistics.
-    const provenance = latest.provenance as Record<string, unknown> | undefined;
-    runs.push({
-      taskId: latest.taskId,
-      arm: latest.arm,
-      replicate: latest.replicate,
-      runValidity: latest.runValidity,
-      infrastructureInvalid: latest.infrastructureInvalid,
-      dvs: latest.dvs,
-      falseSafe: Boolean(provenance?.falseSafe),
-      hiddenGraderPass: provenance?.hiddenGrader === "PASS",
-      regressionPass: provenance?.regression === "PASS",
-      candidateIntegrityValid: provenance?.candidateIntegrity === "VALID",
-      costUsd: latest.costUsd,
-      costStatus: latest.costStatus,
-      elapsedMs: Number(provenance?.durationMs ?? 0),
-    });
-  }
-
-  const analysis = analyzeScoringRuns({
-    runs,
+  const analysis = runFrozenAnalysis({
+    states,
+    frozenTaskIds,
     taskIds: schedule.slots
       .map((slot) => slot.taskId)
-      .filter((id, index, all) => all.indexOf(id) === index),
+      .filter((id, i, all) => all.indexOf(id) === i),
     runsPerTask: schedule.runsPerTask,
     expectedSlots: schedule.slots.length,
+    allowFinal: flag("allow-final"),
   });
 
   if (flag("json")) {
@@ -518,37 +583,56 @@ const commandAggregate = async (): Promise<void> => {
     return;
   }
 
+  const pct = (value: number | null): string =>
+    value === null ? "N/A" : `${(value * 100).toFixed(2)}%`;
+
   header(`scoring analysis [${analysis.reportStatus}]`);
+  out(
+    `analysis spec: ${analysis.analysisTag} v${analysis.analysisVersion} (${analysis.analysisSha})`,
+  );
   out(`STATUS: ${analysis.reportStatus} -- ${analysis.stoppingDecisionUse}`);
   out(`observations: ${analysis.completedSlots} / ${analysis.expectedSlots}`);
   out();
+  out("PRIMARY METRIC -- DVS_RATE_AMONG_VALID_RUNS (run level, per-arm denominators):");
+  const runLevelLine = (label: string, metric: typeof analysis.runLevel.native): string =>
+    `  ${label} ${metric.dvsCount}/${metric.validRuns} valid = ${pct(metric.rate)} ` +
+    `(invalid ${metric.invalidRuns})`;
+  out(runLevelLine("NATIVE", analysis.runLevel.native));
+  out(runLevelLine("MAF   ", analysis.runLevel.maf));
+  out();
+  out("TASK-LEVEL CELLS (Analysis v1 aggregation):");
+  const cellLine = (label: string, cells: typeof analysis.taskLevelDescriptive.native): string =>
+    `  ${label} determinate=${cells.determinateCells} dvs=${cells.dvsCells} ` +
+    `unresolved=${cells.unresolvedCells} invalid=${cells.invalidCells} ` +
+    `unobserved=${cells.unobservedCells}`;
+  out(cellLine("NATIVE", analysis.taskLevelDescriptive.native));
+  out(cellLine("MAF   ", analysis.taskLevelDescriptive.maf));
+  out();
+  out("PAIRED INFERENCE (task = pairing unit):");
   out(
-    `NATIVE  determined cells=${analysis.native.determinedCells} dvs=${analysis.native.dvsCells} rate=${analysis.native.dvsRate ?? "N/A"}`,
+    `  eligible tasks=${analysis.pairedInference.eligibleTaskCount} ` +
+      `excluded=${analysis.pairedInference.excludedTaskCount}`,
   );
+  const mc = analysis.pairedInference.mcnemar;
   out(
-    `MAF     determined cells=${analysis.maf.determinedCells} dvs=${analysis.maf.dvsCells} rate=${analysis.maf.dvsRate ?? "N/A"}`,
+    mc === null
+      ? "  McNemar: not computed (no eligible pairs)"
+      : `  McNemar: n11=${mc.n11} n10=${mc.n10} n01=${mc.n01} n00=${mc.n00} ` +
+          `discordant=${mc.discordantPairs} p=${mc.pValue.toFixed(6)}` +
+          (mc.zeroDiscordance ? " (zero discordance; NOT evidence of equivalence)" : ""),
+  );
+  const ci = analysis.pairedInference.differenceInterval;
+  out(
+    ci.status === "DETERMINED"
+      ? `  Difference (MAF-Native)=${ci.estimate.toFixed(6)} ` +
+          `95% CI [${ci.lower.toFixed(6)}, ${ci.upper.toFixed(6)}] via ${ci.method}`
+      : `  Difference CI: INAPPLICABLE -- ${ci.reason}`,
   );
   out();
-  out(
-    `McNemar: ${
-      analysis.mcNemar.status === "DETERMINED"
-        ? `p=${analysis.mcNemar.value.pValue.toFixed(6)} (${analysis.mcNemar.value.discordantPairs} discordant)`
-        : `UNDERSPECIFIED -- ${analysis.mcNemar.detail}`
-    }`,
-  );
-  out(
-    `DVS-rate difference: ${
-      analysis.dvsRateDifference.status === "DETERMINED"
-        ? analysis.dvsRateDifference.value.toFixed(6)
-        : `UNDERSPECIFIED -- ${analysis.dvsRateDifference.detail}`
-    }`,
-  );
-  out(`Difference 95% CI:   UNDERSPECIFIED -- ${analysis.dvsRateDifferenceInterval.detail}`);
-  out();
-  if (analysis.underspecified.length > 0) {
-    out("STATISTICS_SPEC_UNDERSPECIFIED:");
-    for (const ambiguity of analysis.underspecified) {
-      out(`  - ${ambiguity.id}: ${ambiguity.topic}`);
+  if (analysis.excludedObservations.length > 0) {
+    out(`excluded observations: ${analysis.excludedObservations.length}`);
+    for (const excluded of analysis.excludedObservations.slice(0, 5)) {
+      out(`  - ${excluded.taskId}: ${excluded.reason}`);
     }
   }
   for (const note of analysis.notes) out(`note: ${note}`);
@@ -570,6 +654,8 @@ const main = async (): Promise<void> => {
       return commandNext();
     case "execute":
       return commandExecute();
+    case "batch-plan":
+      return commandBatchPlan();
     case "request-rerun":
       return commandRequestRerun();
     case "adjudicate":
@@ -583,6 +669,7 @@ const main = async (): Promise<void> => {
       out("  init           create a campaign state directory");
       out("  status         operational progress and spend (never a DVS trend)");
       out("  next           the next pending slots in frozen order");
+      out("  batch-plan     dry plan for the next task-sized batch (3 NATIVE + 3 MAF), no calls");
       out(
         "  execute        evaluate the billed scoring gate (refuses while the runner is unfrozen)",
       );

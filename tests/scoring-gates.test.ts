@@ -15,6 +15,7 @@ import {
   verifyFrozenTag,
 } from "../evaluation/experiments/scoring/lib/tag-verification";
 import {
+  ANALYSIS_SHA,
   PROTOCOL_V1_SHA,
   PROTOCOL_V2_SHA,
   RUNNER_TAG,
@@ -179,7 +180,9 @@ describe("post-freeze tag verification (Phase 1)", () => {
     "local:maf-experiment-protocol-v1": PROTOCOL_V1_SHA,
     "remote:maf-experiment-protocol-v1": PROTOCOL_V1_SHA,
     "local:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
+    "local:maf-experiment-analysis-v1": ANALYSIS_SHA,
     "remote:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
+    "remote:maf-experiment-analysis-v1": ANALYSIS_SHA,
   };
 
   it("REQUIRES the v2 tag to exist, unlike the historical pre-freeze validator", async () => {
@@ -281,12 +284,26 @@ describe("billed scoring execution gate (Phases 14/15)", () => {
       remainingUsd: 100,
       detail: "ok",
     },
-    auth: { loggedIn: true, detail: "authenticated" },
+    auth: {
+      loggedIn: true,
+      apiProvider: "firstParty",
+      authMethod: "claude.ai",
+      executablePath: "C:/tools/claude.exe",
+      executableVersion: "2.1.251 (Claude Code)",
+      detail: "authenticated",
+    },
     routing: {
       externalModelOverrideForwarded: false,
       externalBaseUrlOverrideForwarded: false,
       externalAuthTokenForwarded: false,
       detail: "clean",
+    },
+    effectiveConfig: {
+      clean: true,
+      checks: [],
+      inspectedFiles: ["settings.json"],
+      excludedPaths: [],
+      summary: "effective Claude configuration is clean",
     },
     git: fakeGit({
       [`local:${SUITE_TAG}`]: SUITE_SHA,
@@ -294,7 +311,9 @@ describe("billed scoring execution gate (Phases 14/15)", () => {
       "local:maf-experiment-protocol-v1": PROTOCOL_V1_SHA,
       "remote:maf-experiment-protocol-v1": PROTOCOL_V1_SHA,
       "local:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
+      "local:maf-experiment-analysis-v1": ANALYSIS_SHA,
       "remote:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
+      "remote:maf-experiment-analysis-v1": ANALYSIS_SHA,
       [`local:${RUNNER_TAG}`]: "c".repeat(40),
       HEAD: "c".repeat(40),
       status: "",
@@ -309,7 +328,9 @@ describe("billed scoring execution gate (Phases 14/15)", () => {
       "local:maf-experiment-protocol-v1": PROTOCOL_V1_SHA,
       "remote:maf-experiment-protocol-v1": PROTOCOL_V1_SHA,
       "local:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
+      "local:maf-experiment-analysis-v1": ANALYSIS_SHA,
       "remote:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
+      "remote:maf-experiment-analysis-v1": ANALYSIS_SHA,
       HEAD: "c".repeat(40),
       status: "",
     });
@@ -338,7 +359,9 @@ describe("billed scoring execution gate (Phases 14/15)", () => {
       "local:maf-experiment-protocol-v1": PROTOCOL_V1_SHA,
       "remote:maf-experiment-protocol-v1": PROTOCOL_V1_SHA,
       "local:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
+      "local:maf-experiment-analysis-v1": ANALYSIS_SHA,
       "remote:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
+      "remote:maf-experiment-analysis-v1": ANALYSIS_SHA,
       [`local:${RUNNER_TAG}`]: "c".repeat(40),
       HEAD: "d".repeat(40),
       status: "",
@@ -354,7 +377,9 @@ describe("billed scoring execution gate (Phases 14/15)", () => {
       "local:maf-experiment-protocol-v1": PROTOCOL_V1_SHA,
       "remote:maf-experiment-protocol-v1": PROTOCOL_V1_SHA,
       "local:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
+      "local:maf-experiment-analysis-v1": ANALYSIS_SHA,
       "remote:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
+      "remote:maf-experiment-analysis-v1": ANALYSIS_SHA,
       [`local:${RUNNER_TAG}`]: "c".repeat(40),
       HEAD: "c".repeat(40),
       status: " M src/thing.ts",
@@ -399,6 +424,103 @@ describe("billed scoring execution gate (Phases 14/15)", () => {
       baseInput({ slotStates: [slotState({ status: "CORRUPT" })] }) as never,
     );
     expect(decision.failures.map((f) => f.id)).toContain("STATE_STORE_INTEGRITY");
+  });
+
+  it("REFUSES when the analysis freeze tag is missing", async () => {
+    const refs = {
+      [`local:${SUITE_TAG}`]: SUITE_SHA,
+      [`remote:${SUITE_TAG}`]: SUITE_SHA,
+      "local:maf-experiment-protocol-v1": PROTOCOL_V1_SHA,
+      "remote:maf-experiment-protocol-v1": PROTOCOL_V1_SHA,
+      "local:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
+      "remote:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
+      [`local:${RUNNER_TAG}`]: "c".repeat(40),
+      HEAD: "c".repeat(40),
+      status: "",
+    };
+    const decision = await evaluateExecutionGate(baseInput({ git: fakeGit(refs) }) as never);
+    expect(decision.authorized).toBe(false);
+    expect(decision.failures.map((f) => f.id)).toContain("ANALYSIS_FROZEN");
+  });
+
+  it("REFUSES when the analysis tag points at the wrong commit", async () => {
+    const refs = {
+      [`local:${SUITE_TAG}`]: SUITE_SHA,
+      [`remote:${SUITE_TAG}`]: SUITE_SHA,
+      "local:maf-experiment-protocol-v1": PROTOCOL_V1_SHA,
+      "remote:maf-experiment-protocol-v1": PROTOCOL_V1_SHA,
+      "local:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
+      "remote:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
+      "local:maf-experiment-analysis-v1": "9".repeat(40),
+      "remote:maf-experiment-analysis-v1": "9".repeat(40),
+      [`local:${RUNNER_TAG}`]: "c".repeat(40),
+      HEAD: "c".repeat(40),
+      status: "",
+    };
+    const decision = await evaluateExecutionGate(baseInput({ git: fakeGit(refs) }) as never);
+    expect(decision.failures.map((f) => f.id)).toContain("ANALYSIS_FROZEN");
+  });
+
+  it("refuses an authenticated session that is NOT first-party", async () => {
+    const decision = await evaluateExecutionGate(
+      baseInput({
+        auth: {
+          loggedIn: true,
+          apiProvider: "thirdParty",
+          authMethod: "api_key",
+          executablePath: "C:/tools/claude.exe",
+          executableVersion: "2.1.251",
+          detail: "authenticated elsewhere",
+        },
+      }) as never,
+    );
+    expect(decision.authorized).toBe(false);
+    const auth = decision.checks.find((c) => c.id === "CLAUDE_AUTH");
+    expect(auth?.passed).toBe(false);
+    expect(auth?.detail).toMatch(/not firstParty/u);
+  });
+
+  it("refuses when no single executable was pinned for version, auth and execution", async () => {
+    const decision = await evaluateExecutionGate(
+      baseInput({
+        auth: {
+          loggedIn: true,
+          apiProvider: "firstParty",
+          authMethod: "claude.ai",
+          executablePath: null,
+          executableVersion: null,
+          detail: "authenticated",
+        },
+      }) as never,
+    );
+    expect(decision.failures.map((f) => f.id)).toContain("CLAUDE_EXECUTABLE_PINNED");
+  });
+
+  it("refuses when the effective Claude configuration would redirect the participant", async () => {
+    const decision = await evaluateExecutionGate(
+      baseInput({
+        effectiveConfig: {
+          clean: false,
+          checks: [],
+          inspectedFiles: ["settings.json"],
+          excludedPaths: [],
+          summary: "active Claude configuration sets ANTHROPIC_BASE_URL",
+        },
+      }) as never,
+    );
+    expect(decision.authorized).toBe(false);
+    const check = decision.checks.find((c) => c.id === "EFFECTIVE_CLAUDE_CONFIG");
+    expect(check?.passed).toBe(false);
+    expect(check?.detail).toMatch(/ANTHROPIC_BASE_URL/u);
+  });
+
+  it("reaches AUTHORIZED only with a correct runner tag in a fully clean fake environment", async () => {
+    const decision = await evaluateExecutionGate(baseInput() as never);
+    expect(decision.authorized).toBe(true);
+    expect(decision.checks.find((c) => c.id === "ANALYSIS_FROZEN")?.passed).toBe(true);
+    expect(decision.checks.find((c) => c.id === "RUNNER_FROZEN")?.passed).toBe(true);
+    expect(decision.checks.find((c) => c.id === "RUNNER_MATCHES_HEAD")?.passed).toBe(true);
+    // Nothing here spawns anything; authorization is a decision, not an execution.
   });
 
   it("always records the freeze authority and the known source-metadata discrepancy", async () => {
