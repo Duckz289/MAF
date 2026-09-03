@@ -24,7 +24,9 @@ import {
   SUITE_SHA,
   SUITE_TAG,
 } from "./frozen-refs";
+import path from "node:path";
 import type { EffectiveConfigReport } from "./effective-config-gate";
+import { FIRST_PARTY_AUTH_METHODS, type PinnedExecutable } from "./executable-gate";
 import {
   inspectWorktree,
   verifyFrozenArtifacts,
@@ -86,16 +88,17 @@ export interface ExecutionGateInput {
   manifest: ManifestParameters;
   slotStates: readonly SlotState[];
   campaignGate: CampaignGateDecision;
-  auth: {
-    loggedIn: boolean;
-    detail: string;
-    /** First-party is required: a scoring run routed elsewhere is not the frozen experiment. */
-    apiProvider?: string | null;
-    authMethod?: string | null;
-    /** The exact executable that was version- and auth-checked, reused verbatim for execution. */
-    executablePath?: string | null;
-    executableVersion?: string | null;
-  };
+  /**
+   * The RESULT of the pinned-executable probe, consumed whole.
+   *
+   * Previously the gate took a loose `auth` object and re-derived its own weaker conclusions from
+   * it: it accepted any non-empty `executablePath` (so the bare string "claude" passed) and treated
+   * `apiProvider === "firstParty"` as sufficient (so an `api_key` session passed). Meanwhile
+   * `executableAuthorizedForScoring` already encoded the stronger rules and went unused. Taking the
+   * probe result directly removes the second, weaker implementation entirely -- there is now one
+   * authoritative predicate, and the gate cannot drift from it.
+   */
+  pinnedExecutable: PinnedExecutable;
   routing: {
     externalModelOverrideForwarded: boolean;
     externalBaseUrlOverrideForwarded: boolean;
@@ -218,31 +221,35 @@ export const evaluateExecutionGate = async (
 
   checks.push(checkManifestParameters(input.manifest));
 
-  // Authentication must be first-party. An authenticated session against some other provider is
-  // still "logged in" and would still run -- it just would not be the frozen experiment.
-  const firstParty = input.auth.apiProvider === "firstParty";
+  // Authentication must be first-party by BOTH provider and method. `api_key` is deliberately not
+  // accepted: the frozen experiment is defined over a first-party claude.ai subscription session,
+  // and an API-key session is a different provider relationship even when it reports firstParty.
+  const pinned = input.pinnedExecutable;
+  const authOk = pinned.loggedIn && pinned.firstParty;
   checks.push({
     id: "CLAUDE_AUTH",
-    passed: input.auth.loggedIn && firstParty,
-    detail: !input.auth.loggedIn
-      ? input.auth.detail
-      : firstParty
-        ? `authenticated first-party (method=${input.auth.authMethod ?? "unknown"})`
-        : `authenticated but apiProvider=${String(input.auth.apiProvider)}, not firstParty; ` +
-          "a scoring run routed through another provider is not the frozen experiment",
+    passed: authOk,
+    detail: !pinned.loggedIn
+      ? pinned.detail
+      : authOk
+        ? `authenticated first-party (method=${String(pinned.authMethod)})`
+        : `authenticated but apiProvider=${String(pinned.apiProvider)} / authMethod=` +
+          `${String(pinned.authMethod)} is not an accepted first-party session ` +
+          `(${FIRST_PARTY_AUTH_METHODS.join(", ")}); a scoring run under a different provider ` +
+          "relationship is not the frozen experiment",
   });
 
-  // The binary that was version- and auth-checked must be the binary that executes. The first
-  // billed preflight version-checked "claude" and then spawned whatever PATH resolved at run time.
+  // The binary that was version- and auth-checked must be the binary that executes, and it must be
+  // ABSOLUTE so no spawn repeats a PATH lookup. The first billed preflight version-checked "claude"
+  // and then spawned whatever PATH resolved at run time.
   checks.push({
     id: "CLAUDE_EXECUTABLE_PINNED",
-    passed: typeof input.auth.executablePath === "string" && input.auth.executablePath.length > 0,
+    passed: pinned.pinned && pinned.path !== null && pinned.pathIsAbsolute,
     detail:
-      typeof input.auth.executablePath === "string" && input.auth.executablePath.length > 0
-        ? `executable pinned for version, auth and execution: ${input.auth.executablePath}` +
-          (input.auth.executableVersion ? ` (${input.auth.executableVersion})` : "")
-        : "no single executable was resolved, so the audited binary cannot be proven to be the " +
-          "binary that would run",
+      pinned.pinned && pinned.pathIsAbsolute
+        ? `executable pinned for version, auth and execution: ${String(pinned.path)}` +
+          (pinned.version ? ` (${pinned.version})` : "")
+        : pinned.detail,
   });
 
   const routingClean =
@@ -384,7 +391,9 @@ export const issueProviderAuthorization = (
   input: IssueAuthorizationInput,
 ): ProviderAuthorization | null => {
   if (!input.decision.authorized) return null;
-  if (!input.executablePath) return null;
+  // The bound executable must be absolute. A capability naming "claude" would authorize a spawn
+  // that still performs its own PATH lookup, which is exactly what the binding exists to prevent.
+  if (!input.executablePath || !path.isAbsolute(input.executablePath)) return null;
   if (!input.campaignId || !input.scheduleDigest) return null;
   if (!input.nativeSlotDigest || !input.mafSlotDigest) return null;
   return {
@@ -403,6 +412,15 @@ export interface AuthorizationContext {
   scheduleDigest: string;
   nativeSlotDigest: string;
   mafSlotDigest: string;
+  /**
+   * The executable the caller is about to spawn participants with.
+   *
+   * Required, and required to be absolute. Omitting it previously let `ClaudeCodeAdapter` fall back
+   * to its own `"claude"` default and perform a fresh PATH lookup, so the binary that was
+   * auth-checked was not necessarily the binary that ran -- the very defect the pinning was
+   * introduced to close.
+   */
+  executablePath: string | undefined;
 }
 
 /**
@@ -424,6 +442,30 @@ export const assertAuthorizedForPair = (
     );
   }
   assertAuthorizedForProviderCall(authorization.decision);
+
+  // The executable is checked before the identity fields: a spawn that would reach a different
+  // binary is unsafe regardless of which pair it was for.
+  if (context.executablePath === undefined || context.executablePath === "") {
+    throw new Error(
+      "SCORING_EXECUTION_REFUSED: no participant executable was supplied. Billed scoring must " +
+        "spawn the exact absolute binary the authorization was issued against; allowing the " +
+        "adapter to fall back to its default would repeat a PATH lookup and could reach a " +
+        "different binary than the one that was version- and auth-checked.",
+    );
+  }
+  if (!path.isAbsolute(context.executablePath)) {
+    throw new Error(
+      `SCORING_EXECUTION_REFUSED: participant executable "${context.executablePath}" is not an ` +
+        "absolute path, so each spawn would repeat a PATH lookup that could resolve elsewhere.",
+    );
+  }
+  if (authorization.executablePath !== context.executablePath) {
+    throw new Error(
+      "SCORING_EXECUTION_REFUSED: this authorization was issued against executable " +
+        `"${authorization.executablePath}" but the requested execution would spawn ` +
+        `"${context.executablePath}".`,
+    );
+  }
 
   const mismatches: string[] = [];
   if (authorization.campaignId !== context.campaignId) {

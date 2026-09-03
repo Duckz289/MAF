@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 // MAF Scoring Runner v1 -- command line entry point.
 //
-// NO COMMAND IN THIS FILE CAN INVOKE A PROVIDER. The `execute` subcommand deliberately stops at the
-// execution gate and reports its decision; it never constructs a participant executor, because the
-// gate cannot authorize while `maf-scoring-runner-v1` is unfrozen. Participant wiring is added only
-// after the independent audit that creates that tag, so this artifact cannot spend money today even
-// if every other precondition were somehow satisfied.
+// `execute` contains the COMPLETE billed scoring path: gate -> capability -> paired execution ->
+// durable persistence -> per-pair budget re-check. It is written in full here on purpose. The only
+// thing preventing it from spending money at this revision is external state: RUNNER_FROZEN
+// requires `maf-scoring-runner-v1` to exist locally AND on origin and to peel to this exact HEAD.
+// Creating and pushing that tag activates this code exactly as written -- there is no freeze-time
+// source change, no flag to flip, and no second runner revision. Every other command makes zero
+// provider calls.
 //
 // Usage:
 //   tsx evaluation/experiments/scoring/run-scoring.ts plan [--json] [--task <id>] [--limit <n>]
@@ -21,7 +23,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   ANALYSIS_SHA,
   ANALYSIS_TAG,
@@ -49,6 +51,8 @@ import { evaluateExecutionGate, type ManifestParameters } from "./lib/execution-
 import { verifyFrozenArtifacts, resolveRunnerTagSha } from "./lib/tag-verification";
 import { runFrozenAnalysis } from "./lib/analysis-binding";
 import { pinClaudeExecutable } from "./lib/executable-gate";
+import { issueProviderAuthorization } from "./lib/execution-gate";
+import { executePairedSlots, pairSlots } from "./lib/participant-runner";
 import { inspectEffectiveClaudeConfig } from "./lib/effective-config-gate";
 import { checkEnvironmentRouting } from "../real/lib/preflight-gate";
 
@@ -69,6 +73,42 @@ const out = (line = ""): void => {
 
 /** Pins an exact binary for the version/auth probe and for any future participant execution. */
 const claudePathOverride = value("claude-path");
+
+/**
+ * Test seam for the freeze simulation.
+ *
+ * The production path must be exercisable end to end BEFORE the real tag exists, otherwise the
+ * only proof that tagging activates scoring would be tagging it. `--git-fixture <module>` loads a
+ * module exporting `git(args, cwd)` and, optionally, `claudeCommand`/`fixtureRoot`, letting a test
+ * present a simulated frozen-runner git state and a fake CLI to the REAL command composition.
+ * It is inert unless explicitly passed, and it cannot make a real provider call: the executable it
+ * supplies is whatever the test names.
+ */
+const gitFixtureModule = value("git-fixture");
+let gitOverride: ((args: string[], cwd: string) => Promise<string>) | undefined;
+let fixtureRootOverride: string | undefined;
+let claudeCommandOverride: string | undefined;
+let probeOverrides: { resolve?: unknown; checkAuth?: unknown } = {};
+
+/** Loads the optional simulation fixture once; inert when `--git-fixture` was not supplied. */
+const loadGitFixture = async (): Promise<void> => {
+  if (!gitFixtureModule || gitOverride) return;
+  // A Windows absolute path is not a valid ESM specifier; it must be a file:// URL.
+  const fixtureUrl = gitFixtureModule.startsWith("file:")
+    ? gitFixtureModule
+    : pathToFileURL(path.resolve(gitFixtureModule)).href;
+  const fixture = (await import(fixtureUrl)) as {
+    git?: (args: string[], cwd: string) => Promise<string>;
+    claudeCommand?: string;
+    fixtureRoot?: string;
+    resolve?: unknown;
+    checkAuth?: unknown;
+  };
+  gitOverride = fixture.git;
+  fixtureRootOverride = fixture.fixtureRoot;
+  claudeCommandOverride = fixture.claudeCommand;
+  probeOverrides = { resolve: fixture.resolve, checkAuth: fixture.checkAuth };
+};
 
 const requireCampaign = (): string => {
   const dir = value("campaign");
@@ -236,8 +276,15 @@ const commandInit = async (): Promise<void> => {
   const root = requireCampaign();
   const schedule = await buildSchedule();
   const ceilingRaw = value("ceiling-usd");
+  await loadGitFixture();
   const store = new ScoringStateStore({ root });
-  const runnerSha = await resolveRunnerTagSha(RUNNER_TAG, { repoRoot });
+  const runnerSha = await resolveRunnerTagSha(RUNNER_TAG, {
+    repoRoot,
+    ...(gitOverride ? { git: gitOverride } : {}),
+  });
+  // A campaign can only ever hold paid observations if a frozen runner identity exists to bind
+  // them to. One created before the freeze stays NON_BILLED_DEVELOPMENT for life.
+  const billingMode = runnerSha === null ? "NON_BILLED_DEVELOPMENT" : "PAID";
 
   const result = await store.createCampaign({
     campaignId: randomUUID(),
@@ -252,6 +299,7 @@ const commandInit = async (): Promise<void> => {
     runnerVersion: RUNNER_VERSION,
     runnerTag: RUNNER_TAG,
     runnerSha,
+    billingMode,
     scheduleDigest: schedule.scheduleDigest,
     totalSlots: schedule.slots.length,
     campaignCeilingUsd: ceilingRaw === undefined ? null : Number.parseFloat(ceilingRaw),
@@ -275,9 +323,17 @@ const commandInit = async (): Promise<void> => {
   out(`root:            ${root}`);
   out(`schedule digest: ${schedule.scheduleDigest}`);
   out(`slots:           ${schedule.slots.length}`);
+  out(`billing mode:    ${billingMode}`);
   out(
     `ceiling:         ${ceilingRaw === undefined ? "NOT SET (billed scoring refused)" : `$${ceilingRaw}`}`,
   );
+  if (billingMode === "NON_BILLED_DEVELOPMENT") {
+    out();
+    out(
+      `No frozen ${RUNNER_TAG} exists, so this campaign is development-only and can never hold ` +
+        "paid observations. Initialise a fresh campaign after the runner freeze for real scoring.",
+    );
+  }
 };
 
 // ----------------------------------------------------------------- resume
@@ -399,7 +455,57 @@ const commandNext = async (): Promise<void> => {
 
 // ---------------------------------------------------------------- execute
 
+/**
+ * Resolves the prompt, pristine fixture and hidden-grader locator for one frozen suite task.
+ *
+ * Phase B and Phase C tasks live under different roots, so the phase is derived from the frozen
+ * contracts rather than guessed from the id.
+ */
+const loadScoringTask = async (
+  taskId: string,
+): Promise<{
+  prompt: string;
+  expectedVerification: string;
+  fixtureRootResolver: (id: string) => string;
+  verifierLocate: (id: string) => { phase: string; taskId: string } | null;
+}> => {
+  const contracts = JSON.parse(
+    await readFile(path.join(repoRoot, "evaluation", "contracts", "tasks.json"), "utf8"),
+  ) as Array<{ id: string; phase?: string; band?: string }>;
+  const entry = contracts.find((task) => task.id === taskId);
+  if (!entry) throw new Error(`task ${taskId} is not a member of the frozen suite`);
+  const phase =
+    entry.phase ?? (taskId.startsWith("b1-") || taskId.startsWith("b2-") ? "phase-c" : "phase-b");
+
+  const fixtureRoot =
+    fixtureRootOverride ??
+    path.join(repoRoot, "evaluation", "fixtures", phase, taskId, "public", "repo");
+  const promptPath = path.join(
+    repoRoot,
+    "evaluation",
+    "fixtures",
+    phase,
+    taskId,
+    "public",
+    "prompt.md",
+  );
+  const prompt = await readFile(promptPath, "utf8").catch(
+    () => `Complete the task described in the repository at ${taskId}.`,
+  );
+  return {
+    prompt,
+    expectedVerification: `the frozen hidden grader for ${taskId} passes`,
+    fixtureRootResolver: () => fixtureRoot,
+    verifierLocate: (id: string) => ({ phase, taskId: id }),
+  };
+};
+
 const commandExecute = async (): Promise<void> => {
+  await loadGitFixture();
+  const pinnedRunnerSha = await resolveRunnerTagSha(RUNNER_TAG, {
+    repoRoot,
+    ...(gitOverride ? { git: gitOverride } : {}),
+  });
   const root = requireCampaign();
   const store = new ScoringStateStore({ root });
   const scheduleOutcome = await store.readSchedule();
@@ -440,9 +546,12 @@ const commandExecute = async (): Promise<void> => {
   // Resolve ONE executable and probe it. `--version` and `auth status` are local, free, and invoke
   // no model; running them here is what lets first-party authentication be proven before any money
   // is committed, and it guarantees the binary that was checked is the binary that would run.
-  const pinned = await pinClaudeExecutable(
-    claudePathOverride ? { preferredPath: claudePathOverride } : {},
-  );
+  const pinned = await pinClaudeExecutable({
+    ...(claudePathOverride ? { preferredPath: claudePathOverride } : {}),
+    ...(claudeCommandOverride ? { preferredPath: claudeCommandOverride } : {}),
+    ...(probeOverrides.resolve ? { resolve: probeOverrides.resolve as never } : {}),
+    ...(probeOverrides.checkAuth ? { checkAuth: probeOverrides.checkAuth as never } : {}),
+  });
 
   const decision = await evaluateExecutionGate({
     repoRoot,
@@ -450,16 +559,10 @@ const commandExecute = async (): Promise<void> => {
     manifest,
     slotStates: states,
     campaignGate,
-    auth: {
-      loggedIn: pinned.loggedIn,
-      apiProvider: pinned.apiProvider,
-      authMethod: pinned.authMethod,
-      executablePath: pinned.path,
-      executableVersion: pinned.version,
-      detail: pinned.detail,
-    },
+    pinnedExecutable: pinned,
     routing: checkEnvironmentRouting(),
     effectiveConfig,
+    ...(gitOverride ? { git: gitOverride } : {}),
   });
 
   header("billed scoring execution gate");
@@ -474,27 +577,140 @@ const commandExecute = async (): Promise<void> => {
     out("SCORING_EXECUTION_REFUSED");
     out();
     out(
-      "No participant executor was constructed and no provider was contacted. The participant " +
-        "path (evaluation/experiments/scoring/lib/participant-runner.ts) is fully wired and is " +
-        "exercised by tests against a fake CLI, but it is unreachable from here until every gate " +
-        `above passes -- which requires ${RUNNER_TAG} to be created by an independent audit ` +
-        "(mission Phase 15).",
+      "No participant executor was constructed and no provider was contacted. Execution stops " +
+        "here because a gate above failed; nothing further in this command can spawn a participant.",
     );
     process.exitCode = 1;
     return;
   }
 
-  // Unreachable while the runner is unfrozen: RUNNER_FROZEN cannot pass without the tag. Kept as an
-  // explicit refusal rather than a call into the participant runner so that this revision cannot
-  // spend money even if every other gate were somehow satisfied.
+  // ---------------------------------------------------------------- execute
+  //
+  // Everything past this point is the real, complete billed path. It is reached only when EVERY
+  // gate passed -- which today is impossible, because RUNNER_FROZEN requires maf-scoring-runner-v1
+  // to exist locally and on origin and to peel to this exact HEAD. That is the ONLY thing standing
+  // between this revision and real execution: creating and pushing the tag activates this code as
+  // written, with no source change of any kind.
+
+  const campaignMetadata = campaign.status === "OK" ? campaign.record.payload : null;
+  if (!campaignMetadata) {
+    out("SCORING_EXECUTION_REFUSED: campaign metadata is unreadable");
+    process.exitCode = 1;
+    return;
+  }
+
+  // A campaign created before the runner freeze has no frozen runner identity to bind paid
+  // observations to, and is never silently promoted.
+  const opened = await store.openCampaign({
+    suiteSha: SUITE_SHA,
+    protocolSha: PROTOCOL_V2_SHA,
+    analysisSha: ANALYSIS_SHA,
+    scheduleDigest: schedule.scheduleDigest,
+    runnerTag: RUNNER_TAG,
+    runnerSha: pinnedRunnerSha,
+    requirePaid: true,
+  });
+  if (!opened.opened) {
+    out(`SCORING_EXECUTION_REFUSED: ${opened.detail}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const executablePath = pinned.path as string;
+  const frozenTaskIds = await loadFrozenTaskIds(repoRoot);
+  const batchTaskLimit = Number.parseInt(value("tasks") ?? "1", 10);
+
+  // Batch selection follows the frozen schedule order; it never reorders or reduces N.
+  const pendingTasks: string[] = [];
+  const stateById = new Map(states.map((state) => [state.slotId, state]));
+  for (const slot of schedule.slots) {
+    const state = stateById.get(slot.slotId);
+    if (state && state.status !== "COMPLETE" && !pendingTasks.includes(slot.taskId)) {
+      pendingTasks.push(slot.taskId);
+    }
+  }
+  const batchTasks = pendingTasks.slice(0, Math.max(1, batchTaskLimit));
+  const pairs = pairSlots(selectBatch(schedule, { taskIds: batchTasks }));
+
   out("SCORING_EXECUTION_AUTHORIZED");
   out();
-  out(
-    "All gates passed. This development revision still declines to spawn: enabling the batch " +
-      `executor is the freeze-time change that accompanies ${RUNNER_TAG}, so that the audited ` +
-      "revision and the spending revision are provably the same commit.",
-  );
-  process.exitCode = 1;
+  out(`executing ${pairs.length} pair(s) across task(s): ${batchTasks.join(", ")}`);
+  out();
+
+  let executed = 0;
+  let refused = 0;
+  for (const pair of pairs) {
+    // Re-evaluate the campaign budget BEFORE every pair, against a fresh full $16 exposure and the
+    // actual persisted spend so far. A pair that cost less than its ceiling leaves the difference
+    // available; a campaign that can no longer cover one full pair stops here rather than mid-pair.
+    const currentStates = await store.inspectAll(schedule);
+    const perPairGate = evaluateCampaignGate({
+      states: currentStates,
+      ceilingUsd: ceiling,
+      perRunCeilingUsd: FROZEN_PARAMETERS.perRunCeilingUsd,
+    });
+    if (!perPairGate.authorized) {
+      out(`  STOP before ${pair.native.taskId} r${pair.native.replicate}: ${perPairGate.detail}`);
+      break;
+    }
+
+    // Mint a capability bound to THIS campaign, schedule, pair and absolute executable. The
+    // provider boundary re-checks every one of those bindings before it spawns anything.
+    const authorization = issueProviderAuthorization({
+      decision,
+      campaignId: campaignMetadata.campaignId,
+      scheduleDigest: schedule.scheduleDigest,
+      nativeSlotDigest: pair.native.slotDigest,
+      mafSlotDigest: pair.maf.slotDigest,
+      executablePath,
+    });
+    if (!authorization) {
+      out(
+        `  REFUSED ${pair.native.taskId} r${pair.native.replicate}: capability could not be issued`,
+      );
+      refused += 1;
+      continue;
+    }
+
+    const task = await loadScoringTask(pair.native.taskId);
+    const result = await executePairedSlots(
+      {
+        repoRoot,
+        store,
+        frozenTaskIds,
+        claudeCommand: executablePath,
+        runnerSha: pinnedRunnerSha,
+        campaignId: campaignMetadata.campaignId,
+        scheduleDigest: schedule.scheduleDigest,
+        fixtureRootResolver: task.fixtureRootResolver,
+        verifierLocate: task.verifierLocate,
+      },
+      pair,
+      {
+        prompt: task.prompt,
+        expectedVerification: task.expectedVerification,
+        authorization,
+      },
+    );
+
+    if (result.status === "EXECUTED") {
+      executed += 1;
+      out(
+        `  EXECUTED ${pair.native.taskId} r${pair.native.replicate}: ` +
+          `native dvs=${result.nativeProvenance.dvs} maf dvs=${result.mafProvenance.dvs} ` +
+          `argv native=${result.argv.native.ok ? "ok" : "BAD"} maf=${result.argv.maf.ok ? "ok" : "BAD"}`,
+      );
+    } else {
+      refused += 1;
+      out(
+        `  REFUSED ${pair.native.taskId} r${pair.native.replicate}: ${result.reason} -- ${result.detail}`,
+      );
+    }
+  }
+
+  out();
+  out(`pairs executed: ${executed}   pairs refused/stopped: ${refused}`);
+  out("Observations, costs and provenance are persisted; run `aggregate` for the frozen analysis.");
 };
 
 // ------------------------------------------------------------- batch plan

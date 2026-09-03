@@ -284,13 +284,17 @@ describe("billed scoring execution gate (Phases 14/15)", () => {
       remainingUsd: 100,
       detail: "ok",
     },
-    auth: {
+    pinnedExecutable: {
+      pinned: true,
+      path: "C:/tools/claude.exe",
+      version: "2.1.251",
       loggedIn: true,
-      apiProvider: "firstParty",
       authMethod: "claude.ai",
-      executablePath: "C:/tools/claude.exe",
-      executableVersion: "2.1.251 (Claude Code)",
-      detail: "authenticated",
+      apiProvider: "firstParty",
+      firstParty: true,
+      probedPaths: ["C:/tools/claude.exe"],
+      pathIsAbsolute: true,
+      detail: "pinned",
     },
     routing: {
       externalModelOverrideForwarded: false,
@@ -393,7 +397,20 @@ describe("billed scoring execution gate (Phases 14/15)", () => {
 
   it("refuses when auth is unverified", async () => {
     const decision = await evaluateExecutionGate(
-      baseInput({ auth: { loggedIn: false, detail: "not probed" } }) as never,
+      baseInput({
+        pinnedExecutable: {
+          pinned: false,
+          path: null,
+          version: null,
+          loggedIn: false,
+          authMethod: null,
+          apiProvider: null,
+          firstParty: false,
+          probedPaths: [],
+          pathIsAbsolute: false,
+          detail: "authentication was not probed",
+        },
+      }) as never,
     );
     expect(decision.failures.map((f) => f.id)).toContain("CLAUDE_AUTH");
   });
@@ -469,12 +486,16 @@ describe("billed scoring execution gate (Phases 14/15)", () => {
   it("refuses an authenticated session that is NOT first-party", async () => {
     const decision = await evaluateExecutionGate(
       baseInput({
-        auth: {
+        pinnedExecutable: {
+          pinned: true,
+          path: "C:/tools/claude.exe",
+          version: "2.1.251",
           loggedIn: true,
-          apiProvider: "thirdParty",
           authMethod: "api_key",
-          executablePath: "C:/tools/claude.exe",
-          executableVersion: "2.1.251",
+          apiProvider: "thirdParty",
+          firstParty: false,
+          probedPaths: ["C:/tools/claude.exe"],
+          pathIsAbsolute: true,
           detail: "authenticated elsewhere",
         },
       }) as never,
@@ -482,19 +503,23 @@ describe("billed scoring execution gate (Phases 14/15)", () => {
     expect(decision.authorized).toBe(false);
     const auth = decision.checks.find((c) => c.id === "CLAUDE_AUTH");
     expect(auth?.passed).toBe(false);
-    expect(auth?.detail).toMatch(/not firstParty/u);
+    expect(auth?.detail).toMatch(/not an accepted first-party session/u);
   });
 
   it("refuses when no single executable was pinned for version, auth and execution", async () => {
     const decision = await evaluateExecutionGate(
       baseInput({
-        auth: {
+        pinnedExecutable: {
+          pinned: false,
+          path: null,
+          version: null,
           loggedIn: true,
-          apiProvider: "firstParty",
           authMethod: "claude.ai",
-          executablePath: null,
-          executableVersion: null,
-          detail: "authenticated",
+          apiProvider: "firstParty",
+          firstParty: true,
+          probedPaths: [],
+          pathIsAbsolute: false,
+          detail: "no executable resolved",
         },
       }) as never,
     );

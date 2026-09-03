@@ -22,13 +22,7 @@
 import { randomUUID } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
-import {
-  ensureDirectory,
-  readRecord,
-  writeRecord,
-  writeRecordExclusive,
-  type ReadOutcome,
-} from "./atomic-io";
+import { ensureDirectory, readRecord, writeRecordExclusive, type ReadOutcome } from "./atomic-io";
 import { isWellFormedSlotId, type Arm, type RunSlot, type ScoringSchedule } from "./schedule";
 
 export const RECORD_KINDS = {
@@ -60,6 +54,17 @@ export interface CampaignMetadata {
   runnerTag: string;
   /** Null while the runner is not yet frozen; billed execution is impossible in that state. */
   runnerSha: string | null;
+  /**
+   * Whether this campaign may ever hold paid observations.
+   *
+   * A campaign created before the runner freeze has `runnerSha: null` -- there is no frozen runner
+   * identity to bind its results to. Such a campaign is NON_BILLED_DEVELOPMENT and can never be
+   * promoted: silently reusing it after the freeze would attribute paid observations to a runner
+   * revision that did not exist when the campaign was created. Paid work requires a campaign
+   * initialised after the freeze, whose runner identity is recorded up front and checked on every
+   * resume.
+   */
+  billingMode: "NON_BILLED_DEVELOPMENT" | "PAID";
   scheduleDigest: string;
   totalSlots: number;
   /** Operator-authorized campaign spend ceiling. Null means billed execution is not authorized. */
@@ -281,6 +286,14 @@ export class ScoringStateStore {
     protocolSha: string;
     analysisSha: string;
     scheduleDigest: string;
+    /**
+     * Runner identity to require. Supplied only when the caller intends PAID execution: a campaign
+     * that will spend money must be bound to the runner freeze that owns it, so results can never
+     * be silently migrated across runner revisions.
+     */
+    runnerTag?: string;
+    runnerSha?: string | null;
+    requirePaid?: boolean;
   }): Promise<
     | { opened: true; campaign: CampaignMetadata }
     | { opened: false; campaign: CampaignMetadata | null; mismatches: string[]; detail: string }
@@ -303,6 +316,22 @@ export class ScoringStateStore {
     compare("protocolSha", campaign.protocolSha, expected.protocolSha);
     compare("analysisSha", campaign.analysisSha, expected.analysisSha);
     compare("scheduleDigest", campaign.scheduleDigest, expected.scheduleDigest);
+
+    if (expected.requirePaid === true) {
+      if (campaign.billingMode !== "PAID") {
+        mismatches.push(
+          `billingMode: stored=${campaign.billingMode} expected=PAID. This campaign was created ` +
+            "before the runner freeze and has no frozen runner identity to bind paid observations " +
+            "to; initialise a new campaign rather than promoting a development one",
+        );
+      }
+      if (expected.runnerTag !== undefined) {
+        compare("runnerTag", campaign.runnerTag, expected.runnerTag);
+      }
+      if (expected.runnerSha !== undefined) {
+        compare("runnerSha", String(campaign.runnerSha), String(expected.runnerSha));
+      }
+    }
     if (mismatches.length > 0) {
       return {
         opened: false,

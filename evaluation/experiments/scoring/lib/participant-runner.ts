@@ -14,15 +14,20 @@
 //
 // ORDER OF OPERATIONS around money, which is the part that must not be rearranged:
 //
+//   0. assert the provider authorization is bound to THIS pair and THIS absolute executable
 //   1. claim BOTH slots            -- exclusive create; if either is unavailable, nothing spawns
-//   2. build workspaces, prove parity of the starting state
-//   3. declare provider-start intent for BOTH arms, flushed to disk
+//   2. declare provider-start intent for BOTH arms, flushed to disk, BEFORE any slow work
+//   3. hash the fixture, prove Native/MAF starting-state parity, scan the workspace config
 //   4. runPair()                   -- the only step that can spend money
 //   5. record attempt outcomes     -- resolves the ambiguity the intents opened
 //   6. append observations         -- append-only, never overwritten
 //
-// A crash between 3 and 5 leaves an intent with no outcome, which the state store reports as
-// RECOVERY_REQUIRED and refuses to retry automatically. That is the intended behaviour, not a gap.
+// Intent precedes the fixture hashing deliberately: the reservation lease governs only the
+// claim -> intent window, so keeping that window to two exclusive file creates prevents another
+// process reclaiming a slot this one is about to spawn under. A failure in step 3 settles both
+// intents as never-started, which is sound because nothing between the intent and runPair can
+// spawn. A genuine crash between 2 and 5 writes no outcome and correctly stays ambiguous:
+// the store reports RECOVERY_REQUIRED and never retries automatically.
 
 import path from "node:path";
 import { CuratorIndependentVerifier } from "../../../../src/evaluation/curator-verifier";
@@ -43,6 +48,7 @@ import {
 } from "./frozen-refs";
 import type { Arm, RunSlot } from "./schedule";
 import { assertAuthorizedForPair, type ProviderAuthorization } from "./execution-gate";
+import { inspectEffectiveClaudeConfig } from "./effective-config-gate";
 import { assertScoringEligible, type ScoringProvenanceRecord } from "./scoring-provenance";
 import { captureSourceRevision, assertStartingStateParity } from "./source-revision";
 import type { ScoringStateStore } from "./state-store";
@@ -210,6 +216,11 @@ export const executePairedSlots = async (
     scheduleDigest: config.scheduleDigest,
     nativeSlotDigest: pair.native.slotDigest,
     mafSlotDigest: pair.maf.slotDigest,
+    // Binds the spawn to the exact absolute binary the capability was issued against. Omitting
+    // `claudeCommand` would let ClaudeCodeAdapter fall back to its own "claude" default and repeat
+    // a PATH lookup, so an omitted or mismatched command is refused here rather than silently
+    // reaching a different binary than the one that was version- and auth-checked.
+    executablePath: config.claudeCommand,
   });
 
   // Membership: a NON_SCORING or out-of-suite task must never reach an executor, let alone a paid
@@ -273,6 +284,30 @@ export const executePairedSlots = async (
     nativeSource = await captureSourceRevision({ fixturePath });
     mafSource = await captureSourceRevision({ fixturePath });
     assertStartingStateParity(nativeSource, mafSource);
+
+    // The participant's cwd is a controller-created workspace materialised by copying THIS fixture
+    // tree (ExperimentWorkspaceController: mkdtemp + cp -r + git init). So the fixture's content is
+    // exactly what the participant will find in its cwd, and scanning it here is scanning the
+    // future participant workspace -- checkable before the spawn, which the workspace itself is
+    // not, since Protocol v2 creates it inside runPair.
+    //
+    // This matters because an earlier global config check cannot see it: a `.claude/settings.json`
+    // committed into a task fixture would be copied straight into the participant's cwd and take
+    // effect there after every user-level gate had already passed.
+    const workspaceConfig = await inspectEffectiveClaudeConfig({
+      environment: {},
+      forwardedEnvironmentKeys: [],
+      workspacePaths: [fixturePath],
+    });
+    const workspaceCheck = workspaceConfig.checks.find(
+      (check) => check.id === "CLAUDE_EFFECTIVE_CONFIG_CLEAN",
+    );
+    if (workspaceCheck && !workspaceCheck.passed) {
+      throw new Error(
+        `the participant workspace fixture carries active Claude configuration that would ` +
+          `redirect execution: ${workspaceCheck.detail}`,
+      );
+    }
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     for (const [slot, intent] of [
@@ -306,7 +341,10 @@ export const executePairedSlots = async (
     provider: FROZEN_PARAMETERS.provider,
     timeoutMs: FROZEN_PARAMETERS.timeoutMs,
     budgetUsd: FROZEN_PARAMETERS.perRunCeilingUsd,
-    ...(config.claudeCommand ? { claudeCommand: config.claudeCommand } : {}),
+    // Unconditional: `assertAuthorizedForPair` above already refused an absent or non-absolute
+    // command, so both arms provably receive the same pinned binary rather than the adapter's
+    // PATH-resolved default.
+    claudeCommand: config.claudeCommand as string,
     protocolTag: PROTOCOL_V2_TAG,
     protocolSha: PROTOCOL_V2_SHA,
     suiteTag: SUITE_TAG,

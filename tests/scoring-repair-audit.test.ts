@@ -310,13 +310,17 @@ describe("REPAIR 2b: the execution gate enforces remote verification", () => {
     },
     slotStates: [] as SlotState[],
     campaignGate: gate([], 100),
-    auth: {
+    pinnedExecutable: {
+      pinned: true,
+      path: "C:/tools/claude.exe",
+      version: "2.1.251",
       loggedIn: true,
-      apiProvider: "firstParty",
       authMethod: "claude.ai",
-      executablePath: "C:/tools/claude.exe",
-      executableVersion: "2.1.251",
-      detail: "authenticated",
+      apiProvider: "firstParty",
+      firstParty: true,
+      probedPaths: ["C:/tools/claude.exe"],
+      pathIsAbsolute: true,
+      detail: "pinned",
     },
     routing: {
       externalModelOverrideForwarded: false,
@@ -530,11 +534,13 @@ describe("REPAIR 4: provider authorization is a capability, checked at the bound
     summary: authorized ? "ok" : "refused",
   });
 
+  const ABSOLUTE_EXE = "C:/tools/claude.exe";
   const context = {
     campaignId: "camp-1",
     scheduleDigest: schedule.scheduleDigest,
     nativeSlotDigest: nativeSlot.slotDigest,
     mafSlotDigest: mafSlot.slotDigest,
+    executablePath: ABSOLUTE_EXE,
   };
 
   it("cannot be minted from a REFUSED decision", () => {
@@ -545,7 +551,7 @@ describe("REPAIR 4: provider authorization is a capability, checked at the bound
         scheduleDigest: schedule.scheduleDigest,
         nativeSlotDigest: nativeSlot.slotDigest,
         mafSlotDigest: mafSlot.slotDigest,
-        executablePath: "C:/claude.exe",
+        executablePath: ABSOLUTE_EXE,
       }),
     ).toBeNull();
   });
@@ -576,7 +582,7 @@ describe("REPAIR 4: provider authorization is a capability, checked at the bound
       scheduleDigest: schedule.scheduleDigest,
       nativeSlotDigest: nativeSlot.slotDigest,
       mafSlotDigest: mafSlot.slotDigest,
-      executablePath: "C:/claude.exe",
+      executablePath: ABSOLUTE_EXE,
     });
     expect(() => assertAuthorizedForPair(auth ?? undefined, context)).not.toThrow();
   });
@@ -588,7 +594,7 @@ describe("REPAIR 4: provider authorization is a capability, checked at the bound
       scheduleDigest: schedule.scheduleDigest,
       nativeSlotDigest: otherNative.slotDigest,
       mafSlotDigest: mafSlot.slotDigest,
-      executablePath: "C:/claude.exe",
+      executablePath: ABSOLUTE_EXE,
     });
     expect(() => assertAuthorizedForPair(auth ?? undefined, context)).toThrow(
       /issued for a different execution/u,
@@ -602,7 +608,7 @@ describe("REPAIR 4: provider authorization is a capability, checked at the bound
       scheduleDigest: schedule.scheduleDigest,
       nativeSlotDigest: nativeSlot.slotDigest,
       mafSlotDigest: mafSlot.slotDigest,
-      executablePath: "C:/claude.exe",
+      executablePath: ABSOLUTE_EXE,
     });
     expect(() => assertAuthorizedForPair(auth ?? undefined, context)).toThrow(/campaign/u);
   });
@@ -614,7 +620,7 @@ describe("REPAIR 4: provider authorization is a capability, checked at the bound
       scheduleDigest: "a-different-digest",
       nativeSlotDigest: nativeSlot.slotDigest,
       mafSlotDigest: mafSlot.slotDigest,
-      executablePath: "C:/claude.exe",
+      executablePath: ABSOLUTE_EXE,
     });
     expect(() => assertAuthorizedForPair(auth ?? undefined, context)).toThrow(/schedule digest/u);
   });
