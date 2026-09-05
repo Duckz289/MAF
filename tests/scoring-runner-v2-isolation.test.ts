@@ -1094,8 +1094,8 @@ describe("REALPATH: test-double containment is decided on canonical paths", () =
     try {
       await symlink(outside, link, "file");
     } catch {
-      // Windows without Developer Mode / elevation cannot create file symlinks. The junction case
-      // below covers the same escape on that platform.
+      // Windows without Developer Mode or elevation cannot create FILE symlinks (EPERM). The
+      // junction case below is the escape that matters on that platform, and it always runs.
       return;
     }
     const outcome = await approve(link);
@@ -1104,30 +1104,35 @@ describe("REALPATH: test-double containment is decided on canonical paths", () =
     expect((outcome as { reason: string }).reason).toBe("ROOT_MARKER_ABSENT");
   });
 
-  it("REFUSES a DIRECTORY symlink/junction from inside the root to a tree outside it", async () => {
+  it("REFUSES a JUNCTION from inside the root to a tree outside it", async () => {
+    // The realistic Windows escape: a junction needs no elevation and no Developer Mode, so it is
+    // the alias an ordinary process can actually create. This case must genuinely RUN on Windows --
+    // see the platform-capability guard below, which fails if it ever silently stops doing so.
     const root = await makeRoot("junction-root");
     const outsideDir = path.join(scratch, "outside-tree");
     await writeDouble(path.join(outsideDir, "evil-cli.mjs"));
     const linkDir = path.join(root, "linked");
-
-    if (process.platform === "win32") {
-      // A junction needs no elevation, which is exactly why it is the realistic Windows escape.
-      const result = await execFileAsync("cmd", ["/c", "mklink", "/J", linkDir, outsideDir], {
-        encoding: "utf8",
-      }).catch(() => null);
-      if (!result) return;
-    } else {
-      try {
-        await symlink(outsideDir, linkDir, "dir");
-      } catch {
-        return;
-      }
-    }
+    await symlink(outsideDir, linkDir, process.platform === "win32" ? "junction" : "dir");
 
     const aliased = path.join(linkDir, "evil-cli.mjs");
     const outcome = await approve(aliased);
     expect(outcome.approved).toBe(false);
+    // Resolved first, so the walk starts OUTSIDE the root and finds no marker.
     expect((outcome as { reason: string }).reason).toBe("ROOT_MARKER_ABSENT");
+  });
+
+  it("proves at least one link-based escape was actually exercised on this platform", async () => {
+    // Guard against a false negative. Both link tests above would pass vacuously if the platform
+    // refused to create the link, so this asserts that a directory link -- the escape that needs no
+    // elevation anywhere -- really can be made here. If this fails, the escape coverage above is
+    // not evidence and must be investigated rather than assumed.
+    const probeRoot = path.join(scratch, "link-capability");
+    const target = path.join(probeRoot, "target");
+    await mkdir(target, { recursive: true });
+    const link = path.join(probeRoot, "link");
+    await symlink(target, link, process.platform === "win32" ? "junction" : "dir");
+    const { realpath } = await import("node:fs/promises");
+    expect((await realpath(link)).toLowerCase()).toBe((await realpath(target)).toLowerCase());
   });
 
   it("REFUSES a link whose canonical target names the real Claude CLI", async () => {
