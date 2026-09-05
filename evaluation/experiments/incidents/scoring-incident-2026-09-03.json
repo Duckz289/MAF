@@ -1,0 +1,85 @@
+{
+  "incidentId": "MAF-SCORING-INCIDENT-2026-09-03-001",
+  "schemaVersion": "1.0.0",
+  "status": "CONFIRMED_CLOSED_FOR_CLASSIFICATION_REMEDIATION_PENDING_RUNNER_V2",
+
+  "suiteTag": "maf-suite-freeze-v1",
+  "suiteSha": "92f13ae67802dd0049ca001f70839a9451120900",
+
+  "protocolTag": "maf-experiment-protocol-v2",
+  "protocolSha": "b086b21e1e66f4a3c039d5c60079d9311eb82e15",
+
+  "analysisTag": "maf-experiment-analysis-v1",
+  "analysisSha": "de02da424e8d639213cf03aadfd9566ab3313adb",
+
+  "runnerTag": "maf-scoring-runner-v1",
+  "runnerSha": "5484808a764c6c579ee94c269fb20c07383ddbdd",
+  "runnerStatus": "FROZEN_DEPRECATED_DO_NOT_SCORE",
+
+  "affectedTask": "idempotency-key-race",
+
+  "replicates": [1, 2, 3],
+  "arms": ["NATIVE", "MAF"],
+
+  "accidentalPairs": 3,
+  "accidentalArmRuns": 6,
+
+  "observedOutcome": {
+    "native": "3/3 DVS",
+    "maf": "3/3 DVS",
+    "label": "INCIDENT_OBSERVATION_NOT_OFFICIAL_SCORING_DATA"
+  },
+
+  "officialScoringStatus": "OFFICIAL_SCORING_NOT_STARTED",
+
+  "campaignDurability": "DELETED_WITH_TEMP_CAMPAIGN",
+
+  "accidentalRunsOfficial": false,
+
+  "exclusionReasonCode": "TEMPORARY_UNAUTHORIZED_TEST_CAMPAIGN_NO_DURABLE_PROVENANCE",
+
+  "outcomeIndependentExclusion": true,
+
+  "contaminationClassification": "DOCUMENTED_BUT_MANAGEABLE",
+
+  "taskOfficialRerunAllowed": true,
+  "taskSchedulePolicy": "MUST_RUN_IN_ORIGINAL_FROZEN_SCHEDULE_POSITION",
+
+  "suiteRemainsValid": true,
+  "protocolRemainsValid": true,
+  "analysisRemainsValid": true,
+
+  "runnerV2Required": true,
+  "protocolV3Required": false,
+  "suiteV2Required": false,
+  "fullRestartRequired": false,
+
+  "remediationRequirements": [
+    "Runner v2 must structurally isolate any test that drives the real production execute path from the real first-party provider.",
+    "A test's ability to reach a real, billed provider spawn must not depend on an assumption (such as tag absence) that the freeze process itself is designed to invalidate.",
+    "Post-freeze validation tests that assume a pre-freeze gate state must be removed or restructured before further scoring, since the freeze they validate against is exactly what falsifies their own assumption."
+  ],
+
+  "noExperimentalParameterChangedFromOutcome": true,
+
+  "trigger": {
+    "file": "tests/scoring-freeze-simulation.test.ts",
+    "describeBlock": "REAL development state: no runner tag means no execution",
+    "assumption": "RUNNER_FROZEN gate fails because maf-scoring-runner-v1 does not yet exist",
+    "assumptionStatus": "INVALIDATED_BY_RUNNER_V1_FREEZE"
+  },
+
+  "provider": {
+    "kind": "first-party Claude Code",
+    "executablePathReported": "C:\\Users\\Admin\\.local\\bin\\claude.exe",
+    "executableVersionReported": "2.1.251",
+    "authMethod": "claude.ai/firstParty"
+  },
+
+  "evidenceGaps": {
+    "timestamps": "TIME_NOT_PRESERVED",
+    "exactTokens": "UNKNOWN",
+    "exactCost": "UNKNOWN",
+    "providerRequestIds": "NOT_PRESERVED"
+  }
+}
