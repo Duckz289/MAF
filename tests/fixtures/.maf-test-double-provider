@@ -1,0 +1,18 @@
+This file declares tests/fixtures/ as a TEST-CONTROLLED PROVIDER FIXTURE ROOT for the MAF Scoring
+Runner v2.
+
+evaluation/experiments/scoring/lib/provider-identity.ts refuses to approve a test-double provider
+executable unless it lives inside a directory tree carrying this marker file. A test's own temporary
+fixture directory writes one; the operator's real Claude Code installation directory never will.
+
+That is the second half of test-double identification. The first half is the
+MAF_SCORING_TEST_DOUBLE_PROVIDER_V2 token inside the executable's own bytes, which proves WHAT the
+file is; this file proves WHERE it is allowed to come from. Both must hold, because either alone is
+weaker than it looks: a marker with no root would approve a marked script an attacker or a careless
+refactor dropped anywhere on disk, and a root with no marker would approve the real Claude binary if
+someone ever copied it in here.
+
+Do not add this file to a directory that contains, or could come to contain, a real provider
+executable.
+
+Related: incident maf-scoring-incident-2026-09-03-v1 (895797e0c58099c763e206b851ba144d287394db).

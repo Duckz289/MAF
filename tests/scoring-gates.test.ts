@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import {
   evaluateCampaignGate,
   summarizeCampaignSpend,
@@ -23,6 +23,8 @@ import {
   SUITE_TAG,
 } from "../evaluation/experiments/scoring/lib/frozen-refs";
 import type { SlotState } from "../evaluation/experiments/scoring/lib/state-store";
+import type { ProviderIdentity } from "../evaluation/experiments/scoring/lib/provider-identity";
+import { approvedTestDouble } from "./helpers/test-double-provider";
 
 const slotState = (overrides: Partial<SlotState> = {}): SlotState => ({
   slotId: "alpha__NATIVE__r1",
@@ -270,9 +272,27 @@ describe("manifest parameter parity (Phase 10)", () => {
 });
 
 describe("billed scoring execution gate (Phases 14/15)", () => {
+  let testDouble: ProviderIdentity;
+  beforeAll(async () => {
+    testDouble = await approvedTestDouble();
+  });
+
   const baseInput = (overrides: Record<string, unknown> = {}) => ({
     repoRoot: ".",
     billedConfirmed: true,
+    // Runner v2 structural inputs. These unit tests exercise the FROZEN-ARTIFACT gates, so they
+    // present the configuration a legitimate simulation would: an approved test double, injected
+    // git state, and an explicit TEST context. Anything less would now be refused by
+    // PROVIDER_IDENTITY / TEST_CONTEXT_ISOLATION before the checks under test were reached.
+    providerIdentity: testDouble,
+    providerIdentityDetail: testDouble.detail,
+    gitStateInjected: true,
+    executionContext: {
+      kind: "TEST" as const,
+      signals: ["unit-test"],
+      detail: "unit test harness",
+    },
+
     manifest: goodManifest,
     slotStates: [] as SlotState[],
     campaignGate: {

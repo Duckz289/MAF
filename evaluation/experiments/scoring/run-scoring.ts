@@ -1,13 +1,27 @@
 #!/usr/bin/env node
-// MAF Scoring Runner v1 -- command line entry point.
+// MAF Scoring Runner v2 -- command line entry point.
 //
 // `execute` contains the COMPLETE billed scoring path: gate -> capability -> paired execution ->
 // durable persistence -> per-pair budget re-check. It is written in full here on purpose. The only
 // thing preventing it from spending money at this revision is external state: RUNNER_FROZEN
-// requires `maf-scoring-runner-v1` to exist locally AND on origin and to peel to this exact HEAD.
+// requires `maf-scoring-runner-v2` to exist locally AND on origin and to peel to this exact HEAD.
 // Creating and pushing that tag activates this code exactly as written -- there is no freeze-time
 // source change, no flag to flip, and no second runner revision. Every other command makes zero
 // provider calls.
+//
+// RUNNER v2: WHY THE TEST SEAMS LOOK DIFFERENT
+// --------------------------------------------
+// Runner v1 had ONE seam, `--git-fixture`, whose module supplied simulated git state AND the fake
+// executable AND the auth probe AND the participant fixture root together. Convenient, and exactly
+// wrong: the seam was optional, so a test that passed nothing got the REAL versions of all four.
+// Incident maf-scoring-incident-2026-09-03-v1 is what that costs -- a test drove this command with
+// `--confirm-billed-scoring` against the real repository, every gate passed once the v1 tag existed,
+// and six frozen-suite runs were billed to the operator's real Claude subscription.
+//
+// v2 keeps the seams (the production composition must still be testable end to end before the tag
+// exists) but changes their failure direction. `--test-fixture` must supply EVERY dependency it
+// stands in for, and under a TEST execution context `execute` REFUSES unless it was supplied. There
+// is no partial injection and no fall-through to a real dependency: absence is a refusal.
 //
 // Usage:
 //   tsx evaluation/experiments/scoring/run-scoring.ts plan [--json] [--task <id>] [--limit <n>]
@@ -29,10 +43,14 @@ import {
   ANALYSIS_TAG,
   ANALYSIS_VERSION,
   FROZEN_PARAMETERS,
+  INCIDENT_SHA,
+  INCIDENT_TAG,
   KNOWN_SOURCE_METADATA_NOTE,
   PROTOCOL_V2_SHA,
   PROTOCOL_V2_TAG,
   RUNNER_TAG,
+  RUNNER_V1_STATUS,
+  RUNNER_V1_TAG,
   RUNNER_VERSION,
   SUITE_SHA,
   SUITE_TAG,
@@ -54,6 +72,14 @@ import { pinClaudeExecutable } from "./lib/executable-gate";
 import { issueProviderAuthorization } from "./lib/execution-gate";
 import { executePairedSlots, pairSlots } from "./lib/participant-runner";
 import { inspectEffectiveClaudeConfig } from "./lib/effective-config-gate";
+import {
+  approveTestDoubleProvider,
+  detectExecutionContext,
+  observeTestDoubleMarker,
+  resolveRealProviderIdentity,
+  type ExecutionContext,
+  type ProviderIdentity,
+} from "./lib/provider-identity";
 import { checkEnvironmentRouting } from "../real/lib/preflight-gate";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -74,40 +100,153 @@ const out = (line = ""): void => {
 /** Pins an exact binary for the version/auth probe and for any future participant execution. */
 const claudePathOverride = value("claude-path");
 
-/**
- * Test seam for the freeze simulation.
- *
- * The production path must be exercisable end to end BEFORE the real tag exists, otherwise the
- * only proof that tagging activates scoring would be tagging it. `--git-fixture <module>` loads a
- * module exporting `git(args, cwd)` and, optionally, `claudeCommand`/`fixtureRoot`, letting a test
- * present a simulated frozen-runner git state and a fake CLI to the REAL command composition.
- * It is inert unless explicitly passed, and it cannot make a real provider call: the executable it
- * supplies is whatever the test names.
- */
-const gitFixtureModule = value("git-fixture");
-let gitOverride: ((args: string[], cwd: string) => Promise<string>) | undefined;
-let fixtureRootOverride: string | undefined;
-let claudeCommandOverride: string | undefined;
-let probeOverrides: { resolve?: unknown; checkAuth?: unknown } = {};
+/** How this process is classified. Re-derived at the spawn boundary; never cached into a capability. */
+const executionContext: ExecutionContext = detectExecutionContext();
 
-/** Loads the optional simulation fixture once; inert when `--git-fixture` was not supplied. */
-const loadGitFixture = async (): Promise<void> => {
-  if (!gitFixtureModule || gitOverride) return;
+/**
+ * The complete, explicit test-seam surface (mission Repair 5).
+ *
+ * Each field stands in for exactly one real dependency, and `--test-fixture` must supply ALL of
+ * them. A module that provides three of four is refused rather than silently completed with the
+ * real fourth -- "no automatic fallback to real dependencies when a required test seam is absent"
+ * is the whole point, since the missing one in Runner v1 was the provider executable.
+ */
+interface TestSeams {
+  /** Git/tag resolution. */
+  git: (args: string[], cwd: string) => Promise<string>;
+  /** The approved fake executable. Must pass `approveTestDoubleProvider` before it is used. */
+  testDoubleProviderPath: string;
+  /** Executable resolution probe (stands in for `claude --version`). */
+  resolve: unknown;
+  /** Authentication probe (stands in for `claude auth status`). */
+  checkAuth: unknown;
+  /** Filesystem root the simulated participants start from. */
+  participantFixtureRoot: string;
+}
+
+const testFixtureModule = value("test-fixture");
+let testSeams: TestSeams | null = null;
+
+/** A refusal that must be printed and obeyed before anything resolves, probes or spawns. */
+interface SeamRefusal {
+  code: string;
+  detail: string;
+}
+let seamRefusal: SeamRefusal | null = null;
+
+/**
+ * Loads the test-seam module, if one was named, and validates that it is COMPLETE.
+ *
+ * Deliberately does no work at all when `--test-fixture` is absent: the decision about what that
+ * absence means belongs to `requireProviderIsolation`, which knows the execution context.
+ */
+const loadTestSeams = async (): Promise<void> => {
+  if (!testFixtureModule || testSeams || seamRefusal) return;
   // A Windows absolute path is not a valid ESM specifier; it must be a file:// URL.
-  const fixtureUrl = gitFixtureModule.startsWith("file:")
-    ? gitFixtureModule
-    : pathToFileURL(path.resolve(gitFixtureModule)).href;
-  const fixture = (await import(fixtureUrl)) as {
-    git?: (args: string[], cwd: string) => Promise<string>;
-    claudeCommand?: string;
-    fixtureRoot?: string;
-    resolve?: unknown;
-    checkAuth?: unknown;
-  };
-  gitOverride = fixture.git;
-  fixtureRootOverride = fixture.fixtureRoot;
-  claudeCommandOverride = fixture.claudeCommand;
-  probeOverrides = { resolve: fixture.resolve, checkAuth: fixture.checkAuth };
+  const fixtureUrl = testFixtureModule.startsWith("file:")
+    ? testFixtureModule
+    : pathToFileURL(path.resolve(testFixtureModule)).href;
+  let loaded: Partial<TestSeams>;
+  try {
+    loaded = (await import(fixtureUrl)) as Partial<TestSeams>;
+  } catch (error) {
+    seamRefusal = {
+      code: "TEST_SEAM_UNLOADABLE",
+      detail: `--test-fixture ${testFixtureModule} could not be loaded: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+    return;
+  }
+  const required = [
+    "git",
+    "testDoubleProviderPath",
+    "resolve",
+    "checkAuth",
+    "participantFixtureRoot",
+  ] as const;
+  const missing = required.filter((key) => loaded[key] === undefined || loaded[key] === null);
+  if (missing.length > 0) {
+    seamRefusal = {
+      code: "TEST_SEAM_INCOMPLETE",
+      detail:
+        `--test-fixture ${testFixtureModule} does not supply ${missing.join(", ")}. A test fixture ` +
+        "must stand in for EVERY real dependency it replaces; a partial fixture would leave the " +
+        "rest resolving to real ones, which is how incident " +
+        `${INCIDENT_TAG} reached the operator's real Claude executable.`,
+    };
+    return;
+  }
+  testSeams = loaded as TestSeams;
+};
+
+/**
+ * The structural interlock, evaluated BEFORE any resolution, probe or spawn (mission Repairs 1-3).
+ *
+ * Two rules, each the direct negation of one half of the incident:
+ *
+ *   TEST context       -> a complete `--test-fixture` is MANDATORY. Runner v1's real-repository test
+ *                         supplied nothing and got the real provider; here it gets a refusal, and it
+ *                         gets one before `pinClaudeExecutable` can so much as run `--version`
+ *                         against the operator's binary.
+ *   PRODUCTION context -> test seams are FORBIDDEN. Simulated freeze state and a fake executable
+ *                         must never produce observations an operator could mistake for paid ones.
+ *
+ * Neither rule consults a tag, a remote, or any other external state, so no future freeze ceremony
+ * can invalidate the assumption either one rests on.
+ */
+const requireProviderIsolation = (): SeamRefusal | null => {
+  if (seamRefusal) return seamRefusal;
+  if (executionContext.kind === "TEST" && testSeams === null) {
+    return {
+      code: "TEST_CONTEXT_WITHOUT_TEST_PROVIDER",
+      detail:
+        `execute was invoked in a TEST execution context (${executionContext.signals.join(", ")}) ` +
+        "without --test-fixture. A test may not reach the participant executable at all -- not the " +
+        "pinned real Claude binary, not a PATH lookup, not a bare `claude`. Supply a complete " +
+        "--test-fixture naming an approved TEST_DOUBLE provider, or run this command outside a " +
+        `test harness. See incident ${INCIDENT_TAG} (${INCIDENT_SHA}).`,
+    };
+  }
+  if (executionContext.kind === "PRODUCTION" && testSeams !== null) {
+    return {
+      code: "TEST_SEAM_IN_PRODUCTION_CONTEXT",
+      detail:
+        "--test-fixture was supplied outside a test harness. Simulated git state and a fake " +
+        "executable must never produce observations in a production execution context.",
+    };
+  }
+  return null;
+};
+
+/**
+ * Establishes WHICH provider this invocation may spawn (mission Repairs 1, 2 and 6).
+ *
+ * Exactly two outcomes are reachable, and "resolve whatever `claude` is on this machine" is not one
+ * of them. Under test the approval is a positive proof about the file's bytes; in production the
+ * identity is refused if the pinned binary turns out to be a test double.
+ */
+const establishProviderIdentity = async (
+  pinnedPath: string | null,
+): Promise<{ identity: ProviderIdentity | null; detail: string }> => {
+  if (executionContext.kind === "TEST") {
+    const outcome = await approveTestDoubleProvider({
+      ...(testSeams ? { executablePath: testSeams.testDoubleProviderPath } : {}),
+      context: executionContext,
+    } as Parameters<typeof approveTestDoubleProvider>[0]);
+    return outcome.approved
+      ? { identity: outcome.identity, detail: outcome.identity.detail }
+      : { identity: null, detail: `${outcome.reason}: ${outcome.detail}` };
+  }
+  const markerObserved = pinnedPath === null ? false : await observeTestDoubleMarker(pinnedPath);
+  const outcome = resolveRealProviderIdentity({
+    executablePath: pinnedPath,
+    context: executionContext,
+    markerObserved,
+  });
+  return outcome.approved
+    ? { identity: outcome.identity, detail: outcome.identity.detail }
+    : { identity: null, detail: `${outcome.reason}: ${outcome.detail}` };
 };
 
 const requireCampaign = (): string => {
@@ -260,6 +399,12 @@ const commandValidate = async (): Promise<void> => {
         : `${RUNNER_TAG} = ${runnerSha}`
     }`,
   );
+  out(`  [INFO] runner v1: ${RUNNER_V1_TAG} is ${RUNNER_V1_STATUS} and can never be selected`);
+  out(`  [INFO] execution context: ${executionContext.detail}`);
+  out(
+    `  [INFO] incident of record: ${INCIDENT_TAG} (${INCIDENT_SHA}); its observations are ` +
+      "NON_OFFICIAL and enter no campaign, denominator or report",
+  );
   out();
   out(`protocolFreezeAuthority: GIT_TAG`);
   out(`protocolFrozen:          true`);
@@ -276,11 +421,18 @@ const commandInit = async (): Promise<void> => {
   const root = requireCampaign();
   const schedule = await buildSchedule();
   const ceilingRaw = value("ceiling-usd");
-  await loadGitFixture();
+  await loadTestSeams();
+  const isolation = requireProviderIsolation();
+  if (isolation) {
+    header("campaign init REFUSED");
+    out(`${isolation.code}: ${isolation.detail}`);
+    process.exitCode = 1;
+    return;
+  }
   const store = new ScoringStateStore({ root });
   const runnerSha = await resolveRunnerTagSha(RUNNER_TAG, {
     repoRoot,
-    ...(gitOverride ? { git: gitOverride } : {}),
+    ...(testSeams ? { git: testSeams.git } : {}),
   });
   // A campaign can only ever hold paid observations if a frozen runner identity exists to bind
   // them to. One created before the freeze stays NON_BILLED_DEVELOPMENT for life.
@@ -478,7 +630,7 @@ const loadScoringTask = async (
     entry.phase ?? (taskId.startsWith("b1-") || taskId.startsWith("b2-") ? "phase-c" : "phase-b");
 
   const fixtureRoot =
-    fixtureRootOverride ??
+    testSeams?.participantFixtureRoot ??
     path.join(repoRoot, "evaluation", "fixtures", phase, taskId, "public", "repo");
   const promptPath = path.join(
     repoRoot,
@@ -501,10 +653,31 @@ const loadScoringTask = async (
 };
 
 const commandExecute = async (): Promise<void> => {
-  await loadGitFixture();
+  // STRUCTURAL PROVIDER ISOLATION RUNS FIRST -- before the campaign is opened, before git is
+  // consulted, and above all before `pinClaudeExecutable` can resolve or probe anything. In the
+  // incident, resolution happened early and unconditionally, so by the time any gate had an opinion
+  // the real executable had already been located. Here a TEST context without a complete
+  // `--test-fixture` stops the command dead, with zero processes spawned of any kind.
+  await loadTestSeams();
+  const isolation = requireProviderIsolation();
+  if (isolation) {
+    header("billed scoring execution gate");
+    out(`  [FAIL] ${isolation.code}: ${isolation.detail}`);
+    out();
+    out("SCORING_EXECUTION_REFUSED");
+    out();
+    out(
+      "No executable was resolved, no probe was run, no participant executor was constructed and " +
+        "no provider was contacted. Structural provider isolation refused before any of that could " +
+        "happen.",
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   const pinnedRunnerSha = await resolveRunnerTagSha(RUNNER_TAG, {
     repoRoot,
-    ...(gitOverride ? { git: gitOverride } : {}),
+    ...(testSeams ? { git: testSeams.git } : {}),
   });
   const root = requireCampaign();
   const store = new ScoringStateStore({ root });
@@ -546,12 +719,19 @@ const commandExecute = async (): Promise<void> => {
   // Resolve ONE executable and probe it. `--version` and `auth status` are local, free, and invoke
   // no model; running them here is what lets first-party authentication be proven before any money
   // is committed, and it guarantees the binary that was checked is the binary that would run.
+  //
+  // Under test every one of these arguments comes from the fixture, so the probe never touches the
+  // operator's binary; in production none of them exists and the real primitives run unchanged.
   const pinned = await pinClaudeExecutable({
     ...(claudePathOverride ? { preferredPath: claudePathOverride } : {}),
-    ...(claudeCommandOverride ? { preferredPath: claudeCommandOverride } : {}),
-    ...(probeOverrides.resolve ? { resolve: probeOverrides.resolve as never } : {}),
-    ...(probeOverrides.checkAuth ? { checkAuth: probeOverrides.checkAuth as never } : {}),
+    ...(testSeams ? { preferredPath: testSeams.testDoubleProviderPath } : {}),
+    ...(testSeams ? { resolve: testSeams.resolve as never } : {}),
+    ...(testSeams ? { checkAuth: testSeams.checkAuth as never } : {}),
   });
+
+  // WHICH provider may be spawned. Null is a refusal the gate reports; it is never a licence to
+  // fall back to a resolved `claude`.
+  const provider = await establishProviderIdentity(pinned.path);
 
   const decision = await evaluateExecutionGate({
     repoRoot,
@@ -562,7 +742,11 @@ const commandExecute = async (): Promise<void> => {
     pinnedExecutable: pinned,
     routing: checkEnvironmentRouting(),
     effectiveConfig,
-    ...(gitOverride ? { git: gitOverride } : {}),
+    providerIdentity: provider.identity,
+    providerIdentityDetail: provider.detail,
+    gitStateInjected: testSeams !== null,
+    executionContext,
+    ...(testSeams ? { git: testSeams.git } : {}),
   });
 
   header("billed scoring execution gate");
@@ -616,7 +800,9 @@ const commandExecute = async (): Promise<void> => {
     return;
   }
 
-  const executablePath = pinned.path as string;
+  // The gate authorized, so an identity exists; the spawn boundary re-checks it anyway.
+  const providerIdentity = provider.identity as ProviderIdentity;
+  const executablePath = providerIdentity.executablePath;
   const frozenTaskIds = await loadFrozenTaskIds(repoRoot);
   const batchTaskLimit = Number.parseInt(value("tasks") ?? "1", 10);
 
@@ -634,6 +820,8 @@ const commandExecute = async (): Promise<void> => {
 
   out("SCORING_EXECUTION_AUTHORIZED");
   out();
+  out(`provider identity: ${providerIdentity.kind}`);
+  out(`executable:        ${executablePath}`);
   out(`executing ${pairs.length} pair(s) across task(s): ${batchTasks.join(", ")}`);
   out();
 
@@ -662,7 +850,7 @@ const commandExecute = async (): Promise<void> => {
       scheduleDigest: schedule.scheduleDigest,
       nativeSlotDigest: pair.native.slotDigest,
       mafSlotDigest: pair.maf.slotDigest,
-      executablePath,
+      providerIdentity,
     });
     if (!authorization) {
       out(

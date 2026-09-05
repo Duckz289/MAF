@@ -14,7 +14,8 @@
 //
 // ORDER OF OPERATIONS around money, which is the part that must not be rearranged:
 //
-//   0. assert the provider authorization is bound to THIS pair and THIS absolute executable
+//   0. assert the provider authorization is bound to THIS pair, THIS absolute executable, and an
+//      established provider identity admissible in the observed execution context
 //   1. claim BOTH slots            -- exclusive create; if either is unavailable, nothing spawns
 //   2. declare provider-start intent for BOTH arms, flushed to disk, BEFORE any slow work
 //   3. hash the fixture, prove Native/MAF starting-state parity, scan the workspace config
@@ -48,6 +49,7 @@ import {
 } from "./frozen-refs";
 import type { Arm, RunSlot } from "./schedule";
 import { assertAuthorizedForPair, type ProviderAuthorization } from "./execution-gate";
+import { assertProviderIdentityForSpawn } from "./provider-identity";
 import { inspectEffectiveClaudeConfig } from "./effective-config-gate";
 import { assertScoringEligible, type ScoringProvenanceRecord } from "./scoring-provenance";
 import { captureSourceRevision, assertStartingStateParity } from "./source-revision";
@@ -335,6 +337,17 @@ export const executePairedSlots = async (
 
   // 4. The audited paired execution. Both arms receive identical frozen controlled variables; the
   //    only differences are the treatment ones Protocol v2 declares.
+  //
+  //    THE LAST GATE BEFORE MONEY. Step 0 already checked this, and it is checked AGAIN here, on
+  //    purpose: this is the final statement before a child process can exist, and the context is
+  //    re-detected rather than remembered. Steps 1-3 do filesystem work of unbounded duration, and
+  //    a re-check immediately before construction is what makes "no real provider under test" a
+  //    property of the spawn itself rather than of an earlier moment. Incident
+  //    maf-scoring-incident-2026-09-03-v1 reached an equivalent point with every gate passing.
+  assertProviderIdentityForSpawn(options.authorization.providerIdentity, {
+    executablePath: config.claudeCommand,
+  });
+
   const controllerConfig = {
     requestedModel: FROZEN_PARAMETERS.model,
     effort: FROZEN_PARAMETERS.effort,

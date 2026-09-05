@@ -4,7 +4,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   evaluateCampaignGate,
   pairMaxExposureUsd,
@@ -37,6 +37,8 @@ import {
   SUITE_TAG,
 } from "../evaluation/experiments/scoring/lib/frozen-refs";
 import type { SlotState } from "../evaluation/experiments/scoring/lib/state-store";
+import type { ProviderIdentity } from "../evaluation/experiments/scoring/lib/provider-identity";
+import { approvedTestDouble } from "./helpers/test-double-provider";
 
 // ============================================================ REPAIR 1: pair exposure
 
@@ -294,9 +296,27 @@ describe("REPAIR 2b: the execution gate enforces remote verification", () => {
     ...over,
   });
 
+  let testDouble: ProviderIdentity;
+  beforeAll(async () => {
+    testDouble = await approvedTestDouble();
+  });
+
   const gateInput = (over: Record<string, unknown> = {}) => ({
     repoRoot: ".",
     billedConfirmed: true,
+    // Runner v2 structural inputs. These unit tests exercise the FROZEN-ARTIFACT gates, so they
+    // present the configuration a legitimate simulation would: an approved test double, injected
+    // git state, and an explicit TEST context. Anything less would now be refused by
+    // PROVIDER_IDENTITY / TEST_CONTEXT_ISOLATION before the checks under test were reached.
+    providerIdentity: testDouble,
+    providerIdentityDetail: testDouble.detail,
+    gitStateInjected: true,
+    executionContext: {
+      kind: "TEST" as const,
+      signals: ["unit-test"],
+      detail: "unit test harness",
+    },
+
     manifest: {
       model: "claude-sonnet-5",
       provider: "anthropic",
@@ -534,14 +554,29 @@ describe("REPAIR 4: provider authorization is a capability, checked at the bound
     summary: authorized ? "ok" : "refused",
   });
 
-  const ABSOLUTE_EXE = "C:/tools/claude.exe";
-  const context = {
-    campaignId: "camp-1",
-    scheduleDigest: schedule.scheduleDigest,
-    nativeSlotDigest: nativeSlot.slotDigest,
-    mafSlotDigest: mafSlot.slotDigest,
-    executablePath: ABSOLUTE_EXE,
+  // Runner v2: the capability binds an approved provider IDENTITY, not a path string. A synthetic
+  // "C:/tools/claude.exe" is no longer expressible here -- which is the point, since that string is
+  // exactly what a test would have had to supply to reach the real provider under Runner v1.
+  let testDouble: ProviderIdentity;
+  let ABSOLUTE_EXE: string;
+  let context: {
+    campaignId: string;
+    scheduleDigest: string;
+    nativeSlotDigest: string;
+    mafSlotDigest: string;
+    executablePath: string;
   };
+  beforeAll(async () => {
+    testDouble = await approvedTestDouble();
+    ABSOLUTE_EXE = testDouble.executablePath;
+    context = {
+      campaignId: "camp-1",
+      scheduleDigest: schedule.scheduleDigest,
+      nativeSlotDigest: nativeSlot.slotDigest,
+      mafSlotDigest: mafSlot.slotDigest,
+      executablePath: ABSOLUTE_EXE,
+    };
+  });
 
   it("cannot be minted from a REFUSED decision", () => {
     expect(
@@ -551,12 +586,12 @@ describe("REPAIR 4: provider authorization is a capability, checked at the bound
         scheduleDigest: schedule.scheduleDigest,
         nativeSlotDigest: nativeSlot.slotDigest,
         mafSlotDigest: mafSlot.slotDigest,
-        executablePath: ABSOLUTE_EXE,
+        providerIdentity: testDouble,
       }),
     ).toBeNull();
   });
 
-  it("cannot be minted without a pinned executable", () => {
+  it("cannot be minted without an established provider identity", () => {
     expect(
       issueProviderAuthorization({
         decision: decision(true),
@@ -564,7 +599,7 @@ describe("REPAIR 4: provider authorization is a capability, checked at the bound
         scheduleDigest: schedule.scheduleDigest,
         nativeSlotDigest: nativeSlot.slotDigest,
         mafSlotDigest: mafSlot.slotDigest,
-        executablePath: "",
+        providerIdentity: undefined as unknown as ProviderIdentity,
       }),
     ).toBeNull();
   });
@@ -582,7 +617,7 @@ describe("REPAIR 4: provider authorization is a capability, checked at the bound
       scheduleDigest: schedule.scheduleDigest,
       nativeSlotDigest: nativeSlot.slotDigest,
       mafSlotDigest: mafSlot.slotDigest,
-      executablePath: ABSOLUTE_EXE,
+      providerIdentity: testDouble,
     });
     expect(() => assertAuthorizedForPair(auth ?? undefined, context)).not.toThrow();
   });
@@ -594,7 +629,7 @@ describe("REPAIR 4: provider authorization is a capability, checked at the bound
       scheduleDigest: schedule.scheduleDigest,
       nativeSlotDigest: otherNative.slotDigest,
       mafSlotDigest: mafSlot.slotDigest,
-      executablePath: ABSOLUTE_EXE,
+      providerIdentity: testDouble,
     });
     expect(() => assertAuthorizedForPair(auth ?? undefined, context)).toThrow(
       /issued for a different execution/u,
@@ -608,7 +643,7 @@ describe("REPAIR 4: provider authorization is a capability, checked at the bound
       scheduleDigest: schedule.scheduleDigest,
       nativeSlotDigest: nativeSlot.slotDigest,
       mafSlotDigest: mafSlot.slotDigest,
-      executablePath: ABSOLUTE_EXE,
+      providerIdentity: testDouble,
     });
     expect(() => assertAuthorizedForPair(auth ?? undefined, context)).toThrow(/campaign/u);
   });
@@ -620,7 +655,7 @@ describe("REPAIR 4: provider authorization is a capability, checked at the bound
       scheduleDigest: "a-different-digest",
       nativeSlotDigest: nativeSlot.slotDigest,
       mafSlotDigest: mafSlot.slotDigest,
-      executablePath: ABSOLUTE_EXE,
+      providerIdentity: testDouble,
     });
     expect(() => assertAuthorizedForPair(auth ?? undefined, context)).toThrow(/schedule digest/u);
   });

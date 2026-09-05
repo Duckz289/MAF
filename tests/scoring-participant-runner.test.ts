@@ -2,7 +2,7 @@ import { cp, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   executePairedSlots,
   pairSlots,
@@ -21,8 +21,12 @@ import {
   ANALYSIS_SHA,
   ANALYSIS_TAG,
   FROZEN_PARAMETERS,
+  RUNNER_TAG,
+  RUNNER_VERSION,
 } from "../evaluation/experiments/scoring/lib/frozen-refs";
 import type { ExperimentProvenanceRecord } from "../evaluation/experiments/real/lib/provenance";
+import type { ProviderIdentity } from "../evaluation/experiments/scoring/lib/provider-identity";
+import { approvedTestDouble } from "./helpers/test-double-provider";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
@@ -72,6 +76,18 @@ const refusedDecision = (): ExecutionGateDecision => ({
   summary: "1 of 14 gates failed",
 });
 
+/**
+ * The approved TEST_DOUBLE identity every capability in this file is minted against.
+ *
+ * Runner v2 binds a capability to a provider IDENTITY rather than to a path string, and the only
+ * way to obtain one is to have the real approval path accept a real file. So this is resolved once,
+ * through `approveTestDoubleProvider`, against the marked fake CLI.
+ */
+let testDouble: ProviderIdentity;
+beforeAll(async () => {
+  testDouble = await approvedTestDouble(fakeCliPath);
+});
+
 /** Mints a real capability for the given pair. There is no way to forge one. */
 const authorizationFor = (
   pair: { native: RunSlot; maf: RunSlot },
@@ -83,7 +99,7 @@ const authorizationFor = (
     scheduleDigest: overrides.scheduleDigest ?? schedule.scheduleDigest,
     nativeSlotDigest: pair.native.slotDigest,
     mafSlotDigest: pair.maf.slotDigest,
-    executablePath: fakeCliPath,
+    providerIdentity: testDouble,
   });
   if (!auth) throw new Error("expected a capability to be issued");
   return auth;
@@ -91,11 +107,39 @@ const authorizationFor = (
 
 let root: string;
 
+/**
+ * A home directory holding no Claude settings, in force for every case in this file.
+ *
+ * `executePairedSlots` scans the ACTIVE Claude configuration before it spawns, and that scan reads
+ * the operator's real `~/.claude/settings.json`. Without this isolation these provider-boundary
+ * tests pass or fail according to how the machine running them happens to be configured -- which is
+ * the same class of defect as incident maf-scoring-incident-2026-09-03-v1, where a test's behaviour
+ * turned on external state. The production default is untouched: omitting the override still
+ * inspects the real home, and the execution gate checks it independently before authorizing.
+ */
+let claudeHome: string;
+let savedEnv: Record<string, string | undefined>;
+
 beforeEach(async () => {
   root = await mkdtemp(path.join(tmpdir(), "maf-scoring-participant-"));
+  claudeHome = await mkdtemp(path.join(tmpdir(), "maf-participant-home-"));
+  savedEnv = {};
+  for (const key of ["USERPROFILE", "HOME", ...Object.keys(process.env)]) {
+    if (key === "USERPROFILE" || key === "HOME" || key.startsWith("ANTHROPIC_")) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+  }
+  process.env.USERPROFILE = claudeHome;
+  process.env.HOME = claudeHome;
 });
 afterEach(async () => {
+  for (const [key, value] of Object.entries(savedEnv)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
   await rm(root, { recursive: true, force: true, maxRetries: 3 });
+  await rm(claudeHome, { recursive: true, force: true, maxRetries: 3 });
 });
 
 const firstPair = () => {
@@ -274,7 +318,10 @@ describe("real executor composition against a FAKE CLI", () => {
       expect(record.analysis.analysisTag).toBe(ANALYSIS_TAG);
       expect(record.analysis.analysisSha).toBe(ANALYSIS_SHA);
       expect(record.analysis.analysisVersion).toBe("1.0.0");
-      expect(record.runner.runnerTag).toBe("maf-scoring-runner-v1");
+      // Asserted against the constant rather than a literal: a hard-coded runner tag here is what
+      // made this test lag the Runner v2 identity change by exactly one edit.
+      expect(record.runner.runnerTag).toBe(RUNNER_TAG);
+      expect(record.runner.runnerVersion).toBe(RUNNER_VERSION);
       expect(record.runner.runnerSha).toBe("c".repeat(40));
       expect(record.slot.slotDigest).toMatch(/^[0-9a-f]{64}$/u);
       expect(record.protocolFreezeAuthority).toBe("GIT_TAG");
@@ -370,7 +417,7 @@ describe("the provider boundary enforces authorization itself", () => {
         scheduleDigest: schedule.scheduleDigest,
         nativeSlotDigest: firstPair().native.slotDigest,
         mafSlotDigest: firstPair().maf.slotDigest,
-        executablePath: fakeCliPath,
+        providerIdentity: testDouble,
       }),
     ).toBeNull();
   });
@@ -508,7 +555,7 @@ describe("NON_SCORING and out-of-suite tasks can never be executed", () => {
             scheduleDigest: preflightSchedule.scheduleDigest,
             nativeSlotDigest: pair.native.slotDigest,
             mafSlotDigest: pair.maf.slotDigest,
-            executablePath: fakeCliPath,
+            providerIdentity: testDouble,
           }) as ProviderAuthorization,
         },
       ),

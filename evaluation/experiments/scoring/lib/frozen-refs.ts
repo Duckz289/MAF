@@ -34,13 +34,43 @@ export const ANALYSIS_SHA = "de02da424e8d639213cf03aadfd9566ab3313adb";
 export const ANALYSIS_VERSION = "1.0.0";
 
 /**
- * The tag that must exist and point at the executing source revision before ANY billed scoring
- * call is permitted (mission Phase 15). It deliberately does not exist yet: until an independent
- * audit creates it, `execution-gate.ts` cannot authorize a provider invocation, which is what makes
- * "provider calls are impossible during development" a structural property rather than a promise.
+ * RUNNER v1 -- FROZEN, DEPRECATED, MUST NEVER SCORE.
+ *
+ * The v1 freeze is historically valid and its tag is never deleted or moved: it is the immutable
+ * record of what was executing when incident maf-scoring-incident-2026-09-03-v1 occurred. But v1's
+ * test architecture allowed a test to reach the real first-party provider, so no campaign may ever
+ * be initialised, resumed or scored under it again. `execution-gate.ts` refuses when the executing
+ * revision or the resolved runner tag is v1.
  */
-export const RUNNER_TAG = "maf-scoring-runner-v1";
-export const RUNNER_VERSION = "1.0.0";
+export const RUNNER_V1_TAG = "maf-scoring-runner-v1";
+export const RUNNER_V1_SHA = "5484808a764c6c579ee94c269fb20c07383ddbdd";
+export const RUNNER_V1_STATUS = "FROZEN_DEPRECATED_DO_NOT_SCORE" as const;
+
+/**
+ * The 2026-09-03 incident, recorded as a first-class frozen input.
+ *
+ * Runner v2 exists BECAUSE of this incident, so the artifact identifying it is pinned exactly as the
+ * suite, protocol and analysis are. It carries no observations into anything: the six accidental
+ * arm-runs are NON_OFFICIAL INCIDENT OBSERVATIONS and have no path into campaign state, the DVS
+ * denominator, task aggregation, McNemar, the Newcombe interval, cost-per-DVS, or any official
+ * report. This constant names the incident; it never supplies data.
+ */
+export const INCIDENT_TAG = "maf-scoring-incident-2026-09-03-v1";
+export const INCIDENT_SHA = "895797e0c58099c763e206b851ba144d287394db";
+
+/**
+ * The tag that must exist and point at the executing source revision before ANY billed scoring call
+ * is permitted. It deliberately does not exist yet: until an independent audit of the Runner v2
+ * structural isolation creates it, `execution-gate.ts` cannot authorize a provider invocation.
+ *
+ * Runner v1 taught the precise limit of that guarantee. Tag absence made billed execution impossible
+ * for PRODUCTION, and it was read -- wrongly -- as making it impossible for TESTS too. It never did:
+ * tag absence is external state, and the freeze ceremony is exactly the event that removes it. So in
+ * v2 the tag freeze remains the production gate, while test safety rests on
+ * `provider-identity.ts` instead, which no tag can invalidate.
+ */
+export const RUNNER_TAG = "maf-scoring-runner-v2";
+export const RUNNER_VERSION = "2.0.0";
 
 /**
  * Frozen experimental parameters, mirrored here ONLY so the runner can assert that the manifest it

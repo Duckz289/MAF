@@ -1,4 +1,13 @@
 #!/usr/bin/env node
+// MAF_SCORING_TEST_DOUBLE_PROVIDER_V2
+//
+// The line above is load-bearing, not a label. Runner v2's provider boundary
+// (evaluation/experiments/scoring/lib/provider-identity.ts) approves a scoring test double by
+// reading this marker out of the file's own bytes. A real Claude Code binary can be renamed, copied
+// or placed anywhere a test likes, but it cannot come to contain this string -- so the marker
+// establishes executable identity rather than assuming it from a path or a naming convention.
+// Removing it does not "break a test": it makes every scoring simulation refuse to spawn.
+//
 // Deterministic fake Claude Code CLI for adapter/runtime contract tests. Emits representative
 // stream-json lines matching the shapes ClaudeCodeAdapter's consume() parses, selected by the
 // HARNESS_RUN_ID env var -- ClaudeCodeAdapter always sets that to the fabricated Run's id, which the

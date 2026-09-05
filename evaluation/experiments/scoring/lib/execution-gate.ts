@@ -2,9 +2,16 @@
 //
 // Design intent: make a paid scoring call structurally impossible rather than merely discouraged.
 // The runner does not construct a participant executor at all unless this gate returns AUTHORIZED,
-// and the gate cannot return AUTHORIZED while `maf-scoring-runner-v1` does not exist -- which it
+// and the gate cannot return AUTHORIZED while `maf-scoring-runner-v2` does not exist -- which it
 // does not, and must not, until an independent audit creates it. So during development the billed
 // path is unreachable by construction, not by convention.
+//
+// RUNNER v2 ADDITION. Incident maf-scoring-incident-2026-09-03-v1 proved that "the runner tag does
+// not exist yet" protects PRODUCTION and nothing else: the freeze ceremony itself removes that
+// condition, and a test which had assumed it then drove this gate to AUTHORIZED for real. So the
+// gate now also carries three checks whose truth does not depend on any external tag state --
+// PROVIDER_IDENTITY, TEST_CONTEXT_ISOLATION and RUNNER_V1_NOT_SELECTED -- and mints a capability
+// bound to an unforgeable provider identity rather than to a bare path string.
 //
 // Every check fails CLOSED. An inconclusive check (git unavailable, auth unreadable, corrupt state)
 // is a refusal, never a pass, because the cost of wrongly proceeding is real money spent against a
@@ -15,11 +22,16 @@ import {
   ANALYSIS_TAG,
   ANALYSIS_VERSION,
   FROZEN_PARAMETERS,
+  INCIDENT_SHA,
+  INCIDENT_TAG,
   KNOWN_SOURCE_METADATA_NOTE,
   PROTOCOL_FREEZE_AUTHORITY,
   PROTOCOL_V2_SHA,
   PROTOCOL_V2_TAG,
   RUNNER_TAG,
+  RUNNER_V1_SHA,
+  RUNNER_V1_STATUS,
+  RUNNER_V1_TAG,
   RUNNER_VERSION,
   SUITE_SHA,
   SUITE_TAG,
@@ -34,6 +46,12 @@ import {
   type TagVerificationOptions,
 } from "./tag-verification";
 import type { CampaignGateDecision } from "./campaign-budget";
+import {
+  assertProviderIdentityForSpawn,
+  detectExecutionContext,
+  type ExecutionContext,
+  type ProviderIdentity,
+} from "./provider-identity";
 import type { SlotState } from "./state-store";
 
 export type GateCheckId =
@@ -51,6 +69,9 @@ export type GateCheckId =
   | "CAMPAIGN_BUDGET"
   | "STATE_STORE_INTEGRITY"
   | "NO_AMBIGUOUS_RECOVERY"
+  | "PROVIDER_IDENTITY"
+  | "TEST_CONTEXT_ISOLATION"
+  | "RUNNER_V1_NOT_SELECTED"
   | "BILLED_CONFIRMATION";
 
 export interface GateCheck {
@@ -107,6 +128,24 @@ export interface ExecutionGateInput {
   };
   /** Result of inspecting the CLI's own ACTIVE configuration, not just process environments. */
   effectiveConfig: EffectiveConfigReport;
+  /**
+   * The unforgeable identity of the provider that would be spawned, or null when none could be
+   * established. Null is a REFUSAL, never a licence to resolve one: the incident's root cause was
+   * precisely that absent provider configuration fell through to the real executable.
+   */
+  providerIdentity: ProviderIdentity | null;
+  /** Why identity could not be established, when it could not. Reported verbatim to the operator. */
+  providerIdentityDetail: string;
+  /**
+   * Whether git/tag state was INJECTED rather than read from the real repository.
+   *
+   * Used by TEST_CONTEXT_ISOLATION to enforce mission Repair 4: a test may drive the billed path
+   * only against simulated freeze state. Real repository state plus billed confirmation is the
+   * exact combination that caused the incident, and it is now a refusal in its own right.
+   */
+  gitStateInjected: boolean;
+  /** Re-detected at call time by default; injectable so a test can assert both classifications. */
+  executionContext?: ExecutionContext;
   git?: TagVerificationOptions["git"];
   skipRemote?: boolean;
 }
@@ -299,6 +338,70 @@ export const evaluateExecutionGate = async (
           `require human adjudication first: ${ambiguous.map((s) => s.slotId).join(", ")}`,
   });
 
+  // ------------------------------------------------- RUNNER v2 structural checks
+  //
+  // The three checks below are the ones the incident proves must exist. Unlike every check above
+  // them, none consults external repository state, so no freeze ceremony, tag creation, or future
+  // repository change can invalidate the assumption they rest on.
+
+  const context = input.executionContext ?? detectExecutionContext();
+  const identity = input.providerIdentity;
+
+  checks.push({
+    id: "PROVIDER_IDENTITY",
+    passed: identity !== null,
+    detail:
+      identity === null
+        ? `no provider identity could be established: ${input.providerIdentityDetail}`
+        : identity.detail,
+  });
+
+  // The interlock, restated at gate level so a refusal is legible before anything is minted. In the
+  // incident this is the check that would have failed while all fifteen others passed.
+  const testIsolationOk =
+    context.kind === "PRODUCTION"
+      ? identity === null || identity.kind === "REAL_PROVIDER_EXECUTION"
+      : identity !== null &&
+        identity.kind === "TEST_DOUBLE_PROVIDER_EXECUTION" &&
+        (!input.billedConfirmed || input.gitStateInjected);
+  checks.push({
+    id: "TEST_CONTEXT_ISOLATION",
+    passed: testIsolationOk,
+    detail:
+      context.kind === "PRODUCTION"
+        ? identity !== null && identity.kind === "TEST_DOUBLE_PROVIDER_EXECUTION"
+          ? "a TEST_DOUBLE provider identity was presented in a PRODUCTION context; simulated " +
+            "observations must never be recorded as paid scoring evidence"
+          : `${context.detail}; REAL_PROVIDER_EXECUTION is admissible`
+        : identity === null || identity.kind !== "TEST_DOUBLE_PROVIDER_EXECUTION"
+          ? `${context.detail}, but the provider identity is ` +
+            `${identity === null ? "NONE" : identity.kind}. Under test only an approved ` +
+            `TEST_DOUBLE may be spawned -- see incident ${INCIDENT_TAG} (${INCIDENT_SHA}).`
+          : input.billedConfirmed && !input.gitStateInjected
+            ? "billed confirmation was supplied under test against REAL repository git state. A " +
+              "test may exercise the billed path only against injected freeze state, so that its " +
+              "behaviour cannot change when a real tag is created -- which is exactly how " +
+              `${INCIDENT_TAG} occurred.`
+            : `${context.detail}; approved TEST_DOUBLE with ` +
+              `${input.gitStateInjected ? "injected" : "real"} git state`,
+  });
+
+  // Runner v1 must never be selected for scoring again, by tag or by executing revision.
+  const headIsRunnerV1 = worktree.headSha === RUNNER_V1_SHA;
+  const runnerTagIsV1 = (RUNNER_TAG as string) === RUNNER_V1_TAG;
+  checks.push({
+    id: "RUNNER_V1_NOT_SELECTED",
+    passed: !headIsRunnerV1 && !runnerTagIsV1,
+    detail: runnerTagIsV1
+      ? `the configured runner tag is ${RUNNER_V1_TAG}, which is ${RUNNER_V1_STATUS}`
+      : headIsRunnerV1
+        ? `the executing revision is ${RUNNER_V1_SHA} (${RUNNER_V1_TAG}), which is ` +
+          `${RUNNER_V1_STATUS}. Its test architecture permitted a real provider spawn from a test; ` +
+          "scoring requires Runner v2 or later."
+        : `executing revision is not ${RUNNER_V1_TAG} (${RUNNER_V1_STATUS}); scoring runs under ` +
+          `${RUNNER_TAG} v${RUNNER_VERSION}`,
+  });
+
   checks.push({
     id: "BILLED_CONFIRMATION",
     passed: input.billedConfirmed,
@@ -368,6 +471,15 @@ export interface ProviderAuthorization {
   readonly mafSlotDigest: string;
   /** The pinned executable this authorization was granted against. */
   readonly executablePath: string;
+  /**
+   * The unforgeable provider identity this capability was minted from.
+   *
+   * Runner v1 bound the capability to a path STRING, which says where a binary is but nothing about
+   * what it is. A test that reached this point with the real Claude executable's path therefore held
+   * a perfectly valid capability. v2 binds the identity itself, so the boundary can ask the question
+   * that actually matters -- real provider, or approved test double? -- rather than re-deriving it.
+   */
+  readonly providerIdentity: ProviderIdentity;
   readonly issuedAt: string;
 }
 
@@ -377,7 +489,12 @@ export interface IssueAuthorizationInput {
   scheduleDigest: string;
   nativeSlotDigest: string;
   mafSlotDigest: string;
-  executablePath: string;
+  /**
+   * REQUIRED. The capability cannot be minted from a bare path any more: an identity must have been
+   * established first, which is impossible for an unconfigured test and impossible for the real
+   * provider under test.
+   */
+  providerIdentity: ProviderIdentity;
 }
 
 /**
@@ -391,9 +508,12 @@ export const issueProviderAuthorization = (
   input: IssueAuthorizationInput,
 ): ProviderAuthorization | null => {
   if (!input.decision.authorized) return null;
+  const identity = input.providerIdentity;
   // The bound executable must be absolute. A capability naming "claude" would authorize a spawn
   // that still performs its own PATH lookup, which is exactly what the binding exists to prevent.
-  if (!input.executablePath || !path.isAbsolute(input.executablePath)) return null;
+  if (!identity || !identity.executablePath || !path.isAbsolute(identity.executablePath)) {
+    return null;
+  }
   if (!input.campaignId || !input.scheduleDigest) return null;
   if (!input.nativeSlotDigest || !input.mafSlotDigest) return null;
   return {
@@ -402,7 +522,8 @@ export const issueProviderAuthorization = (
     scheduleDigest: input.scheduleDigest,
     nativeSlotDigest: input.nativeSlotDigest,
     mafSlotDigest: input.mafSlotDigest,
-    executablePath: input.executablePath,
+    executablePath: identity.executablePath,
+    providerIdentity: identity,
     issuedAt: new Date().toISOString(),
   } as ProviderAuthorization;
 };
@@ -421,6 +542,13 @@ export interface AuthorizationContext {
    * introduced to close.
    */
   executablePath: string | undefined;
+  /**
+   * Execution context observed AT THE BOUNDARY, not when the capability was minted.
+   *
+   * Re-detected rather than trusted so a capability created earlier -- or in another process, or
+   * before a harness was entered -- cannot carry a stale PRODUCTION classification into a test.
+   */
+  executionContext?: ExecutionContext;
 }
 
 /**
@@ -442,6 +570,14 @@ export const assertAuthorizedForPair = (
     );
   }
   assertAuthorizedForProviderCall(authorization.decision);
+
+  // THE PROVIDER INTERLOCK, checked before anything else about this pair. A spawn that would reach
+  // the real provider from a test is unsafe no matter which pair it was authorized for, which
+  // campaign it belongs to, or how completely the freeze gates passed -- the incident is the proof.
+  assertProviderIdentityForSpawn(authorization.providerIdentity, {
+    executablePath: context.executablePath,
+    ...(context.executionContext ? { executionContext: context.executionContext } : {}),
+  });
 
   // The executable is checked before the identity fields: a spawn that would reach a different
   // binary is unsafe regardless of which pair it was for.
