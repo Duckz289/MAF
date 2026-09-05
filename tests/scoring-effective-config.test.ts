@@ -289,19 +289,65 @@ describe("known alternate routes", () => {
   });
 });
 
-describe("the real machine's active configuration", () => {
-  it("is clean, while its preserved backup is correctly ignored", async () => {
-    // Runs against the actual user profile: the gate must pass here today, and must not be
-    // tripped by the forensic backup that still sits beside the active settings file.
+describe("a first-party base URL is accepted (hermetic)", () => {
+  // This is the SUBSTANCE of what used to be asserted against the operator's live machine: a
+  // correctly-configured first-party endpoint must not be mistaken for an alternate route, or every
+  // future scoring run would refuse over a correct setting.
+  //
+  // It is stated hermetically -- fixture home, explicit environment -- because the live-host form
+  // asserted a fact about whoever happened to be running the suite. When the operator's machine
+  // later acquired active Stali/Kimi routing, the assertion failed for a reason that had nothing to
+  // do with the code under test. A unit test whose result is a property of the outside world is the
+  // same class of defect as incident maf-scoring-incident-2026-09-03-v1.
+  it("accepts ANTHROPIC_BASE_URL pointing at the first-party API", async () => {
+    await writeConfig("settings.json", { theme: "dark" });
+    const report = await inspectEffectiveClaudeConfig({
+      home,
+      environment: { ANTHROPIC_BASE_URL: "https://api.anthropic.com" },
+      forwardedEnvironmentKeys: [],
+    });
+    expect(report.clean).toBe(true);
+  });
+
+  it("still refuses an alternate base URL under otherwise identical conditions", async () => {
+    await writeConfig("settings.json", { theme: "dark" });
+    const report = await inspectEffectiveClaudeConfig({
+      home,
+      environment: { ANTHROPIC_BASE_URL: "https://api.stali.vn/v1" },
+      forwardedEnvironmentKeys: [],
+    });
+    expect(report.clean).toBe(false);
+  });
+});
+
+describe("the real machine's active configuration (live-host diagnostic)", () => {
+  // These two run against the ACTUAL user profile, so they are written to be environment-NEUTRAL:
+  // they assert properties of the inspection that hold whatever this machine is configured to do.
+  // Nothing here asserts that the operator's machine is clean -- it is not, at the time of writing,
+  // and it must not be "fixed" by clearing the environment or editing ~/.claude/settings.json.
+  it("never inspects a preserved backup file", async () => {
+    // Environment-neutral and still load-bearing: a forensic backup sitting beside the active
+    // settings file must not be read as active configuration, whatever it contains.
     const report = await inspectEffectiveClaudeConfig({ forwardedEnvironmentKeys: [] });
-    expect(report.checks.find((c) => c.id === "CLAUDE_EFFECTIVE_CONFIG_CLEAN")?.passed).toBe(true);
     expect(report.inspectedFiles.every((f) => !f.includes("backup"))).toBe(true);
   });
 
-  it("passes overall on this machine's real environment and configuration", async () => {
-    // This machine sets ANTHROPIC_BASE_URL=https://api.anthropic.com. The gate must recognise that
-    // as first-party rather than refusing every future scoring run over a correct setting.
+  it("returns a definite verdict, and FAILS CLOSED whenever it finds an alternate route", async () => {
+    // The implication asserted in both directions, so the test is meaningful on a clean machine and
+    // on a redirected one -- and would fail if the gate ever found a route and passed anyway.
     const report = await inspectEffectiveClaudeConfig({ forwardedEnvironmentKeys: [] });
-    expect(report.clean).toBe(true);
+    const check = report.checks.find((c) => c.id === "CLAUDE_EFFECTIVE_CONFIG_CLEAN");
+    expect(check).toBeDefined();
+    expect(typeof report.clean).toBe("boolean");
+
+    const findings = report.checks.flatMap((c) => c.findings);
+    if (findings.length > 0) {
+      // Active routing is present on this host: the gate MUST refuse. This is the state the machine
+      // is in today (Stali/Kimi routing), and it is why real scoring validate correctly reports
+      // SCORING_PLAN_INVALID.
+      expect(report.clean).toBe(false);
+    } else {
+      expect(report.clean).toBe(true);
+    }
   });
 });

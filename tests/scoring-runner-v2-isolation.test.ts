@@ -14,11 +14,21 @@
 //   SATISFIED -- freeze gates valid, billed confirmation supplied, budget available, auth
 //   first-party, worktree clean.
 //
-// The suite is organised as the mission's test matrix, then a final block that reproduces the
-// incident's exact conditions and counts provider spawns.
+// WHAT THE INDEPENDENT AUDIT ADDED
+// --------------------------------
+// The first v2 revision enforced that property with TypeScript brands and an ambient environment
+// sniff. Both are erased or mutable at runtime, so this file now proves the runtime versions:
+//
+//   * a FORGED capability -- literal, spread, Object.assign clone, JSON round-trip -- is refused at
+//     the boundary, for identity, authorization, gate decision AND execution context;
+//   * TEST vs PRODUCTION is an explicitly constructed value, so a sanitized environment cannot
+//     promote a test into a production run;
+//   * test-double containment is decided on realpath-resolved paths, so a symlink or junction
+//     cannot alias an outside file into a fixture root;
+//   * the incident record is a mandatory frozen authority, proven local == remote == pinned commit.
 
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,24 +37,40 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   approveTestDoubleProvider,
   assertProviderIdentityForSpawn,
-  detectExecutionContext,
+  isAuthenticProviderIdentity,
   observeTestDoubleMarker,
   resolveRealProviderIdentity,
   TEST_DOUBLE_MARKER,
   TEST_DOUBLE_ROOT_MARKER_FILE,
-  type ExecutionContext,
   type ProviderIdentity,
 } from "../evaluation/experiments/scoring/lib/provider-identity";
 import {
+  createProductionExecutionContext,
+  isAuthenticExecutionContext,
+  observeAmbientTestSignals,
+  type ExecutionContext,
+} from "../evaluation/experiments/scoring/lib/execution-context";
+import {
+  createTestExecutionContext,
+  createProductionExecutionContextForTest,
+} from "../evaluation/experiments/scoring/lib/internal/test-support";
+import {
+  assertAuthorizedForPair,
+  isAuthenticProviderAuthorization,
   issueProviderAuthorization,
-  type ExecutionGateDecision,
+  type ProviderAuthorization,
 } from "../evaluation/experiments/scoring/lib/execution-gate";
+import {
+  evaluateCampaignGate,
+  campaignBudgetDigest,
+} from "../evaluation/experiments/scoring/lib/campaign-budget";
 import {
   executePairedSlots,
   pairSlots,
 } from "../evaluation/experiments/scoring/lib/participant-runner";
 import { buildScoringSchedule, type RunSlot } from "../evaluation/experiments/scoring/lib/schedule";
 import { ScoringStateStore } from "../evaluation/experiments/scoring/lib/state-store";
+import { canonicalFrozenAuthorityDigest } from "../evaluation/experiments/scoring/lib/tag-verification";
 import {
   INCIDENT_SHA,
   INCIDENT_TAG,
@@ -54,7 +80,14 @@ import {
   RUNNER_V1_TAG,
   RUNNER_VERSION,
 } from "../evaluation/experiments/scoring/lib/frozen-refs";
-import { approvedTestDouble, FAKE_CLAUDE_CLI } from "./helpers/test-double-provider";
+import {
+  approvedTestDouble,
+  authenticDecision,
+  authorizedCampaignGate,
+  anotherTestExecutionContext,
+  testExecutionContext,
+  FAKE_CLAUDE_CLI,
+} from "./helpers/test-double-provider";
 
 const execFileAsync = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -112,11 +145,29 @@ const simulationEnv = (extra: Record<string, string>): NodeJS.ProcessEnv => {
   return { ...env, ...extra };
 };
 
+/**
+ * The same environment with EVERY test-harness signal stripped.
+ *
+ * This is the audit's Repair 3 case: a child that looks, to any ambient sniff, like an ordinary
+ * production invocation. Under the old ambient classification it WOULD have been one. Now the
+ * classification comes from the seam, so stripping these changes nothing.
+ */
+const sanitizedEnv = (extra: Record<string, string> = {}): NodeJS.ProcessEnv => {
+  const env = simulationEnv(extra);
+  for (const key of Object.keys(env)) {
+    if (/^(VITEST|JEST|NODE_TEST|npm_lifecycle)/u.test(key)) delete env[key];
+  }
+  delete env.NODE_ENV;
+  delete env.MAF_SCORING_EXECUTION_CONTEXT;
+  return env;
+};
+
 // ---------------------------------------------------------------- subprocess harness
 
 const runCli = async (
   args: string[],
   env: Record<string, string> = {},
+  envBuilder: (extra: Record<string, string>) => NodeJS.ProcessEnv = simulationEnv,
 ): Promise<{ stdout: string; code: number }> => {
   try {
     const { stdout } = await execFileAsync(
@@ -127,7 +178,7 @@ const runCli = async (
         encoding: "utf8",
         timeout: 240_000,
         maxBuffer: 20 * 1024 * 1024,
-        env: simulationEnv({ MAF_SIM_HEAD: "a".repeat(40), ...env }),
+        env: envBuilder({ MAF_SIM_HEAD: "a".repeat(40), ...env }),
       },
     );
     return { stdout, code: 0 };
@@ -164,17 +215,20 @@ const initCampaign = async (): Promise<void> => {
   expect(result.stdout).toMatch(/campaign initialized/u);
 };
 
+const approvedFixtureUrl = (): string =>
+  new URL(`file:///${approvedFixture.replace(/\\/gu, "/")}`).href;
+
 /**
- * Writes a test-seam module that keeps the approved fixture's VALID simulated git state but
- * substitutes a different provider. Every freeze gate therefore still passes, isolating the provider
- * question -- which is exactly the shape of the incident.
+ * Writes a test-seam module that keeps the approved fixture's VALID simulated git state and its
+ * authentic TEST execution context, but substitutes a different provider. Every freeze gate
+ * therefore still passes, isolating the provider question -- which is exactly the shape of the
+ * incident.
  */
 const fixtureWithProvider = async (name: string, providerExpression: string): Promise<string> => {
   const file = path.join(scratch, `${name}.mjs`);
-  const approvedUrl = new URL(`file:///${approvedFixture.replace(/\\/gu, "/")}`).href;
   await writeFile(
     file,
-    `export { git, resolve, checkAuth, participantFixtureRoot } from ${JSON.stringify(approvedUrl)};\n` +
+    `export { git, resolve, checkAuth, participantFixtureRoot, executionContext } from ${JSON.stringify(approvedFixtureUrl())};\n` +
       `export const testDoubleProviderPath = ${providerExpression};\n`,
     "utf8",
   );
@@ -184,10 +238,22 @@ const fixtureWithProvider = async (name: string, providerExpression: string): Pr
 /** A fixture module deliberately missing the provider seam entirely. */
 const fixtureWithoutProvider = async (): Promise<string> => {
   const file = path.join(scratch, "no-provider.mjs");
-  const approvedUrl = new URL(`file:///${approvedFixture.replace(/\\/gu, "/")}`).href;
   await writeFile(
     file,
-    `export { git, resolve, checkAuth, participantFixtureRoot } from ${JSON.stringify(approvedUrl)};\n`,
+    `export { git, resolve, checkAuth, participantFixtureRoot, executionContext } from ${JSON.stringify(approvedFixtureUrl())};\n`,
+    "utf8",
+  );
+  return file;
+};
+
+/** A fixture whose execution context is substituted by the given expression. */
+const fixtureWithContext = async (name: string, contextExpression: string): Promise<string> => {
+  const file = path.join(scratch, `${name}.mjs`);
+  await writeFile(
+    file,
+    `import { executionContext as authentic } from ${JSON.stringify(approvedFixtureUrl())};\n` +
+      `export { git, resolve, checkAuth, participantFixtureRoot, testDoubleProviderPath } from ${JSON.stringify(approvedFixtureUrl())};\n` +
+      `export const executionContext = ${contextExpression};\n`,
     "utf8",
   );
   return file;
@@ -273,7 +339,42 @@ describe("MATRIX: fake Git without an approved provider -> refuse, ZERO spawns",
   it("an executable that does not exist -> refuse", async () => {
     await expectRefusal(
       await fixtureWithProvider("missing", JSON.stringify(path.join(scratch, "nope.mjs"))),
-      /NOT_A_FILE/u,
+      /NOT_A_FILE|UNRESOLVABLE_PATH/u,
+    );
+  }, 300_000);
+
+  // ------------------------------------------------- forged execution contexts (audit Repair 4)
+
+  it("a hand-written { kind: 'TEST' } context -> refuse", async () => {
+    // The audit's exact finding, at the CLI seam: a plain object that merely CLAIMS to be a TEST
+    // context. It is refused because authenticity is a runtime registration, not a shape.
+    await expectRefusal(
+      await fixtureWithContext(
+        "forged-context",
+        '{ kind: "TEST", origin: "forged", createdAt: "", ambient: { signals: [], looksLikeTest: true, detail: "" }, signals: [], detail: "forged" }',
+      ),
+      /TEST_SEAM_CONTEXT_NOT_AUTHENTIC/u,
+    );
+  }, 300_000);
+
+  it("a spread clone of the authentic context -> refuse", async () => {
+    await expectRefusal(
+      await fixtureWithContext("spread-context", "{ ...authentic }"),
+      /TEST_SEAM_CONTEXT_NOT_AUTHENTIC/u,
+    );
+  }, 300_000);
+
+  it("a JSON round-trip of the authentic context -> refuse", async () => {
+    await expectRefusal(
+      await fixtureWithContext("json-context", "JSON.parse(JSON.stringify(authentic))"),
+      /TEST_SEAM_CONTEXT_NOT_AUTHENTIC/u,
+    );
+  }, 300_000);
+
+  it("an Object.assign clone of the authentic context -> refuse", async () => {
+    await expectRefusal(
+      await fixtureWithContext("assign-context", "Object.assign({}, authentic)"),
+      /TEST_SEAM_CONTEXT_NOT_AUTHENTIC/u,
     );
   }, 300_000);
 });
@@ -298,9 +399,105 @@ describe("MATRIX: real Git state under test", () => {
   }, 120_000);
 });
 
+describe("MATRIX: a sanitized environment cannot promote a TEST run (audit Repair 3)", () => {
+  it("explicit TEST context survives an environment with every harness signal stripped", async () => {
+    // Under the previous ambient classification this child would have been PRODUCTION: nothing in
+    // its environment says "test". The classification now comes from the seam, so it stays TEST and
+    // still admits only the approved double.
+    await initCampaign();
+    const result = await runCli(billed(approvedFixture), {}, sanitizedEnv);
+    expect(result.stdout).toMatch(/SCORING_EXECUTION_AUTHORIZED/u);
+    expect(result.stdout).toMatch(/provider identity: TEST_DOUBLE_PROVIDER_EXECUTION/u);
+    expect(result.stdout).not.toMatch(/REAL_PROVIDER_EXECUTION/u);
+    expect(await countIntents(campaign)).toBe(2);
+  }, 300_000);
+
+  it("and the CLI reports the context as constructed rather than detected", async () => {
+    const result = await runCli(["validate"], {}, sanitizedEnv);
+    expect(result.stdout).toMatch(/execution context: PRODUCTION/u);
+    expect(result.stdout).toMatch(/explicitly constructed by run-scoring\.ts/u);
+  }, 120_000);
+
+  it("there is no --test-mode flag that could convert production into test", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const source = await readFile(cli, "utf8");
+    // Look for an actual FLAG, not for prose: the CLI's own documentation names `--test-mode` as
+    // the thing that deliberately does not exist, so a bare substring search would match the
+    // comment explaining its absence.
+    expect(source).not.toMatch(/flag\("test-mode"\)|value\("test-mode"\)|"--test-mode"/u);
+    // Exactly one execution-context construction, and it is the production one.
+    expect(source).toMatch(/createProductionExecutionContext\(/u);
+    expect(source).not.toMatch(/createTestExecutionContext/u);
+    expect(source).not.toMatch(/__INTERNAL_/u);
+  });
+});
+
+describe("MATRIX: the incident record is a mandatory frozen authority (audit Repair 5)", () => {
+  const expectIncidentRefusal = async (variant: string) => {
+    await initCampaign();
+    const result = await runCli(billed(approvedFixture), { MAF_SIM_VARIANT: variant });
+    expect(result.stdout).toMatch(/SCORING_EXECUTION_REFUSED/u);
+    expect(result.stdout).toMatch(/\[FAIL\] INCIDENT_FROZEN/u);
+    expect(result.stdout).not.toMatch(/SCORING_EXECUTION_AUTHORIZED/u);
+    expect(await countIntents(campaign)).toBe(0);
+  };
+
+  it("incident tag absent entirely -> refuse", async () => {
+    await expectIncidentRefusal("INCIDENT_TAG_ABSENT");
+  }, 300_000);
+
+  it("incident tag missing LOCALLY (remote only) -> refuse", async () => {
+    await expectIncidentRefusal("INCIDENT_REMOTE_ONLY");
+  }, 300_000);
+
+  it("incident tag missing on the REMOTE (local only) -> refuse", async () => {
+    await expectIncidentRefusal("INCIDENT_LOCAL_ONLY");
+  }, 300_000);
+
+  it("incident tag peeling to the wrong LOCAL commit -> refuse", async () => {
+    await expectIncidentRefusal("INCIDENT_WRONG_LOCAL_SHA");
+  }, 300_000);
+
+  it("incident tag peeling to the wrong REMOTE commit -> refuse", async () => {
+    await expectIncidentRefusal("INCIDENT_WRONG_REMOTE_SHA");
+  }, 300_000);
+
+  it("correct local AND remote peeled incident commit -> that gate passes", async () => {
+    await initCampaign();
+    const result = await runCli(billed(approvedFixture));
+    expect(result.stdout).toMatch(/\[PASS\] INCIDENT_FROZEN/u);
+    expect(result.stdout).toMatch(
+      new RegExp(`${INCIDENT_TAG} verified local == remote == ${INCIDENT_SHA}`, "u"),
+    );
+  }, 300_000);
+
+  it("the real repository's incident tag peels to the pinned commit, local and remote", async () => {
+    const local = await execFileAsync("git", ["rev-parse", `refs/tags/${INCIDENT_TAG}^{commit}`], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
+    expect(local.stdout.trim()).toBe(INCIDENT_SHA);
+    const remote = await execFileAsync(
+      "git",
+      ["ls-remote", "origin", `refs/tags/${INCIDENT_TAG}`, `refs/tags/${INCIDENT_TAG}^{}`],
+      { cwd: repoRoot, encoding: "utf8", timeout: 60_000 },
+    );
+    const peeled = remote.stdout
+      .split(/\r?\n/u)
+      .find((line) => line.trim().endsWith(`refs/tags/${INCIDENT_TAG}^{}`));
+    expect(peeled?.split(/\s+/u)[0]).toBe(INCIDENT_SHA);
+  }, 120_000);
+
+  it("a --skip-remote incident check is reported as NOT proven", async () => {
+    // Mission: `skipRemote` must refuse rather than quietly narrow what was proven.
+    const result = await runCli(["validate", "--skip-remote"]);
+    expect(result.stdout).toMatch(/INCIDENT_FROZEN: the remote was not consulted/u);
+  }, 120_000);
+});
+
 describe("MATRIX: tag state cannot influence test safety", () => {
-  // The heart of mission Repair 3. Runner v1's tag IS present on the real machine, and v2's will be
-  // one day; neither may change what a test can reach.
+  // The heart of the isolation property. Runner v1's tag IS present on the real machine, and v2's
+  // will be one day; neither may change what a test can reach.
   it("Runner v1 tag present on the real repository does not enable any test spawn", async () => {
     const localV1 = await execFileAsync("git", ["rev-list", "-n1", RUNNER_V1_TAG], {
       cwd: repoRoot,
@@ -337,84 +534,130 @@ describe("MATRIX: tag state cannot influence test safety", () => {
 describe("PROVIDER BOUNDARY: the interlock holds against direct invocation", () => {
   let testDouble: ProviderIdentity;
   beforeAll(async () => {
-    testDouble = await approvedTestDouble();
+    testDouble = await approvedTestDouble(FAKE_CLAUDE_CLI, testExecutionContext);
   });
 
-  const PRODUCTION: ExecutionContext = {
-    kind: "PRODUCTION",
-    signals: [],
-    detail: "synthetic production context",
-  };
+  /** An AUTHENTIC production context. Minting one grants nothing: the live environment still says TEST. */
+  const productionContext = (): ExecutionContext =>
+    createProductionExecutionContextForTest("isolation-test");
 
   it("refuses when no identity is supplied at all", () => {
     expect(() =>
-      assertProviderIdentityForSpawn(undefined, { executablePath: FAKE_CLAUDE_CLI }),
+      assertProviderIdentityForSpawn(undefined, {
+        executablePath: FAKE_CLAUDE_CLI,
+        executionContext: testExecutionContext,
+      }),
     ).toThrow(/no provider identity was supplied/u);
   });
 
-  it("REFUSES a REAL_PROVIDER identity at a boundary reached under test", () => {
-    // A capability claiming to be for the real provider, minted in a synthetic PRODUCTION context,
-    // then presented at a boundary that re-detects the LIVE context (vitest => TEST).
-    const outcome = resolveRealProviderIdentity({
-      executablePath: REAL_CLAUDE_PATH,
-      context: PRODUCTION,
-    });
-    expect(outcome.approved).toBe(true);
-    const identity = (outcome as { approved: true; identity: ProviderIdentity }).identity;
-    expect(identity.kind).toBe("REAL_PROVIDER_EXECUTION");
+  it("REFUSES a PRODUCTION context whose environment plainly shows a test harness", () => {
+    // The audit's Repair 3, at the boundary. Ambient environment cannot GRANT production status, so
+    // the disagreement fails closed rather than resolving in favour of the claim.
+    expect(observeAmbientTestSignals().looksLikeTest).toBe(true);
+    const production = productionContext();
+    const identity = (
+      resolveRealProviderIdentity({
+        executablePath: REAL_CLAUDE_PATH,
+        context: production,
+        // A spotless environment at MINT time, so the refusal below comes from the live check.
+        environment: {},
+      }) as { approved: true; identity: ProviderIdentity }
+    ).identity;
 
-    expect(() =>
-      assertProviderIdentityForSpawn(identity, { executablePath: REAL_CLAUDE_PATH }),
-    ).toThrow(/TEST execution context .* with provider identity REAL_PROVIDER_EXECUTION/su);
-  });
-
-  it("REFUSES a real-provider identity even when the freeze world looks perfect", () => {
-    // Capability claims TEST but the executable is REAL: refused because identity kind, not
-    // intention, is what the boundary reads.
-    const outcome = resolveRealProviderIdentity({
-      executablePath: REAL_CLAUDE_PATH,
-      context: PRODUCTION,
-    });
-    const identity = (outcome as { approved: true; identity: ProviderIdentity }).identity;
     expect(() =>
       assertProviderIdentityForSpawn(identity, {
         executablePath: REAL_CLAUDE_PATH,
-        executionContext: { kind: "TEST", signals: ["explicit"], detail: "explicit test" },
+        executionContext: production,
       }),
-    ).toThrow(/Only an approved TEST_DOUBLE may be spawned/u);
+    ).toThrow(/environment plainly shows a test harness/u);
+  });
+
+  it("REFUSES a REAL_PROVIDER identity presented under a TEST context", () => {
+    const production = productionContext();
+    const identity = (
+      resolveRealProviderIdentity({
+        executablePath: REAL_CLAUDE_PATH,
+        context: production,
+        environment: {},
+      }) as { approved: true; identity: ProviderIdentity }
+    ).identity;
+    expect(identity.kind).toBe("REAL_PROVIDER_EXECUTION");
+
+    // Presented under the TEST context it was NOT minted in: refused on context binding first.
+    expect(() =>
+      assertProviderIdentityForSpawn(identity, {
+        executablePath: REAL_CLAUDE_PATH,
+        executionContext: testExecutionContext,
+      }),
+    ).toThrow(/established in a different execution context/u);
   });
 
   it("REFUSES a TEST_DOUBLE identity that reaches a PRODUCTION context", () => {
+    // Minted in TEST, presented in PRODUCTION. Under vitest the ambient contradiction fires first --
+    // which is the STRONGER refusal, and the one that matters: a PRODUCTION claim made inside a
+    // visible test harness never gets as far as being asked which provider it names.
     expect(() =>
       assertProviderIdentityForSpawn(testDouble, {
         executablePath: testDouble.executablePath,
-        executionContext: PRODUCTION,
+        executionContext: productionContext(),
       }),
-    ).toThrow(/must never be recorded as paid scoring evidence/u);
+    ).toThrow(/environment plainly shows a test harness/u);
+  });
+
+  it("REFUSES a TEST_DOUBLE in a PRODUCTION context even with a spotless environment", () => {
+    // The same refusal with the ambient check satisfied, so the interlock itself is what speaks:
+    // simulated observations must never be recorded as paid scoring evidence.
+    const production = createProductionExecutionContext("spotless", {});
+    expect(() =>
+      assertProviderIdentityForSpawn(testDouble, {
+        executablePath: testDouble.executablePath,
+        executionContext: production,
+        environment: {},
+      }),
+    ).toThrow(/different execution context/u);
+  });
+
+  it("REFUSES an identity minted in a DIFFERENT authentic TEST context", () => {
+    const other = anotherTestExecutionContext("isolation-other");
+    expect(() =>
+      assertProviderIdentityForSpawn(testDouble, {
+        executablePath: testDouble.executablePath,
+        executionContext: other,
+      }),
+    ).toThrow(/different execution context/u);
   });
 
   it("REFUSES when the spawned path differs from the approved one", () => {
     expect(() =>
-      assertProviderIdentityForSpawn(testDouble, { executablePath: REAL_CLAUDE_PATH }),
+      assertProviderIdentityForSpawn(testDouble, {
+        executablePath: REAL_CLAUDE_PATH,
+        executionContext: testExecutionContext,
+      }),
     ).toThrow(/but the spawn would launch/u);
   });
 
   it("REFUSES a non-absolute spawn path", () => {
-    expect(() => assertProviderIdentityForSpawn(testDouble, { executablePath: "claude" })).toThrow(
-      /is not absolute/u,
-    );
+    expect(() =>
+      assertProviderIdentityForSpawn(testDouble, {
+        executablePath: "claude",
+        executionContext: testExecutionContext,
+      }),
+    ).toThrow(/is not absolute/u);
   });
 
   it("ACCEPTS the approved test double spawning exactly itself", () => {
     expect(() =>
-      assertProviderIdentityForSpawn(testDouble, { executablePath: testDouble.executablePath }),
+      assertProviderIdentityForSpawn(testDouble, {
+        executablePath: testDouble.executablePath,
+        executionContext: testExecutionContext,
+      }),
     ).not.toThrow();
   });
 
-  it("refuses a REAL identity outright when the live context is TEST", () => {
+  it("refuses a REAL identity outright when the context is TEST", () => {
     const outcome = resolveRealProviderIdentity({
       executablePath: REAL_CLAUDE_PATH,
-      context: detectExecutionContext(),
+      context: testExecutionContext,
     });
     expect(outcome.approved).toBe(false);
     expect((outcome as { reason: string }).reason).toBe("TEST_CONTEXT_REQUIRES_TEST_DOUBLE");
@@ -424,8 +667,9 @@ describe("PROVIDER BOUNDARY: the interlock holds against direct invocation", () 
     expect(await observeTestDoubleMarker(FAKE_CLAUDE_CLI)).toBe(true);
     const outcome = resolveRealProviderIdentity({
       executablePath: FAKE_CLAUDE_CLI,
-      context: PRODUCTION,
+      context: productionContext(),
       markerObserved: true,
+      environment: {},
     });
     expect(outcome.approved).toBe(false);
     expect((outcome as { reason: string }).reason).toBe("TEST_DOUBLE_IN_PRODUCTION_PATH");
@@ -447,6 +691,480 @@ describe("PROVIDER BOUNDARY: the interlock holds against direct invocation", () 
   }, 60_000);
 });
 
+// ==================================== FORGERY: runtime authenticity (audit Repairs 1, 2, 4)
+
+describe("FORGERY: a forged ProviderIdentity is refused at the spawn boundary", () => {
+  let testDouble: ProviderIdentity;
+  beforeAll(async () => {
+    testDouble = await approvedTestDouble(FAKE_CLAUDE_CLI, testExecutionContext);
+  });
+
+  const spawn = (identity: ProviderIdentity): void =>
+    assertProviderIdentityForSpawn(identity, {
+      executablePath: FAKE_CLAUDE_CLI,
+      executionContext: testExecutionContext,
+    });
+
+  it("a hand-created plain object -> REFUSE", () => {
+    // Structurally identical to a real identity, and a `declare const BRAND` cannot tell the
+    // difference at runtime. This is the audit's finding, reproduced and now refused.
+    const forged = {
+      kind: "TEST_DOUBLE_PROVIDER_EXECUTION",
+      executablePath: FAKE_CLAUDE_CLI,
+      resolvedExecutablePath: FAKE_CLAUDE_CLI,
+      testDoubleRoot: path.join(here, "fixtures"),
+      context: testExecutionContext,
+      detail: "forged",
+    } as unknown as ProviderIdentity;
+    expect(isAuthenticProviderIdentity(forged)).toBe(false);
+    expect(() => spawn(forged)).toThrow(/not created by the provider-identity factories/u);
+  });
+
+  it("an object spread of a VALID identity -> REFUSE", () => {
+    const clone = { ...testDouble } as ProviderIdentity;
+    expect(isAuthenticProviderIdentity(clone)).toBe(false);
+    expect(() => spawn(clone)).toThrow(/not created by the provider-identity factories/u);
+  });
+
+  it("an Object.assign clone of a VALID identity -> REFUSE", () => {
+    const clone = Object.assign({}, testDouble) as ProviderIdentity;
+    expect(isAuthenticProviderIdentity(clone)).toBe(false);
+    expect(() => spawn(clone)).toThrow(/not created by the provider-identity factories/u);
+  });
+
+  it("a JSON serialize/deserialize round-trip -> REFUSE", () => {
+    const roundTripped = JSON.parse(JSON.stringify(testDouble)) as ProviderIdentity;
+    expect(isAuthenticProviderIdentity(roundTripped)).toBe(false);
+    expect(() => spawn(roundTripped)).toThrow(/not created by the provider-identity factories/u);
+  });
+
+  it("a structurally identical object built field by field -> REFUSE", () => {
+    const rebuilt = Object.freeze({
+      kind: testDouble.kind,
+      executablePath: testDouble.executablePath,
+      resolvedExecutablePath: testDouble.resolvedExecutablePath,
+      testDoubleRoot: testDouble.testDoubleRoot,
+      context: testDouble.context,
+      detail: testDouble.detail,
+    }) as unknown as ProviderIdentity;
+    expect(isAuthenticProviderIdentity(rebuilt)).toBe(false);
+    expect(() => spawn(rebuilt)).toThrow(/not created by the provider-identity factories/u);
+  });
+
+  it("only the exact object the factory built is accepted", () => {
+    expect(isAuthenticProviderIdentity(testDouble)).toBe(true);
+    expect(() => spawn(testDouble)).not.toThrow();
+  });
+
+  it("no exported primitive registers a caller-supplied object", async () => {
+    // The registry must not be reachable. If any export could bless an arbitrary object, every
+    // refusal above would be a formality.
+    const module = (await import(
+      "../evaluation/experiments/scoring/lib/provider-identity"
+    )) as Record<string, unknown>;
+    // Names that would indicate a primitive taking a caller-built object and blessing it. The
+    // read-only predicates (`isAuthentic*`) and the marker CONSTANTS are fine -- reading membership
+    // proves nothing about who can join.
+    const suspicious = Object.keys(module).filter((name) =>
+      /^(register|bless|trust|add|mark)[A-Z]/u.test(name),
+    );
+    expect(suspicious).toEqual([]);
+    // And the registry itself is never handed out under any name.
+    for (const value of Object.values(module)) {
+      expect(value instanceof WeakSet).toBe(false);
+      expect(value instanceof Set).toBe(false);
+    }
+  });
+});
+
+describe("FORGERY: a forged execution context is refused", () => {
+  const forgedContext = { kind: "TEST", origin: "forged", signals: [], detail: "forged" };
+
+  it("a plain { kind: 'TEST' } object is not authentic", () => {
+    expect(isAuthenticExecutionContext(forgedContext)).toBe(false);
+    expect(isAuthenticExecutionContext({ kind: "TEST" })).toBe(false);
+  });
+
+  it("a spread clone and a JSON round-trip of a REAL context are not authentic", () => {
+    expect(isAuthenticExecutionContext({ ...testExecutionContext })).toBe(false);
+    expect(isAuthenticExecutionContext(JSON.parse(JSON.stringify(testExecutionContext)))).toBe(
+      false,
+    );
+    expect(isAuthenticExecutionContext(Object.assign({}, testExecutionContext))).toBe(false);
+  });
+
+  it("the spawn boundary refuses a forged context outright", async () => {
+    const testDouble = await approvedTestDouble(FAKE_CLAUDE_CLI, testExecutionContext);
+    expect(() =>
+      assertProviderIdentityForSpawn(testDouble, {
+        executablePath: FAKE_CLAUDE_CLI,
+        executionContext: forgedContext,
+      }),
+    ).toThrow(/did not construct/u);
+  });
+
+  it("test-double approval refuses a forged context", async () => {
+    const outcome = await approveTestDoubleProvider({
+      executablePath: FAKE_CLAUDE_CLI,
+      context: forgedContext,
+    });
+    expect(outcome.approved).toBe(false);
+    expect((outcome as { reason: string }).reason).toBe("CONTEXT_NOT_AUTHENTIC");
+  });
+
+  it("real-provider resolution refuses a forged context", () => {
+    const outcome = resolveRealProviderIdentity({
+      executablePath: REAL_CLAUDE_PATH,
+      context: { kind: "PRODUCTION" },
+    });
+    expect(outcome.approved).toBe(false);
+    expect((outcome as { reason: string }).reason).toBe("CONTEXT_NOT_AUTHENTIC");
+  });
+
+  it("an authentic PRODUCTION context is still available to production code", () => {
+    // The production factory must keep working -- the repair restricts WHO can make a TEST context,
+    // not whether production can classify itself.
+    expect(isAuthenticExecutionContext(createProductionExecutionContext("unit"))).toBe(true);
+    expect(isAuthenticExecutionContext(createTestExecutionContext("unit"))).toBe(true);
+  });
+});
+
+describe("FORGERY: a forged ProviderAuthorization is refused", () => {
+  const schedule = buildScoringSchedule({
+    randomization: { seed: "forge", taskOrder: ["alpha"], armOrder: { alpha: "NATIVE_FIRST" } },
+    frozenTaskIds: ["alpha"],
+    runsPerTask: 3,
+  });
+  const pair = pairSlots(schedule.slots)[0] as { native: RunSlot; maf: RunSlot };
+
+  let testDouble: ProviderIdentity;
+  let real: ProviderAuthorization;
+  let boundaryContext: {
+    campaignId: string;
+    scheduleDigest: string;
+    nativeSlotDigest: string;
+    mafSlotDigest: string;
+    executablePath: string;
+    executionContext: ExecutionContext;
+  };
+
+  beforeAll(async () => {
+    testDouble = await approvedTestDouble(FAKE_CLAUDE_CLI, testExecutionContext);
+    real = issueProviderAuthorization({
+      decision: authenticDecision(testDouble),
+      campaignGate: authorizedCampaignGate(),
+      campaignId: "camp",
+      scheduleDigest: schedule.scheduleDigest,
+      nativeSlotDigest: pair.native.slotDigest,
+      mafSlotDigest: pair.maf.slotDigest,
+      providerIdentity: testDouble,
+      executionContext: testExecutionContext,
+    }) as ProviderAuthorization;
+    boundaryContext = {
+      campaignId: "camp",
+      scheduleDigest: schedule.scheduleDigest,
+      nativeSlotDigest: pair.native.slotDigest,
+      mafSlotDigest: pair.maf.slotDigest,
+      executablePath: FAKE_CLAUDE_CLI,
+      executionContext: testExecutionContext,
+    };
+  });
+
+  it("mints a real capability when every precondition holds", () => {
+    expect(isAuthenticProviderAuthorization(real)).toBe(true);
+    expect(() => assertAuthorizedForPair(real, boundaryContext)).not.toThrow();
+  });
+
+  it("a hand-constructed authorization -> REFUSE", () => {
+    const forged = {
+      decision: real.decision,
+      campaignId: "camp",
+      scheduleDigest: schedule.scheduleDigest,
+      nativeSlotDigest: pair.native.slotDigest,
+      mafSlotDigest: pair.maf.slotDigest,
+      executablePath: FAKE_CLAUDE_CLI,
+      providerIdentity: testDouble,
+      executionContext: testExecutionContext,
+      freezeAuthorityDigest: real.freezeAuthorityDigest,
+      budgetDigest: real.budgetDigest,
+      issuedAt: new Date().toISOString(),
+    } as unknown as ProviderAuthorization;
+    expect(isAuthenticProviderAuthorization(forged)).toBe(false);
+    expect(() => assertAuthorizedForPair(forged, boundaryContext)).toThrow(
+      /not minted by issueProviderAuthorization/u,
+    );
+  });
+
+  it("a spread clone -> REFUSE", () => {
+    const clone = { ...real } as ProviderAuthorization;
+    expect(() => assertAuthorizedForPair(clone, boundaryContext)).toThrow(
+      /not minted by issueProviderAuthorization/u,
+    );
+  });
+
+  it("an Object.assign clone -> REFUSE", () => {
+    const clone = Object.assign({}, real) as ProviderAuthorization;
+    expect(() => assertAuthorizedForPair(clone, boundaryContext)).toThrow(
+      /not minted by issueProviderAuthorization/u,
+    );
+  });
+
+  it("a JSON round-trip -> REFUSE", () => {
+    const roundTripped = JSON.parse(JSON.stringify(real)) as ProviderAuthorization;
+    expect(() => assertAuthorizedForPair(roundTripped, boundaryContext)).toThrow(
+      /not minted by issueProviderAuthorization/u,
+    );
+  });
+
+  it("a FORGED gate decision cannot mint a capability at all", () => {
+    // The chain must not be startable from an object that no gate produced.
+    const forgedDecision = {
+      authorized: true,
+      checks: [],
+      failures: [],
+      protocolFreezeAuthority: "GIT_TAG",
+      protocolFrozen: true,
+      knownSourceMetadataNote: "forged",
+      executionContext: testExecutionContext,
+      providerIdentity: testDouble,
+      freezeAuthorityDigest: canonicalFrozenAuthorityDigest(),
+      incidentFrozen: true,
+      summary: "forged",
+    } as never;
+    expect(
+      issueProviderAuthorization({
+        decision: forgedDecision,
+        campaignGate: authorizedCampaignGate(),
+        campaignId: "camp",
+        scheduleDigest: schedule.scheduleDigest,
+        nativeSlotDigest: pair.native.slotDigest,
+        mafSlotDigest: pair.maf.slotDigest,
+        providerIdentity: testDouble,
+        executionContext: testExecutionContext,
+      }),
+    ).toBeNull();
+  });
+
+  it("a FORGED provider identity cannot mint a capability", () => {
+    expect(
+      issueProviderAuthorization({
+        decision: authenticDecision(testDouble),
+        campaignGate: authorizedCampaignGate(),
+        campaignId: "camp",
+        scheduleDigest: schedule.scheduleDigest,
+        nativeSlotDigest: pair.native.slotDigest,
+        mafSlotDigest: pair.maf.slotDigest,
+        providerIdentity: { ...testDouble } as ProviderIdentity,
+        executionContext: testExecutionContext,
+      }),
+    ).toBeNull();
+  });
+
+  it("a capability bound to a DIFFERENT campaign -> REFUSE", () => {
+    expect(() =>
+      assertAuthorizedForPair(real, { ...boundaryContext, campaignId: "other-campaign" }),
+    ).toThrow(/campaign/u);
+  });
+
+  it("a capability bound to a DIFFERENT pair -> REFUSE", () => {
+    expect(() =>
+      assertAuthorizedForPair(real, { ...boundaryContext, nativeSlotDigest: "different" }),
+    ).toThrow(/NATIVE slot digest differs/u);
+  });
+
+  it("a capability bound to a DIFFERENT executable -> REFUSE", () => {
+    expect(() =>
+      assertAuthorizedForPair(real, { ...boundaryContext, executablePath: REAL_CLAUDE_PATH }),
+    ).toThrow(/but the spawn would launch|issued against executable/u);
+  });
+
+  it("a capability bound to DIFFERENT freeze identities -> REFUSE", () => {
+    expect(() =>
+      assertAuthorizedForPair(real, {
+        ...boundaryContext,
+        freezeAuthorityDigest: "a-different-frozen-world",
+      }),
+    ).toThrow(/frozen-authority digest differs/u);
+  });
+
+  it("a capability bound to a DIFFERENT budget state -> REFUSE", () => {
+    // The exact replay the audit named: a capability minted with ample headroom, presented after
+    // the campaign has spent down.
+    const spentDown = campaignBudgetDigest(
+      evaluateCampaignGate({ states: [], ceilingUsd: 40, perRunCeilingUsd: 8 }),
+    );
+    expect(spentDown).not.toBe(real.budgetDigest);
+    expect(() =>
+      assertAuthorizedForPair(real, { ...boundaryContext, budgetDigest: spentDown }),
+    ).toThrow(/budget-state digest differs/u);
+  });
+
+  it("a capability bound to a DIFFERENT execution context -> REFUSE", () => {
+    const other = anotherTestExecutionContext("forgery-other");
+    expect(() =>
+      assertAuthorizedForPair(real, { ...boundaryContext, executionContext: other }),
+    ).toThrow(/minted in a different execution context/u);
+  });
+
+  it("a capability presented with a FORGED execution context -> REFUSE", () => {
+    expect(() =>
+      assertAuthorizedForPair(real, {
+        ...boundaryContext,
+        executionContext: { kind: "TEST" },
+      }),
+    ).toThrow(/did not construct/u);
+  });
+
+  it("a capability minted against an UNAUTHORIZED budget gate is never issued", () => {
+    expect(
+      issueProviderAuthorization({
+        decision: authenticDecision(testDouble),
+        campaignGate: evaluateCampaignGate({
+          states: [],
+          ceilingUsd: 10, // less than one pair's $16 exposure
+          perRunCeilingUsd: 8,
+        }),
+        campaignId: "camp",
+        scheduleDigest: schedule.scheduleDigest,
+        nativeSlotDigest: pair.native.slotDigest,
+        mafSlotDigest: pair.maf.slotDigest,
+        providerIdentity: testDouble,
+        executionContext: testExecutionContext,
+      }),
+    ).toBeNull();
+  });
+});
+
+// ============================================ REALPATH CONTAINMENT (audit Repair 7)
+
+describe("REALPATH: test-double containment is decided on canonical paths", () => {
+  /** Builds a declared fixture root inside the scratch directory. */
+  const makeRoot = async (name: string): Promise<string> => {
+    const root = path.join(scratch, name);
+    await mkdir(root, { recursive: true });
+    await writeFile(path.join(root, TEST_DOUBLE_ROOT_MARKER_FILE), "root\n", "utf8");
+    return root;
+  };
+
+  const writeDouble = async (file: string): Promise<string> => {
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, `// ${TEST_DOUBLE_MARKER}\nprocess.exit(0);\n`, "utf8");
+    return file;
+  };
+
+  const approve = (executablePath: string) =>
+    approveTestDoubleProvider({ executablePath, context: testExecutionContext });
+
+  it("ALLOWS a real file genuinely inside the declared root", async () => {
+    const root = await makeRoot("real-root");
+    const exe = await writeDouble(path.join(root, "cli.mjs"));
+    const outcome = await approve(exe);
+    expect(outcome.approved).toBe(true);
+  });
+
+  it("ALLOWS a nested legitimate fake executable", async () => {
+    const root = await makeRoot("nested-root");
+    const exe = await writeDouble(path.join(root, "a", "b", "cli.mjs"));
+    const outcome = await approve(exe);
+    expect(outcome.approved).toBe(true);
+    const identity = (outcome as { approved: true; identity: ProviderIdentity }).identity;
+    // The recorded root is the canonical MARKER directory, not the executable's own directory --
+    // so a legitimately nested double is approved while its containment stays anchored to the
+    // declared root.
+    const { realpath } = await import("node:fs/promises");
+    expect(identity.testDoubleRoot?.toLowerCase()).toBe((await realpath(root)).toLowerCase());
+    expect(identity.resolvedExecutablePath.toLowerCase()).toBe((await realpath(exe)).toLowerCase());
+  });
+
+  it("REFUSES a relative-escape path", async () => {
+    const root = await makeRoot("rel-root");
+    await writeDouble(path.join(root, "cli.mjs"));
+    const outside = await writeDouble(path.join(scratch, "outside-cli.mjs"));
+    // A path that traverses THROUGH the declared root but lands outside it.
+    const escaping = path.join(root, "..", path.basename(outside));
+    const outcome = await approve(escaping);
+    expect(outcome.approved).toBe(false);
+    expect((outcome as { reason: string }).reason).toBe("ROOT_MARKER_ABSENT");
+  });
+
+  it("REFUSES a SYMLINK from inside the root to a file outside it", async () => {
+    const root = await makeRoot("symlink-root");
+    const outside = await writeDouble(path.join(scratch, "outside", "evil-cli.mjs"));
+    const link = path.join(root, "looks-legit.mjs");
+    try {
+      await symlink(outside, link, "file");
+    } catch {
+      // Windows without Developer Mode / elevation cannot create file symlinks. The junction case
+      // below covers the same escape on that platform.
+      return;
+    }
+    const outcome = await approve(link);
+    expect(outcome.approved).toBe(false);
+    // Resolved first, so the walk starts OUTSIDE the root and finds no marker.
+    expect((outcome as { reason: string }).reason).toBe("ROOT_MARKER_ABSENT");
+  });
+
+  it("REFUSES a DIRECTORY symlink/junction from inside the root to a tree outside it", async () => {
+    const root = await makeRoot("junction-root");
+    const outsideDir = path.join(scratch, "outside-tree");
+    await writeDouble(path.join(outsideDir, "evil-cli.mjs"));
+    const linkDir = path.join(root, "linked");
+
+    if (process.platform === "win32") {
+      // A junction needs no elevation, which is exactly why it is the realistic Windows escape.
+      const result = await execFileAsync("cmd", ["/c", "mklink", "/J", linkDir, outsideDir], {
+        encoding: "utf8",
+      }).catch(() => null);
+      if (!result) return;
+    } else {
+      try {
+        await symlink(outsideDir, linkDir, "dir");
+      } catch {
+        return;
+      }
+    }
+
+    const aliased = path.join(linkDir, "evil-cli.mjs");
+    const outcome = await approve(aliased);
+    expect(outcome.approved).toBe(false);
+    expect((outcome as { reason: string }).reason).toBe("ROOT_MARKER_ABSENT");
+  });
+
+  it("REFUSES a link whose canonical target names the real Claude CLI", async () => {
+    const root = await makeRoot("alias-root");
+    const realish = path.join(scratch, "bin", "claude.exe");
+    await writeDouble(realish);
+    const link = path.join(root, "harmless-name.mjs");
+    try {
+      await symlink(realish, link, "file");
+    } catch {
+      return;
+    }
+    const outcome = await approve(link);
+    expect(outcome.approved).toBe(false);
+    expect((outcome as { reason: string }).reason).toBe("REAL_CLAUDE_EXECUTABLE");
+  });
+
+  it("reads the marker from the RESOLVED file, so a marker in the NAME proves nothing", async () => {
+    const root = await makeRoot("name-marker-root");
+    const exe = path.join(root, `${TEST_DOUBLE_MARKER}.mjs`);
+    await mkdir(path.dirname(exe), { recursive: true });
+    await writeFile(exe, "process.exit(0);\n", "utf8"); // marker in the filename ONLY
+    const outcome = await approve(exe);
+    expect(outcome.approved).toBe(false);
+    expect((outcome as { reason: string }).reason).toBe("MARKER_ABSENT");
+  });
+
+  it("REFUSES a directory presented as the executable", async () => {
+    const root = await makeRoot("dir-root");
+    const dir = path.join(root, "not-a-file");
+    await mkdir(dir, { recursive: true });
+    const outcome = await approve(dir);
+    expect(outcome.approved).toBe(false);
+    expect((outcome as { reason: string }).reason).toBe("NOT_A_FILE");
+  });
+});
+
 describe("PROVIDER BOUNDARY: executePairedSlots cannot be reached without an identity", () => {
   const schedule = buildScoringSchedule({
     randomization: {
@@ -458,16 +1176,6 @@ describe("PROVIDER BOUNDARY: executePairedSlots cannot be reached without an ide
     runsPerTask: 3,
   });
   const pair = pairSlots(schedule.slots)[0] as { native: RunSlot; maf: RunSlot };
-
-  const authorizedDecision = (): ExecutionGateDecision => ({
-    authorized: true,
-    checks: [],
-    failures: [],
-    protocolFreezeAuthority: "GIT_TAG",
-    protocolFrozen: true,
-    knownSourceMetadataNote: "note",
-    summary: "all gates passed",
-  });
 
   it("refuses with NO authorization, before any slot is claimed", async () => {
     const store = new ScoringStateStore({ root: path.join(scratch, "no-auth") });
@@ -481,6 +1189,7 @@ describe("PROVIDER BOUNDARY: executePairedSlots cannot be reached without an ide
           runnerSha: null,
           campaignId: "camp",
           scheduleDigest: schedule.scheduleDigest,
+          executionContext: testExecutionContext,
           fixtureRootResolver: () => scratch,
           verifierLocate: () => null,
         },
@@ -495,19 +1204,25 @@ describe("PROVIDER BOUNDARY: executePairedSlots cannot be reached without an ide
   });
 
   it("refuses a capability whose identity is REAL while running under test", async () => {
+    // A capability minted in an authentic PRODUCTION context, presented under the TEST context the
+    // runner is executing in. Both the context binding and the interlock refuse it.
+    const production = createProductionExecutionContextForTest("isolation-real");
     const identity = (
       resolveRealProviderIdentity({
         executablePath: REAL_CLAUDE_PATH,
-        context: { kind: "PRODUCTION", signals: [], detail: "synthetic" },
+        context: production,
+        environment: {},
       }) as { approved: true; identity: ProviderIdentity }
     ).identity;
     const authorization = issueProviderAuthorization({
-      decision: authorizedDecision(),
+      decision: authenticDecision(identity, production),
+      campaignGate: authorizedCampaignGate(),
       campaignId: "camp",
       scheduleDigest: schedule.scheduleDigest,
       nativeSlotDigest: pair.native.slotDigest,
       mafSlotDigest: pair.maf.slotDigest,
       providerIdentity: identity,
+      executionContext: production,
     });
     expect(authorization).not.toBeNull();
 
@@ -522,6 +1237,7 @@ describe("PROVIDER BOUNDARY: executePairedSlots cannot be reached without an ide
           runnerSha: null,
           campaignId: "camp",
           scheduleDigest: schedule.scheduleDigest,
+          executionContext: testExecutionContext,
           fixtureRootResolver: () => scratch,
           verifierLocate: () => null,
         },
@@ -532,7 +1248,7 @@ describe("PROVIDER BOUNDARY: executePairedSlots cannot be reached without an ide
           authorization: authorization as NonNullable<typeof authorization>,
         },
       ),
-    ).rejects.toThrow(/Only an approved TEST_DOUBLE may be spawned/u);
+    ).rejects.toThrow(/minted in a different execution context/u);
 
     // Nothing was claimed and no intent was declared: the refusal precedes the state machine.
     expect(await countIntents(path.join(scratch, "real-identity"))).toBe(0);
@@ -542,7 +1258,7 @@ describe("PROVIDER BOUNDARY: executePairedSlots cannot be reached without an ide
 // ================================================ PROVE THE INCIDENT CANNOT RECUR
 
 describe("INCIDENT REGRESSION: every incident precondition satisfied, ZERO real spawns", () => {
-  it("reproduces the incident's structural conditions and refuses", async () => {
+  it("CASE A: freeze gates valid, billed confirmed, TEST context, NO approved double -> 0 spawns", async () => {
     // The incident's preconditions, reconstructed one by one.
     //
     //   REAL_RUNNER_TAG_PRESENT          the real repository holds maf-scoring-runner-v1
@@ -550,17 +1266,15 @@ describe("INCIDENT REGRESSION: every incident precondition satisfied, ZERO real 
     //   ALL_FREEZE_GATES_SIMULATED_VALID the injected git world satisfies every freeze gate
     //   NO_APPROVED_TEST_PROVIDER        no test double is approved
     //
-    // Expected: REAL_PROVIDER_SPAWNS = 0.
+    // Expected: PROVIDER_SPAWNS = 0.
     const realTag = await execFileAsync("git", ["rev-list", "-n1", RUNNER_V1_TAG], {
       cwd: repoRoot,
       encoding: "utf8",
     }).catch(() => null);
-    const REAL_RUNNER_TAG_PRESENT = realTag?.stdout.trim() === RUNNER_V1_SHA;
-    expect(REAL_RUNNER_TAG_PRESENT).toBe(true);
+    expect(realTag?.stdout.trim()).toBe(RUNNER_V1_SHA);
 
     await initCampaign();
 
-    // Freeze gates all VALID in the injected world, provider absent.
     const noProvider = await fixtureWithoutProvider();
     const withValidFreeze = await runCli(billed(noProvider));
     expect(withValidFreeze.stdout).toMatch(/SCORING_EXECUTION_REFUSED/u);
@@ -571,23 +1285,89 @@ describe("INCIDENT REGRESSION: every incident precondition satisfied, ZERO real 
     const asIncident = await runCli(billed(null));
     expect(asIncident.stdout).toMatch(/SCORING_EXECUTION_REFUSED/u);
     expect(asIncident.stdout).toMatch(/TEST_CONTEXT_WITHOUT_TEST_PROVIDER/u);
-    expect(asIncident.stdout).toMatch(new RegExp(INCIDENT_TAG.replace(/-/gu, "-"), "u"));
+    expect(asIncident.stdout).toMatch(new RegExp(INCIDENT_TAG, "u"));
 
-    // REAL_PROVIDER_SPAWNS = 0.
     expect(await countIntents(campaign)).toBe(0);
   }, 300_000);
 
-  it("then succeeds with an approved fake provider and fake Git -- fake spawns only", async () => {
+  it("CASE B: same, but an approved runtime-authentic TEST_DOUBLE exists -> fake spawns only", async () => {
     await initCampaign();
     const result = await runCli(billed(approvedFixture));
 
-    // APPROVED_FAKE_PROVIDER = true, FAKE_PROVIDER_SPAWNS > 0, REAL_PROVIDER_SPAWNS = 0.
     expect(result.stdout).toMatch(/SCORING_EXECUTION_AUTHORIZED/u);
     expect(result.stdout).toMatch(/provider identity: TEST_DOUBLE_PROVIDER_EXECUTION/u);
     expect(result.stdout).toMatch(/pairs executed: 1/u);
+    // FAKE_PROVIDER_SPAWNS > 0, REAL_PROVIDER_SPAWNS = 0.
     expect(await countIntents(campaign)).toBeGreaterThan(0);
     expect(result.stdout).not.toMatch(/REAL_PROVIDER_EXECUTION/u);
     expect(result.stdout.toLowerCase()).not.toMatch(/[\\/]claude\.exe/u);
+  }, 300_000);
+
+  it("CASE C: forged provider identity -> 0 spawns", async () => {
+    await initCampaign();
+    // A fixture naming a file that cannot be approved is the CLI-level equivalent of a forged
+    // identity: the mint refuses, so no capability exists and nothing spawns.
+    const result = await runCli(
+      billed(await fixtureWithProvider("case-c", JSON.stringify(REAL_CLAUDE_PATH))),
+    );
+    expect(result.stdout).toMatch(/SCORING_EXECUTION_REFUSED/u);
+    expect(result.stdout).toMatch(/\[FAIL\] PROVIDER_IDENTITY/u);
+    expect(await countIntents(campaign)).toBe(0);
+  }, 300_000);
+
+  it("CASE D: forged authorization -> 0 spawns", async () => {
+    // In-process, because a forged capability is not expressible through the CLI at all.
+    const schedule = buildScoringSchedule({
+      randomization: { seed: "d", taskOrder: ["alpha"], armOrder: { alpha: "NATIVE_FIRST" } },
+      frozenTaskIds: ["alpha"],
+      runsPerTask: 3,
+    });
+    const pair = pairSlots(schedule.slots)[0] as { native: RunSlot; maf: RunSlot };
+    const testDouble = await approvedTestDouble(FAKE_CLAUDE_CLI, testExecutionContext);
+    const real = issueProviderAuthorization({
+      decision: authenticDecision(testDouble),
+      campaignGate: authorizedCampaignGate(),
+      campaignId: "camp",
+      scheduleDigest: schedule.scheduleDigest,
+      nativeSlotDigest: pair.native.slotDigest,
+      mafSlotDigest: pair.maf.slotDigest,
+      providerIdentity: testDouble,
+      executionContext: testExecutionContext,
+    }) as ProviderAuthorization;
+
+    const root = path.join(scratch, "case-d");
+    const store = new ScoringStateStore({ root });
+    await expect(
+      executePairedSlots(
+        {
+          repoRoot,
+          store,
+          frozenTaskIds: ["alpha"],
+          claudeCommand: FAKE_CLAUDE_CLI,
+          runnerSha: null,
+          campaignId: "camp",
+          scheduleDigest: schedule.scheduleDigest,
+          executionContext: testExecutionContext,
+          fixtureRootResolver: () => scratch,
+          verifierLocate: () => null,
+        },
+        pair,
+        {
+          prompt: "x",
+          expectedVerification: "y",
+          // A perfect structural copy of a valid capability.
+          authorization: { ...real } as ProviderAuthorization,
+        },
+      ),
+    ).rejects.toThrow(/not minted by issueProviderAuthorization/u);
+    expect(await countIntents(root)).toBe(0);
+  }, 120_000);
+
+  it("CASE E: sanitized environment -> TEST remains TEST", async () => {
+    await initCampaign();
+    const result = await runCli(billed(approvedFixture), {}, sanitizedEnv);
+    expect(result.stdout).toMatch(/provider identity: TEST_DOUBLE_PROVIDER_EXECUTION/u);
+    expect(result.stdout).not.toMatch(/REAL_PROVIDER_EXECUTION/u);
   }, 300_000);
 });
 
@@ -602,17 +1382,26 @@ describe("RUNNER v2 identity and Runner v1 prohibition", () => {
     expect(RUNNER_TAG).not.toBe(RUNNER_V1_TAG);
   });
 
+  it("the future runner tag does NOT exist yet, so real paid scoring is impossible", async () => {
+    const local = await execFileAsync("git", ["rev-parse", `refs/tags/${RUNNER_TAG}^{commit}`], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    }).catch(() => null);
+    expect(local).toBeNull();
+  }, 60_000);
+
   it("records the incident identity without importing any incident observation", async () => {
     expect(INCIDENT_TAG).toBe("maf-scoring-incident-2026-09-03-v1");
     expect(INCIDENT_SHA).toBe("895797e0c58099c763e206b851ba144d287394db");
 
-    // Mission Repair 10: the six accidental arm-runs must have NO path into campaign state,
-    // aggregation, or any report. Proven structurally -- no scoring source reads the incident
-    // artifact at all.
+    // The six accidental arm-runs must have NO path into campaign state, aggregation, or any
+    // report. Proven structurally -- no scoring source reads the incident artifact at all.
     const { readdir, readFile } = await import("node:fs/promises");
     const libDir = path.join(repoRoot, "evaluation", "experiments", "scoring", "lib");
+    const internalDir = path.join(libDir, "internal");
     const sources = [
       ...(await readdir(libDir)).map((f) => path.join(libDir, f)),
+      ...(await readdir(internalDir)).map((f) => path.join(internalDir, f)),
       path.join(repoRoot, "evaluation", "experiments", "scoring", "run-scoring.ts"),
     ].filter((f) => f.endsWith(".ts"));
     for (const file of sources) {
@@ -623,8 +1412,8 @@ describe("RUNNER v2 identity and Runner v1 prohibition", () => {
   });
 
   it("leaves idempotency-key-race in its original frozen schedule position at N=3", async () => {
-    // Mission Repair 11: the affected task is NOT moved, removed, replaced, pre-filled, deferred,
-    // or marked invalid. It is an ordinary member of the frozen suite.
+    // The affected task is NOT moved, removed, replaced, pre-filled, deferred, or marked invalid.
+    // It is an ordinary member of the frozen suite.
     const { readFile } = await import("node:fs/promises");
     const randomization = JSON.parse(
       await readFile(
@@ -665,12 +1454,12 @@ describe("RUNNER v2 identity and Runner v1 prohibition", () => {
   }, 120_000);
 });
 
-// ============================================ STRUCTURAL RULE OVER THE TEST SUITE
+// ============================================ STRUCTURAL RULES OVER THE TREE
 
 describe("STRUCTURAL: no test confirms billing against real repository state", () => {
   it("every --confirm-billed-scoring in tests/ is accompanied by --test-fixture", async () => {
-    // Mission Repair 4, enforced over the suite's source rather than trusted. This is the check
-    // whose absence let the incident's test case exist at all.
+    // Enforced over the suite's source rather than trusted. This is the check whose absence let the
+    // incident's test case exist at all.
     const { readdir, readFile } = await import("node:fs/promises");
     const files = (await readdir(here)).filter((f) => f.endsWith(".ts"));
     const offenders: string[] = [];
@@ -700,12 +1489,13 @@ describe("STRUCTURAL: no test confirms billing against real repository state", (
   it("the approved fixture directory declares itself a test-controlled root", async () => {
     const outcome = await approveTestDoubleProvider({
       executablePath: FAKE_CLAUDE_CLI,
-      context: detectExecutionContext(),
+      context: testExecutionContext,
     });
     expect(outcome.approved).toBe(true);
-    expect(
-      (outcome as { approved: true; identity: ProviderIdentity }).identity.testDoubleRoot,
-    ).toBe(path.join(here, "fixtures"));
+    const identity = (outcome as { approved: true; identity: ProviderIdentity }).identity;
+    // Compared case-insensitively: the recorded root is the CANONICAL path, whose casing on Windows
+    // comes from the filesystem rather than from however the test spelled it.
+    expect(identity.testDoubleRoot?.toLowerCase()).toBe(path.join(here, "fixtures").toLowerCase());
   });
 
   it("a fixture root marker cannot be conjured by a marker alone", async () => {
@@ -715,9 +1505,60 @@ describe("STRUCTURAL: no test confirms billing against real repository state", (
     await writeFile(exe, `// ${TEST_DOUBLE_MARKER}\n`, "utf8");
     const outcome = await approveTestDoubleProvider({
       executablePath: exe,
-      context: detectExecutionContext(),
+      context: testExecutionContext,
     });
     expect(outcome.approved).toBe(false);
     expect((outcome as { reason: string }).reason).toBe("ROOT_MARKER_ABSENT");
+  });
+});
+
+describe("STRUCTURAL: the test-support seam is unreachable from production sources", () => {
+  const productionSources = async (): Promise<string[]> => {
+    const { readdir } = await import("node:fs/promises");
+    const scoringDir = path.join(repoRoot, "evaluation", "experiments", "scoring");
+    const libDir = path.join(scoringDir, "lib");
+    return [
+      path.join(scoringDir, "run-scoring.ts"),
+      ...(await readdir(libDir)).filter((f) => f.endsWith(".ts")).map((f) => path.join(libDir, f)),
+    ];
+  };
+
+  it("no production source IMPORTS anything from lib/internal/", async () => {
+    // This is the property that makes "the production CLI cannot construct a TEST context" a
+    // checked fact rather than a convention.
+    const { readFile } = await import("node:fs/promises");
+    const offenders: string[] = [];
+    for (const file of await productionSources()) {
+      const text = await readFile(file, "utf8");
+      // Import/export specifiers only -- prose in a comment may name the path.
+      const specifiers = [...text.matchAll(/\bfrom\s+"([^"]+)"/gu)].map((m) => m[1] ?? "");
+      if (specifiers.some((spec) => spec.includes("internal/"))) {
+        offenders.push(path.basename(file));
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("run-scoring.ts names no internal symbol and constructs only the production context", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const text = await readFile(cli, "utf8");
+    expect(text).not.toMatch(/__INTERNAL_/u);
+    expect(text).not.toMatch(/createTestExecutionContext/u);
+    expect(text).not.toMatch(/mintTestExecutionGateDecision/u);
+    expect(text).toMatch(/createProductionExecutionContext\(/u);
+  });
+
+  it("the internal __INTERNAL_ symbols appear only at their declaration sites", async () => {
+    const { readFile } = await import("node:fs/promises");
+    for (const file of await productionSources()) {
+      const text = await readFile(file, "utf8");
+      const occurrences = [...text.matchAll(/__INTERNAL_[A-Za-z]+/gu)];
+      for (const occurrence of occurrences) {
+        const index = occurrence.index ?? 0;
+        const preceding = text.slice(Math.max(0, index - 20), index);
+        // Every occurrence must be a declaration, never a use.
+        expect(preceding).toMatch(/export const $/u);
+      }
+    }
   });
 });

@@ -74,12 +74,18 @@ import { executePairedSlots, pairSlots } from "./lib/participant-runner";
 import { inspectEffectiveClaudeConfig } from "./lib/effective-config-gate";
 import {
   approveTestDoubleProvider,
-  detectExecutionContext,
   observeTestDoubleMarker,
   resolveRealProviderIdentity,
-  type ExecutionContext,
   type ProviderIdentity,
 } from "./lib/provider-identity";
+import {
+  createProductionExecutionContext,
+  isAuthenticExecutionContext,
+  observeAmbientTestSignals,
+  type ExecutionContext,
+} from "./lib/execution-context";
+import { campaignBudgetDigest } from "./lib/campaign-budget";
+import { verifyIncidentFreeze } from "./lib/tag-verification";
 import { checkEnvironmentRouting } from "../real/lib/preflight-gate";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -100,8 +106,25 @@ const out = (line = ""): void => {
 /** Pins an exact binary for the version/auth probe and for any future participant execution. */
 const claudePathOverride = value("claude-path");
 
-/** How this process is classified. Re-derived at the spawn boundary; never cached into a capability. */
-const executionContext: ExecutionContext = detectExecutionContext();
+/**
+ * HOW THIS PROCESS IS CLASSIFIED -- constructed, not sniffed.
+ *
+ * The production CLI builds a PRODUCTION context and has no route to any other kind. There is no
+ * `--test-mode` flag, no environment variable consulted for the decision, and no branch here that
+ * could yield TEST: a TEST context can only arrive from `--test-fixture`, and only by being minted
+ * through the internal test-support seam this file never imports.
+ *
+ * The audit's finding was that the previous revision derived this from ambient environment
+ * variables, making a mutable inherited signal the trust root. Ambient signals are still observed --
+ * printed on every report, and able to REFUSE a PRODUCTION claim that contradicts them -- but they
+ * can no longer construct, relax or upgrade a classification. Sanitizing the environment therefore
+ * leaves an explicit TEST execution TEST.
+ */
+const productionExecutionContext: ExecutionContext =
+  createProductionExecutionContext("run-scoring.ts");
+
+/** Reassigned only when a complete `--test-fixture` supplies an authentic TEST context. */
+let executionContext: ExecutionContext = productionExecutionContext;
 
 /**
  * The complete, explicit test-seam surface (mission Repair 5).
@@ -112,6 +135,14 @@ const executionContext: ExecutionContext = detectExecutionContext();
  * is the whole point, since the missing one in Runner v1 was the provider executable.
  */
 interface TestSeams {
+  /**
+   * The AUTHENTIC TEST execution context this invocation runs under.
+   *
+   * The seam supplies it; the CLI cannot make one. It must have been minted through
+   * `lib/internal/test-support.ts`, which shares this process's private registry -- so a fixture
+   * that exports a hand-written `{ kind: "TEST" }` object is refused rather than believed.
+   */
+  executionContext: ExecutionContext;
   /** Git/tag resolution. */
   git: (args: string[], cwd: string) => Promise<string>;
   /** The approved fake executable. Must pass `approveTestDoubleProvider` before it is used. */
@@ -159,6 +190,7 @@ const loadTestSeams = async (): Promise<void> => {
     return;
   }
   const required = [
+    "executionContext",
     "git",
     "testDoubleProviderPath",
     "resolve",
@@ -177,7 +209,35 @@ const loadTestSeams = async (): Promise<void> => {
     };
     return;
   }
+  // THE CONTEXT MUST BE AUTHENTIC, and it must be TEST. This is the point at which "a module said
+  // so" becomes "this process minted it": a fabricated object fails the runtime registry check, so
+  // `--test-fixture` cannot be used to assert a classification it did not legitimately obtain.
+  const suppliedContext = loaded.executionContext;
+  if (!isAuthenticExecutionContext(suppliedContext)) {
+    seamRefusal = {
+      code: "TEST_SEAM_CONTEXT_NOT_AUTHENTIC",
+      detail:
+        `--test-fixture ${testFixtureModule} exported an execution context that this process did ` +
+        "not construct. A context must be minted through the internal test-support seam " +
+        "(evaluation/experiments/scoring/lib/internal/test-support.ts); a hand-written object such " +
+        'as { kind: "TEST" }, a clone, or a JSON round-trip is refused.',
+    };
+    return;
+  }
+  if (suppliedContext.kind !== "TEST") {
+    seamRefusal = {
+      code: "TEST_SEAM_CONTEXT_NOT_TEST",
+      detail:
+        `--test-fixture ${testFixtureModule} exported a ${suppliedContext.kind} execution context. ` +
+        "A test fixture may only supply a TEST context; it can never widen an invocation into a " +
+        "production one.",
+    };
+    return;
+  }
   testSeams = loaded as TestSeams;
+  // From here on, the whole command runs under the context the SEAM supplied. Nothing later
+  // re-derives it, and no environment change can alter it.
+  executionContext = suppliedContext;
 };
 
 /**
@@ -197,23 +257,42 @@ const loadTestSeams = async (): Promise<void> => {
  */
 const requireProviderIsolation = (): SeamRefusal | null => {
   if (seamRefusal) return seamRefusal;
-  if (executionContext.kind === "TEST" && testSeams === null) {
+
+  // THE INCIDENT REGRESSION, in its post-audit form.
+  //
+  // A test that drives this command without a seam gets the PRODUCTION context the CLI builds by
+  // default -- and that claim contradicts its own plainly-visible test harness. Ambient environment
+  // cannot GRANT production status, so the disagreement fails closed here, before `pinClaudeExecutable`
+  // can resolve or probe anything. This is the same refusal the old ambient-classification produced,
+  // reached without making the environment the trust root: the environment can only ever deny.
+  const ambient = observeAmbientTestSignals();
+  if (executionContext.kind === "PRODUCTION" && ambient.looksLikeTest) {
     return {
       code: "TEST_CONTEXT_WITHOUT_TEST_PROVIDER",
       detail:
-        `execute was invoked in a TEST execution context (${executionContext.signals.join(", ")}) ` +
-        "without --test-fixture. A test may not reach the participant executable at all -- not the " +
-        "pinned real Claude binary, not a PATH lookup, not a bare `claude`. Supply a complete " +
-        "--test-fixture naming an approved TEST_DOUBLE provider, or run this command outside a " +
-        `test harness. See incident ${INCIDENT_TAG} (${INCIDENT_SHA}).`,
+        "execute was invoked with a PRODUCTION execution context while the environment plainly " +
+        `shows a test harness (${ambient.signals.join(", ")}), and no --test-fixture was supplied. ` +
+        "A test may not reach the participant executable at all -- not the pinned real Claude " +
+        "binary, not a PATH lookup, not a bare `claude`. Supply a complete --test-fixture whose " +
+        "module exports an authentic TEST execution context and an approved TEST_DOUBLE provider, " +
+        `or run this command outside a test harness. See incident ${INCIDENT_TAG} (${INCIDENT_SHA}).`,
     };
   }
   if (executionContext.kind === "PRODUCTION" && testSeams !== null) {
     return {
       code: "TEST_SEAM_IN_PRODUCTION_CONTEXT",
       detail:
-        "--test-fixture was supplied outside a test harness. Simulated git state and a fake " +
-        "executable must never produce observations in a production execution context.",
+        "--test-fixture was supplied but the execution context is PRODUCTION. Simulated git state " +
+        "and a fake executable must never produce observations in a production execution context.",
+    };
+  }
+  if (executionContext.kind === "TEST" && testSeams === null) {
+    return {
+      code: "TEST_CONTEXT_WITHOUT_TEST_PROVIDER",
+      detail:
+        "execute was invoked under a TEST execution context without a complete --test-fixture. " +
+        "Absence of test provider configuration is a refusal, never a fallback to a real " +
+        `dependency. See incident ${INCIDENT_TAG} (${INCIDENT_SHA}).`,
     };
   }
   return null;
@@ -231,9 +310,9 @@ const establishProviderIdentity = async (
 ): Promise<{ identity: ProviderIdentity | null; detail: string }> => {
   if (executionContext.kind === "TEST") {
     const outcome = await approveTestDoubleProvider({
-      ...(testSeams ? { executablePath: testSeams.testDoubleProviderPath } : {}),
+      executablePath: testSeams ? testSeams.testDoubleProviderPath : undefined,
       context: executionContext,
-    } as Parameters<typeof approveTestDoubleProvider>[0]);
+    });
     return outcome.approved
       ? { identity: outcome.identity, detail: outcome.identity.detail }
       : { identity: null, detail: `${outcome.reason}: ${outcome.detail}` };
@@ -391,6 +470,11 @@ const commandValidate = async (): Promise<void> => {
       `${effectiveConfig.excludedPaths.length} historical path(s) excluded by design`,
   );
 
+  // The incident record is a MANDATORY frozen authority for paid execution, so readiness reports it
+  // as its own line rather than folding it into the tag list.
+  const incidentFreeze = await verifyIncidentFreeze({ repoRoot, skipRemote });
+  out(`  [${incidentFreeze.ok ? "PASS" : "FAIL"}] INCIDENT_FROZEN: ${incidentFreeze.detail}`);
+
   const runnerSha = await resolveRunnerTagSha(RUNNER_TAG, { repoRoot });
   out(
     `  [INFO] runner freeze: ${
@@ -410,7 +494,14 @@ const commandValidate = async (): Promise<void> => {
   out(`protocolFrozen:          true`);
   out(`known note: ${KNOWN_SOURCE_METADATA_NOTE}`);
   out();
-  const planValid = frozen.ok && scheduleOk && manifestCheck.passed && effectiveConfig.clean;
+  const planValid =
+    frozen.ok &&
+    // With --skip-remote the incident check honestly reports REMOTE_NOT_CHECKED; readiness then
+    // rests on the local proof, and billed execution still refuses (the gate requires the remote).
+    (incidentFreeze.ok || incidentFreeze.status === "REMOTE_NOT_CHECKED") &&
+    scheduleOk &&
+    manifestCheck.passed &&
+    effectiveConfig.clean;
   out(planValid ? "SCORING_PLAN_VALID" : "SCORING_PLAN_INVALID");
   if (!planValid) process.exitCode = 1;
 };
@@ -451,6 +542,10 @@ const commandInit = async (): Promise<void> => {
     runnerVersion: RUNNER_VERSION,
     runnerTag: RUNNER_TAG,
     runnerSha,
+    // The incident record that governs this runner, bound at creation and re-verified on every
+    // resume. It NAMES the incident and imports nothing from it.
+    incidentTag: INCIDENT_TAG,
+    incidentSha: INCIDENT_SHA,
     billingMode,
     scheduleDigest: schedule.scheduleDigest,
     totalSlots: schedule.slots.length,
@@ -476,6 +571,7 @@ const commandInit = async (): Promise<void> => {
   out(`schedule digest: ${schedule.scheduleDigest}`);
   out(`slots:           ${schedule.slots.length}`);
   out(`billing mode:    ${billingMode}`);
+  out(`incident bound:  ${INCIDENT_TAG} ${INCIDENT_SHA}`);
   out(
     `ceiling:         ${ceilingRaw === undefined ? "NOT SET (billed scoring refused)" : `$${ceilingRaw}`}`,
   );
@@ -500,6 +596,11 @@ const commandResume = async (): Promise<void> => {
     protocolSha: PROTOCOL_V2_SHA,
     analysisSha: ANALYSIS_SHA,
     scheduleDigest: schedule.scheduleDigest,
+    // Verified on resume, not only on paid execution: a campaign that cannot name the incident
+    // identity it was created under is a different campaign, and saying so here is what prevents it
+    // from later being treated as one that could hold paid observations.
+    incidentTag: INCIDENT_TAG,
+    incidentSha: INCIDENT_SHA,
   });
 
   header("resume existing campaign");
@@ -513,6 +614,7 @@ const commandResume = async (): Promise<void> => {
   out(`campaign:        ${opened.campaign.campaignId}`);
   out(`created:         ${opened.campaign.createdAt}`);
   out(`schedule digest: ${opened.campaign.scheduleDigest} (matches frozen inputs)`);
+  out(`incident bound:  ${opened.campaign.incidentTag} ${opened.campaign.incidentSha}`);
   out(`progress:        ${complete} / ${schedule.slots.length} slots complete`);
   out(
     `ceiling:         ${
@@ -745,6 +847,8 @@ const commandExecute = async (): Promise<void> => {
     providerIdentity: provider.identity,
     providerIdentityDetail: provider.detail,
     gitStateInjected: testSeams !== null,
+    // The explicitly constructed, runtime-authentic context. The gate proves its provenance before
+    // reading its kind, and every capability minted from the decision is bound to this exact object.
     executionContext,
     ...(testSeams ? { git: testSeams.git } : {}),
   });
@@ -792,6 +896,8 @@ const commandExecute = async (): Promise<void> => {
     scheduleDigest: schedule.scheduleDigest,
     runnerTag: RUNNER_TAG,
     runnerSha: pinnedRunnerSha,
+    incidentTag: INCIDENT_TAG,
+    incidentSha: INCIDENT_SHA,
     requirePaid: true,
   });
   if (!opened.opened) {
@@ -842,15 +948,20 @@ const commandExecute = async (): Promise<void> => {
       break;
     }
 
-    // Mint a capability bound to THIS campaign, schedule, pair and absolute executable. The
-    // provider boundary re-checks every one of those bindings before it spawns anything.
+    // Mint a capability bound to THIS campaign, schedule, pair, absolute executable, execution
+    // context, frozen world and budget state. The provider boundary re-checks every one of those
+    // bindings before it spawns anything, so a capability from a previous pair -- minted when more
+    // headroom remained -- cannot be replayed here.
+    const budgetDigest = campaignBudgetDigest(perPairGate);
     const authorization = issueProviderAuthorization({
       decision,
+      campaignGate: perPairGate,
       campaignId: campaignMetadata.campaignId,
       scheduleDigest: schedule.scheduleDigest,
       nativeSlotDigest: pair.native.slotDigest,
       mafSlotDigest: pair.maf.slotDigest,
       providerIdentity,
+      executionContext,
     });
     if (!authorization) {
       out(
@@ -870,6 +981,9 @@ const commandExecute = async (): Promise<void> => {
         runnerSha: pinnedRunnerSha,
         campaignId: campaignMetadata.campaignId,
         scheduleDigest: schedule.scheduleDigest,
+        executionContext,
+        freezeAuthorityDigest: decision.freezeAuthorityDigest,
+        budgetDigest,
         fixtureRootResolver: task.fixtureRootResolver,
         verifierLocate: task.verifierLocate,
       },

@@ -11,11 +11,15 @@ import {
   type ManifestParameters,
 } from "../evaluation/experiments/scoring/lib/execution-gate";
 import {
+  canonicalFrozenAuthorityDigest,
+  observedFrozenAuthorityDigest,
   verifyFrozenArtifacts,
   verifyFrozenTag,
+  verifyIncidentFreeze,
 } from "../evaluation/experiments/scoring/lib/tag-verification";
 import {
   ANALYSIS_SHA,
+  INCIDENT_SHA,
   PROTOCOL_V1_SHA,
   PROTOCOL_V2_SHA,
   RUNNER_TAG,
@@ -24,7 +28,7 @@ import {
 } from "../evaluation/experiments/scoring/lib/frozen-refs";
 import type { SlotState } from "../evaluation/experiments/scoring/lib/state-store";
 import type { ProviderIdentity } from "../evaluation/experiments/scoring/lib/provider-identity";
-import { approvedTestDouble } from "./helpers/test-double-provider";
+import { approvedTestDouble, testExecutionContext } from "./helpers/test-double-provider";
 
 const slotState = (overrides: Partial<SlotState> = {}): SlotState => ({
   slotId: "alpha__NATIVE__r1",
@@ -185,6 +189,8 @@ describe("post-freeze tag verification (Phase 1)", () => {
     "local:maf-experiment-analysis-v1": ANALYSIS_SHA,
     "remote:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
     "remote:maf-experiment-analysis-v1": ANALYSIS_SHA,
+    "local:maf-scoring-incident-2026-09-03-v1": INCIDENT_SHA,
+    "remote:maf-scoring-incident-2026-09-03-v1": INCIDENT_SHA,
   };
 
   it("REQUIRES the v2 tag to exist, unlike the historical pre-freeze validator", async () => {
@@ -274,7 +280,7 @@ describe("manifest parameter parity (Phase 10)", () => {
 describe("billed scoring execution gate (Phases 14/15)", () => {
   let testDouble: ProviderIdentity;
   beforeAll(async () => {
-    testDouble = await approvedTestDouble();
+    testDouble = await approvedTestDouble(undefined, testExecutionContext);
   });
 
   const baseInput = (overrides: Record<string, unknown> = {}) => ({
@@ -287,11 +293,10 @@ describe("billed scoring execution gate (Phases 14/15)", () => {
     providerIdentity: testDouble,
     providerIdentityDetail: testDouble.detail,
     gitStateInjected: true,
-    executionContext: {
-      kind: "TEST" as const,
-      signals: ["unit-test"],
-      detail: "unit test harness",
-    },
+    // An AUTHENTIC TEST context, from the internal test-support seam. A hand-written
+    // `{ kind: "TEST" }` literal is refused outright now: the gate proves provenance before it reads
+    // the classification, which is the audit repair these unit tests run under like everything else.
+    executionContext: testExecutionContext,
 
     manifest: goodManifest,
     slotStates: [] as SlotState[],
@@ -338,6 +343,8 @@ describe("billed scoring execution gate (Phases 14/15)", () => {
       "local:maf-experiment-analysis-v1": ANALYSIS_SHA,
       "remote:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
       "remote:maf-experiment-analysis-v1": ANALYSIS_SHA,
+      "local:maf-scoring-incident-2026-09-03-v1": INCIDENT_SHA,
+      "remote:maf-scoring-incident-2026-09-03-v1": INCIDENT_SHA,
       [`local:${RUNNER_TAG}`]: "c".repeat(40),
       [`remote:${RUNNER_TAG}`]: "c".repeat(40),
       HEAD: "c".repeat(40),
@@ -356,6 +363,8 @@ describe("billed scoring execution gate (Phases 14/15)", () => {
       "local:maf-experiment-analysis-v1": ANALYSIS_SHA,
       "remote:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
       "remote:maf-experiment-analysis-v1": ANALYSIS_SHA,
+      "local:maf-scoring-incident-2026-09-03-v1": INCIDENT_SHA,
+      "remote:maf-scoring-incident-2026-09-03-v1": INCIDENT_SHA,
       HEAD: "c".repeat(40),
       status: "",
     });
@@ -387,6 +396,8 @@ describe("billed scoring execution gate (Phases 14/15)", () => {
       "local:maf-experiment-analysis-v1": ANALYSIS_SHA,
       "remote:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
       "remote:maf-experiment-analysis-v1": ANALYSIS_SHA,
+      "local:maf-scoring-incident-2026-09-03-v1": INCIDENT_SHA,
+      "remote:maf-scoring-incident-2026-09-03-v1": INCIDENT_SHA,
       [`local:${RUNNER_TAG}`]: "c".repeat(40),
       [`remote:${RUNNER_TAG}`]: "c".repeat(40),
       HEAD: "d".repeat(40),
@@ -406,6 +417,8 @@ describe("billed scoring execution gate (Phases 14/15)", () => {
       "local:maf-experiment-analysis-v1": ANALYSIS_SHA,
       "remote:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
       "remote:maf-experiment-analysis-v1": ANALYSIS_SHA,
+      "local:maf-scoring-incident-2026-09-03-v1": INCIDENT_SHA,
+      "remote:maf-scoring-incident-2026-09-03-v1": INCIDENT_SHA,
       [`local:${RUNNER_TAG}`]: "c".repeat(40),
       [`remote:${RUNNER_TAG}`]: "c".repeat(40),
       HEAD: "c".repeat(40),
@@ -494,6 +507,8 @@ describe("billed scoring execution gate (Phases 14/15)", () => {
       "remote:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
       "local:maf-experiment-analysis-v1": "9".repeat(40),
       "remote:maf-experiment-analysis-v1": "9".repeat(40),
+      "local:maf-scoring-incident-2026-09-03-v1": INCIDENT_SHA,
+      "remote:maf-scoring-incident-2026-09-03-v1": INCIDENT_SHA,
       [`local:${RUNNER_TAG}`]: "c".repeat(40),
       [`remote:${RUNNER_TAG}`]: "c".repeat(40),
       HEAD: "c".repeat(40),
@@ -578,5 +593,141 @@ describe("billed scoring execution gate (Phases 14/15)", () => {
     expect(decision.protocolFreezeAuthority).toBe("GIT_TAG");
     expect(decision.protocolFrozen).toBe(true);
     expect(decision.knownSourceMetadataNote).toMatch(/PRE_REGISTERED_NOT_FROZEN/u);
+  });
+});
+
+/** A complete, correct frozen world -- all five mandatory authorities, local and remote. */
+const frozenWorld: Record<string, string> = {
+  [`local:${SUITE_TAG}`]: SUITE_SHA,
+  [`remote:${SUITE_TAG}`]: SUITE_SHA,
+  "local:maf-experiment-protocol-v1": PROTOCOL_V1_SHA,
+  "remote:maf-experiment-protocol-v1": PROTOCOL_V1_SHA,
+  "local:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
+  "remote:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
+  "local:maf-experiment-analysis-v1": ANALYSIS_SHA,
+  "remote:maf-experiment-analysis-v1": ANALYSIS_SHA,
+  "local:maf-scoring-incident-2026-09-03-v1": INCIDENT_SHA,
+  "remote:maf-scoring-incident-2026-09-03-v1": INCIDENT_SHA,
+};
+
+// ============================== INCIDENT FREEZE (mandatory paid-execution authority)
+
+describe("incident freeze verification", () => {
+  // Runner v2 exists BECAUSE of maf-scoring-incident-2026-09-03-v1, so the record is proven exactly
+  // as strictly as the suite and the protocol: present locally, published on origin, and peeling on
+  // BOTH sides to the pinned commit. Every failure mode below refuses paid execution.
+  const TAG = "maf-scoring-incident-2026-09-03-v1";
+  const good = {
+    [`local:${TAG}`]: INCIDENT_SHA,
+    [`remote:${TAG}`]: INCIDENT_SHA,
+  };
+
+  it("passes when local == remote == the pinned peeled commit", async () => {
+    const result = await verifyIncidentFreeze({ repoRoot: ".", git: fakeGit(good) });
+    expect(result.ok).toBe(true);
+    expect(result.status).toBe("OK");
+    expect(result.localSha).toBe(INCIDENT_SHA);
+    expect(result.remoteSha).toBe(INCIDENT_SHA);
+  });
+
+  it("refuses when the tag is absent LOCALLY (remote only)", async () => {
+    const refs = { ...good };
+    delete (refs as Record<string, string>)[`local:${TAG}`];
+    const result = await verifyIncidentFreeze({ repoRoot: ".", git: fakeGit(refs) });
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe("MISSING_LOCAL");
+  });
+
+  it("refuses when the tag is absent on the REMOTE (local only)", async () => {
+    const refs = { ...good };
+    delete (refs as Record<string, string>)[`remote:${TAG}`];
+    const result = await verifyIncidentFreeze({ repoRoot: ".", git: fakeGit(refs) });
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe("MISSING_REMOTE");
+  });
+
+  it("refuses a wrong LOCAL peeled commit", async () => {
+    const result = await verifyIncidentFreeze({
+      repoRoot: ".",
+      git: fakeGit({ ...good, [`local:${TAG}`]: "c".repeat(40) }),
+    });
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe("LOCAL_MISMATCH");
+  });
+
+  it("refuses a wrong REMOTE peeled commit", async () => {
+    const result = await verifyIncidentFreeze({
+      repoRoot: ".",
+      git: fakeGit({ ...good, [`remote:${TAG}`]: "c".repeat(40) }),
+    });
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe("REMOTE_MISMATCH");
+  });
+
+  it("refuses when the remote lookup FAILS outright", async () => {
+    // An inconclusive check is a refusal, never a pass. A thrown ls-remote (offline, auth failure,
+    // deleted remote) must not be read as "nothing to see".
+    const throwingGit = async (args: string[]): Promise<string> => {
+      if (args[0] === "ls-remote") throw new Error("network unreachable");
+      return fakeGit(good)(args);
+    };
+    const result = await verifyIncidentFreeze({ repoRoot: ".", git: throwingGit });
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe("MISSING_REMOTE");
+  });
+
+  it("refuses when the caller asked to SKIP the remote", async () => {
+    // A local-only incident record is not durable evidence, so skipRemote is reported honestly as
+    // REMOTE_NOT_CHECKED rather than narrowing what was proven.
+    const result = await verifyIncidentFreeze({
+      repoRoot: ".",
+      git: fakeGit(good),
+      skipRemote: true,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe("REMOTE_NOT_CHECKED");
+    expect(result.detail).toMatch(/local-only incident record is not durable evidence/u);
+  });
+
+  it("refuses a tag object whose PEELED commit is wrong even though the tag exists", async () => {
+    // fakeGit emits a tag-object sha of f...f alongside the peeled line, so a verifier comparing the
+    // wrong line would pass here. Comparing the peeled commit is what catches a re-pointed tag.
+    const result = await verifyIncidentFreeze({
+      repoRoot: ".",
+      git: fakeGit({ ...good, [`remote:${TAG}`]: "0".repeat(40) }),
+    });
+    expect(result.ok).toBe(false);
+    expect(result.remoteSha).toBe("0".repeat(40));
+  });
+
+  it("is included in the mandatory frozen-artifact set", async () => {
+    const withoutIncident = { ...frozenWorld };
+    delete (withoutIncident as Record<string, string>)[`local:${TAG}`];
+    delete (withoutIncident as Record<string, string>)[`remote:${TAG}`];
+    const result = await verifyFrozenArtifacts({
+      repoRoot: ".",
+      git: fakeGit(withoutIncident),
+    });
+    expect(result.ok).toBe(false);
+    expect(result.checks.some((c) => c.tag === TAG && c.status !== "OK")).toBe(true);
+  });
+});
+
+describe("frozen-authority digest", () => {
+  it("matches the pinned constants when the observed world agrees with them", async () => {
+    const observed = await verifyFrozenArtifacts({ repoRoot: ".", git: fakeGit(frozenWorld) });
+    expect(observedFrozenAuthorityDigest(observed.checks)).toBe(canonicalFrozenAuthorityDigest());
+  });
+
+  it("differs when ANY frozen authority resolves elsewhere", async () => {
+    // This is what binds a capability to a frozen world: a decision reached against different tags
+    // carries a different digest and cannot be replayed here.
+    const observed = await verifyFrozenArtifacts({
+      repoRoot: ".",
+      git: fakeGit({ ...frozenWorld, [`local:${SUITE_TAG}`]: "e".repeat(40) }),
+    });
+    expect(observedFrozenAuthorityDigest(observed.checks)).not.toBe(
+      canonicalFrozenAuthorityDigest(),
+    );
   });
 });

@@ -26,36 +26,48 @@
 // provider; it yields a refusal. That inverts the incident's failure direction: the unconfigured
 // path is now the safe one.
 //
-// WHY THIS IS NOT AN ENVIRONMENT OPT-IN (mission Repair 7)
-// -------------------------------------------------------
-// Test-context detection below is one INPUT to the interlock, never the mechanism. The mechanism is
-// the branded capability: `ProviderIdentity` cannot be constructed outside this module, and the two
-// constructors impose requirements that no environment variable can satisfy or waive --
-// `approveTestDouble` demands a real file carrying a marker inside a declared test-controlled root,
-// and `resolveRealProvider` demands an absolute path that provably is NOT such a file. If every
-// environment signal were stripped, a test would still have to hand the spawn boundary a forged
-// capability to reach a real provider, and it cannot construct one.
+// WHAT THE INDEPENDENT AUDIT CHANGED (repairs 1, 4 and 7)
+// ------------------------------------------------------
+// The first v2 revision made `ProviderIdentity` unforgeable with a `declare const BRAND` symbol.
+// That is a COMPILE-TIME construct, erased entirely at runtime, so the lowest boundary accepted a
+// hand-written object literal that had merely been cast. Three consequences, all now fixed:
 //
-// Detection is additionally FAIL-SAFE: any one signal forces TEST, and TEST admits only a test
-// double. Nothing has to be set to become safe; something would have to be constructible to become
-// unsafe.
+//   * authenticity is a module-private `WeakSet` registration (`AUTHENTIC_PROVIDER_IDENTITIES`),
+//     so a literal, a spread, an `Object.assign` clone and a JSON round-trip are all refused --
+//     each produces a DIFFERENT object, and only the exact objects the factories built are members;
+//   * the execution context is no longer sniffed from the environment on every call. It is an
+//     explicitly constructed, separately authenticated value (see `execution-context.ts`), carried
+//     BY the identity, so a stale or forged classification cannot travel with a capability;
+//   * test-double containment is resolved through `realpath` before anything is read or compared,
+//     so a symlink or a Windows junction cannot alias a file outside the declared fixture root into
+//     apparent containment.
+//
+// Nothing here exposes a registration primitive. There is no `registerIdentity(obj)`, no exported
+// set, and no factory that accepts a caller-built object and blesses it: the only members of the
+// registry are objects these two constructors built from validated inputs.
 
-import { readFile, stat } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
+import {
+  assertAuthenticExecutionContext,
+  assertNoAmbientContradiction,
+  ambientContradiction,
+  isAuthenticExecutionContext,
+  type ExecutionContext,
+} from "./execution-context";
+
+export type { ExecutionContext, ExecutionContextKind } from "./execution-context";
 
 /** Kind of provider a scoring spawn is bound to. Mutually exclusive by construction. */
 export type ProviderIdentityKind = "REAL_PROVIDER_EXECUTION" | "TEST_DOUBLE_PROVIDER_EXECUTION";
-
-/** Whether this process is running as production tooling or inside a test harness. */
-export type ExecutionContextKind = "PRODUCTION" | "TEST";
 
 /**
  * The token an approved test double must carry INSIDE ITS OWN FILE CONTENT.
  *
  * Content-based identification rather than a naming convention or a path prefix: a real Claude Code
  * binary can be copied, renamed, symlinked or placed under any directory a test chooses, but it
- * cannot come to contain this string. Executable identity is therefore established, not assumed --
- * which is what mission Repair 2 requires ("If executable identity cannot be established: REFUSE").
+ * cannot come to contain this string. Executable identity is therefore established, not assumed.
+ * The bytes are read from the REALPATH-resolved file, so a marker "in the path" proves nothing.
  */
 export const TEST_DOUBLE_MARKER = "MAF_SCORING_TEST_DOUBLE_PROVIDER_V2";
 
@@ -67,14 +79,14 @@ export const TEST_DOUBLE_MARKER = "MAF_SCORING_TEST_DOUBLE_PROVIDER_V2";
  */
 export const TEST_DOUBLE_ROOT_MARKER_FILE = ".maf-test-double-provider";
 
-/** How far up from the executable an ancestor root marker is honoured. */
+/** How far up from the resolved executable an ancestor root marker is honoured. */
 const ROOT_MARKER_SEARCH_DEPTH = 6;
 
 /**
  * Basenames that name a real first-party Claude Code CLI.
  *
- * Checked in addition to the marker so a refusal reports the RIGHT reason: "you pointed the test
- * double at the real Claude executable" rather than the generic "no marker found".
+ * Checked against BOTH the supplied path and the realpath-resolved path, so a fixture-looking name
+ * that resolves to `claude.exe` is reported for the right reason.
  */
 const REAL_CLAUDE_BASENAMES: readonly string[] = [
   "claude",
@@ -86,76 +98,54 @@ const REAL_CLAUDE_BASENAMES: readonly string[] = [
   "claude-code.exe",
 ];
 
-// ------------------------------------------------------------- test context
-
-export interface ExecutionContext {
-  kind: ExecutionContextKind;
-  /** Every observed reason this process looks like a test. Empty exactly when kind is PRODUCTION. */
-  signals: string[];
-  detail: string;
-}
+// --------------------------------------------------------- canonical paths
 
 /**
- * Classifies the current process, FAIL-SAFE: any single signal forces TEST.
+ * Resolves a path through symlinks, junctions and `..` to its canonical on-disk location.
  *
- * These signals are INHERITED, not opted into. A vitest worker exports `VITEST`/`VITEST_WORKER_ID`,
- * and a child process spawned from a test with `{...process.env}` -- which is exactly how the
- * incident's subprocess reached the CLI -- carries them too. So the code path that caused the
- * incident is classified TEST without anyone remembering to say so.
- *
- * Being over-broad here costs a refusal, never money, so the list errs wide. It deliberately does
- * NOT include general signals like `CI`, which would not have caught the incident and could refuse a
- * legitimate operator.
+ * Returns null when the path does not exist or cannot be resolved -- which is a refusal, never a
+ * fallback to the unresolved string.
  */
-export const detectExecutionContext = (
-  environment: NodeJS.ProcessEnv = process.env,
-): ExecutionContext => {
-  const signals: string[] = [];
-  const present = (key: string): boolean => {
-    const raw = environment[key];
-    return typeof raw === "string" && raw.length > 0;
-  };
-
-  if (present("VITEST")) signals.push("VITEST");
-  if (present("VITEST_WORKER_ID")) signals.push("VITEST_WORKER_ID");
-  if (present("VITEST_POOL_ID")) signals.push("VITEST_POOL_ID");
-  if (present("JEST_WORKER_ID")) signals.push("JEST_WORKER_ID");
-  if (present("NODE_TEST_CONTEXT")) signals.push("NODE_TEST_CONTEXT");
-  if (environment.NODE_ENV === "test") signals.push("NODE_ENV=test");
-
-  // npm/pnpm/yarn export the script being run. `npm test` and `npm run validate` both reach the
-  // scoring runner only through a test harness.
-  const lifecycle = environment.npm_lifecycle_event ?? "";
-  if (/^(test|test:watch|validate)$/u.test(lifecycle)) {
-    signals.push(`npm_lifecycle_event=${lifecycle}`);
+const canonicalPath = async (candidate: string): Promise<string | null> => {
+  try {
+    return await realpath(candidate);
+  } catch {
+    return null;
   }
-  const lifecycleScript = environment.npm_lifecycle_script ?? "";
-  if (/\bvitest\b|\bjest\b/u.test(lifecycleScript)) signals.push("npm_lifecycle_script");
+};
 
-  // Explicit declaration. Defence in depth ONLY: it can force TEST (safe direction) and is
-  // deliberately incapable of forcing PRODUCTION, so no environment value can relax the interlock.
-  if (environment.MAF_SCORING_EXECUTION_CONTEXT === "TEST") {
-    signals.push("MAF_SCORING_EXECUTION_CONTEXT=TEST");
-  }
+/**
+ * Case- and separator-normalised form for containment comparison.
+ *
+ * Windows needs case folding (`C:\Fixtures` and `c:\fixtures` are one directory) and drive-letter
+ * normalisation; `path.resolve` supplies the latter and settles separators on both platforms.
+ */
+const normalizeForCompare = (candidate: string): string =>
+  process.platform === "win32" ? path.resolve(candidate).toLowerCase() : path.resolve(candidate);
 
-  return {
-    kind: signals.length > 0 ? "TEST" : "PRODUCTION",
-    signals,
-    detail:
-      signals.length > 0
-        ? `TEST execution context detected via ${signals.join(", ")}; only an approved ` +
-          "TEST_DOUBLE provider may be spawned"
-        : "no test-harness signal observed; this is a PRODUCTION execution context",
-  };
+/**
+ * Strict containment of an already-canonical child within an already-canonical root.
+ *
+ * `path.relative` is the load-bearing part: a sibling yields a `..`-prefixed result, and a path on
+ * another Windows drive yields an ABSOLUTE result, so both are rejected. Equality is rejected too --
+ * the root directory is not itself an executable.
+ */
+export const isContainedWithin = (child: string, root: string): boolean => {
+  const normalizedChild = normalizeForCompare(child);
+  const normalizedRoot = normalizeForCompare(root);
+  if (normalizedChild === normalizedRoot) return false;
+  const relative = path.relative(normalizedRoot, normalizedChild);
+  if (relative.length === 0) return false;
+  if (path.isAbsolute(relative)) return false;
+  return !relative.split(/[\\/]/u).includes("..");
 };
 
 // --------------------------------------------------------- provider identity
 
 /**
- * Module-private brand. Never exported, so no object literal and no type assertion outside this
- * file can produce a `ProviderIdentity`. The only sources are the two constructors below, and each
- * enforces its own preconditions -- the same capability pattern `ProviderAuthorization` uses, applied
- * to the question the incident turned on: WHICH executable is this.
+ * Module-private compile-time brand, kept only so a `ProviderIdentity` cannot be produced by
+ * structural typing without a deliberate cast. It is NOT the security mechanism -- the WeakSet
+ * below is. The audit's finding was precisely that this brand, alone, is erased at runtime.
  */
 declare const PROVIDER_IDENTITY_BRAND: unique symbol;
 
@@ -164,12 +154,29 @@ export interface ProviderIdentity {
   readonly kind: ProviderIdentityKind;
   /** The exact absolute executable this identity authorizes. Compared verbatim at spawn time. */
   readonly executablePath: string;
-  /** For a test double, the declared test-controlled root the executable was found under. */
+  /** The realpath-resolved executable. For a test double this is what the marker was read from. */
+  readonly resolvedExecutablePath: string;
+  /** For a test double, the canonical test-controlled root the executable was proven to sit in. */
   readonly testDoubleRoot: string | null;
-  /** Context this identity was established in; re-checked at the spawn boundary. */
-  readonly contextKind: ExecutionContextKind;
+  /**
+   * The AUTHENTIC execution context this identity was established in.
+   *
+   * Carried by object reference, not by kind string, so the spawn boundary can require the very
+   * same context object rather than a value that merely claims the same classification.
+   */
+  readonly context: ExecutionContext;
   readonly detail: string;
 }
+
+/**
+ * THE RUNTIME AUTHENTICITY REGISTRY.
+ *
+ * Module-private; never exported, never handed out, never fed a caller-supplied object. Only the
+ * two constructors below add to it, and each adds the exact object it just built from validated
+ * inputs. Membership therefore answers "did this module make you?", which is the question the
+ * erased TypeScript brand could not.
+ */
+const AUTHENTIC_PROVIDER_IDENTITIES = new WeakSet<object>();
 
 export type ProviderIdentityOutcome =
   | { approved: true; identity: ProviderIdentity }
@@ -179,11 +186,16 @@ export type ProviderIdentityRefusal =
   | "NO_EXECUTABLE_SUPPLIED"
   | "NOT_ABSOLUTE"
   | "NOT_A_FILE"
+  | "UNRESOLVABLE_PATH"
   | "UNREADABLE"
   | "REAL_CLAUDE_EXECUTABLE"
   | "MARKER_ABSENT"
   | "ROOT_MARKER_ABSENT"
+  | "ROOT_ESCAPE"
   | "TEST_DOUBLE_IN_PRODUCTION_PATH"
+  | "CONTEXT_NOT_AUTHENTIC"
+  | "CONTEXT_KIND_MISMATCH"
+  | "AMBIENT_CONTRADICTION"
   | "TEST_CONTEXT_REQUIRES_TEST_DOUBLE";
 
 const refuse = (
@@ -195,9 +207,9 @@ const refuse = (
   detail,
 });
 
-/** Walks up from a file looking for the directory marker that declares a test-controlled root. */
-const findTestDoubleRoot = async (executablePath: string): Promise<string | null> => {
-  let dir = path.dirname(executablePath);
+/** Walks up from the RESOLVED executable looking for the directory marker declaring a test root. */
+const findTestDoubleRoot = async (resolvedExecutable: string): Promise<string | null> => {
+  let dir = path.dirname(resolvedExecutable);
   for (let depth = 0; depth < ROOT_MARKER_SEARCH_DEPTH; depth += 1) {
     const marker = path.join(dir, TEST_DOUBLE_ROOT_MARKER_FILE);
     const found = await stat(marker)
@@ -212,26 +224,50 @@ const findTestDoubleRoot = async (executablePath: string): Promise<string | null
 };
 
 /**
- * Approves an explicitly-supplied fake executable as a TEST_DOUBLE provider (mission Repair 2).
+ * Approves an explicitly-supplied fake executable as a TEST_DOUBLE provider.
  *
  * EVERY condition must hold; there is no partial approval and no "close enough":
  *
+ *   - the execution context is AUTHENTIC and is TEST
  *   - a path was supplied at all           (absence is a refusal, never a fallback to `claude`)
  *   - the path is ABSOLUTE                 (a bare name would be resolved through PATH at spawn)
- *   - the path names a real, readable file
- *   - the file is not named like the real Claude CLI
- *   - the file CONTENT carries TEST_DOUBLE_MARKER   (identity established, not assumed)
- *   - an ancestor directory declares itself a test-controlled fixture root
+ *   - the path RESOLVES (realpath) to a real, readable file
+ *   - neither the supplied nor the resolved basename names the real Claude CLI
+ *   - the RESOLVED file's CONTENT carries TEST_DOUBLE_MARKER
+ *   - an ancestor of the RESOLVED file declares itself a test-controlled fixture root
+ *   - the RESOLVED file is contained within the RESOLVED root
  *
- * Note the deliberate absence of any PATH lookup: this function never resolves, searches or guesses.
- * It only inspects the exact bytes at the exact path it was given.
+ * The realpath steps are what close the audit's containment finding. Resolving first means a
+ * symlink or junction that aliases an outside file into a fixture directory is walked to its real
+ * location, where no root marker exists -- so the alias buys nothing. It also means the marker bytes
+ * are read from the file that would actually execute, not from the name used to reach it.
+ *
+ * Note the deliberate absence of any PATH lookup: this function never searches or guesses. It only
+ * inspects the exact bytes at the exact resolved path.
  */
 export const approveTestDoubleProvider = async (input: {
   executablePath: string | undefined;
-  context: ExecutionContext;
+  context: unknown;
   /** Injected for tests of this module itself; defaults to real filesystem reads. */
   readFileText?: (filePath: string) => Promise<string>;
 }): Promise<ProviderIdentityOutcome> => {
+  const context = input.context;
+  if (!isAuthenticExecutionContext(context)) {
+    return refuse(
+      "CONTEXT_NOT_AUTHENTIC",
+      "the execution context supplied to test-double approval was not constructed by this " +
+        'process. A plain object such as { kind: "TEST" } is refused: context authenticity is a ' +
+        "runtime registration, so a literal, a clone and a JSON round-trip all fail it.",
+    );
+  }
+  if (context.kind !== "TEST") {
+    return refuse(
+      "CONTEXT_KIND_MISMATCH",
+      `a TEST_DOUBLE provider was requested under a ${context.kind} execution context. Simulated ` +
+        "observations must never be recorded as paid scoring evidence.",
+    );
+  }
+
   const supplied = input.executablePath;
   if (!supplied || supplied.trim().length === 0) {
     return refuse(
@@ -257,82 +293,132 @@ export const approveTestDoubleProvider = async (input: {
     );
   }
 
-  const isFile = await stat(supplied)
+  // CANONICALISATION FIRST. Everything below reasons about the file that would really execute.
+  const resolved = await canonicalPath(supplied);
+  if (resolved === null) {
+    return refuse(
+      "UNRESOLVABLE_PATH",
+      `test-double provider "${supplied}" could not be resolved to a canonical filesystem path, ` +
+        "so neither its identity nor its containment can be established. An unresolvable path is " +
+        "refused rather than compared as a bare string.",
+    );
+  }
+  if (REAL_CLAUDE_BASENAMES.includes(path.basename(resolved).toLowerCase())) {
+    return refuse(
+      "REAL_CLAUDE_EXECUTABLE",
+      `test-double provider "${supplied}" resolves to "${resolved}", which names a real ` +
+        "first-party Claude Code executable. A link with a harmless name does not change what " +
+        "would be spawned.",
+    );
+  }
+
+  const isFile = await stat(resolved)
     .then((entry) => entry.isFile())
     .catch(() => false);
   if (!isFile) {
     return refuse(
       "NOT_A_FILE",
-      `test-double provider "${supplied}" does not name an existing file, so its identity as a ` +
-        "test double cannot be established.",
+      `test-double provider "${supplied}" (resolved: "${resolved}") does not name an existing ` +
+        "file, so its identity as a test double cannot be established.",
     );
   }
 
   const read = input.readFileText ?? ((filePath: string) => readFile(filePath, "utf8"));
   let content: string;
   try {
-    content = await read(supplied);
+    // Read from the RESOLVED path: the marker must be in the bytes that would run, and a marker in
+    // a filename or a directory name is not evidence of anything.
+    content = await read(resolved);
   } catch (error) {
     return refuse(
       "UNREADABLE",
-      `test-double provider "${supplied}" could not be read, so its identity as a test double ` +
+      `test-double provider "${resolved}" could not be read, so its identity as a test double ` +
         `cannot be established: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
   if (!content.includes(TEST_DOUBLE_MARKER)) {
     return refuse(
       "MARKER_ABSENT",
-      `test-double provider "${supplied}" does not carry the ${TEST_DOUBLE_MARKER} marker. A real ` +
-        "provider binary cannot contain it, so its absence means the executable's identity as a " +
-        "test double is unproven -- which is refused rather than assumed.",
+      `test-double provider "${resolved}" does not carry the ${TEST_DOUBLE_MARKER} marker in its ` +
+        "own bytes. A real provider binary cannot contain it, so its absence means the " +
+        "executable's identity as a test double is unproven -- which is refused rather than assumed.",
     );
   }
 
-  const root = await findTestDoubleRoot(supplied);
-  if (root === null) {
+  const rootMarkerDir = await findTestDoubleRoot(resolved);
+  if (rootMarkerDir === null) {
     return refuse(
       "ROOT_MARKER_ABSENT",
-      `test-double provider "${supplied}" is not inside a directory tree declared as a ` +
+      `test-double provider "${resolved}" is not inside a directory tree declared as a ` +
         `test-controlled provider fixture root (no ${TEST_DOUBLE_ROOT_MARKER_FILE} within ` +
-        `${ROOT_MARKER_SEARCH_DEPTH} parent directories).`,
+        `${ROOT_MARKER_SEARCH_DEPTH} parent directories of its CANONICAL location). A symlink or ` +
+        "junction from inside a fixture root does not place a file inside that root.",
     );
   }
 
-  return {
-    approved: true,
-    identity: {
-      kind: "TEST_DOUBLE_PROVIDER_EXECUTION",
-      executablePath: supplied,
-      testDoubleRoot: root,
-      contextKind: input.context.kind,
-      detail: `approved TEST_DOUBLE provider ${supplied} (marker verified; fixture root ${root})`,
-    } as ProviderIdentity,
-  };
+  // Explicit containment on canonical paths. The walk above started from the resolved executable,
+  // so this can only fail in exotic cases -- which is exactly why it is asserted rather than assumed.
+  const resolvedRoot = await canonicalPath(rootMarkerDir);
+  if (resolvedRoot === null || !isContainedWithin(resolved, resolvedRoot)) {
+    return refuse(
+      "ROOT_ESCAPE",
+      `test-double provider "${resolved}" is not contained within the canonical fixture root ` +
+        `"${resolvedRoot ?? rootMarkerDir}". Containment is decided on realpath-resolved, ` +
+        "case-normalised paths, so an alias that only looks contained is refused.",
+    );
+  }
+
+  const identity: ProviderIdentity = Object.freeze({
+    kind: "TEST_DOUBLE_PROVIDER_EXECUTION",
+    executablePath: supplied,
+    resolvedExecutablePath: resolved,
+    testDoubleRoot: resolvedRoot,
+    context,
+    detail:
+      `approved TEST_DOUBLE provider ${supplied} (canonical ${resolved}; marker verified in file ` +
+      `content; contained in canonical fixture root ${resolvedRoot})`,
+  }) as ProviderIdentity;
+  AUTHENTIC_PROVIDER_IDENTITIES.add(identity);
+  return { approved: true, identity };
 };
 
 /**
  * Establishes a REAL_PROVIDER_EXECUTION identity for the operator's pinned Claude Code executable.
  *
- * Refuses outright in a TEST context. This is the interlock mission Repair 6 asks for, stated in the
- * positive: real-provider identity is not something a test can obtain by having every other gate
- * pass. In the incident every gate DID pass -- freeze, auth, budget, config, billed confirmation --
- * and this constructor is what would have refused anyway.
+ * Refuses outright unless the execution context is authentic AND PRODUCTION, and refuses again if
+ * that PRODUCTION claim contradicts a plainly-visible test harness. Real-provider identity is not
+ * something a test can obtain by having every other gate pass: in the incident every gate DID pass
+ * -- freeze, auth, budget, config, billed confirmation -- and this constructor is what refuses anyway.
  */
 export const resolveRealProviderIdentity = (input: {
   executablePath: string | null | undefined;
-  context: ExecutionContext;
+  context: unknown;
   /** Content of the executable when known, so a mislabelled test double is caught here too. */
   markerObserved?: boolean;
+  /** Injected so a test can assert the contradiction rule without mutating its own environment. */
+  environment?: NodeJS.ProcessEnv;
 }): ProviderIdentityOutcome => {
-  if (input.context.kind === "TEST") {
+  const context = input.context;
+  if (!isAuthenticExecutionContext(context)) {
+    return refuse(
+      "CONTEXT_NOT_AUTHENTIC",
+      "the execution context supplied for REAL_PROVIDER_EXECUTION was not constructed by this " +
+        "process. Only createProductionExecutionContext() yields one, and no environment variable " +
+        "or hand-written object can stand in for it.",
+    );
+  }
+  if (context.kind === "TEST") {
     return refuse(
       "TEST_CONTEXT_REQUIRES_TEST_DOUBLE",
       "REAL_PROVIDER_EXECUTION was requested from a TEST execution context " +
-        `(${input.context.signals.join(", ")}). A test may only spawn an approved TEST_DOUBLE, ` +
-        "regardless of freeze state, billed confirmation, or how many gates passed. This is the " +
-        "structural interlock for incident maf-scoring-incident-2026-09-03-v1.",
+        `(origin ${context.origin}). A test may only spawn an approved TEST_DOUBLE, regardless of ` +
+        "freeze state, billed confirmation, or how many gates passed. This is the structural " +
+        "interlock for incident maf-scoring-incident-2026-09-03-v1.",
     );
   }
+  const contradiction = ambientContradiction(context, input.environment ?? process.env);
+  if (contradiction) return refuse("AMBIENT_CONTRADICTION", contradiction);
+
   const supplied = input.executablePath;
   if (!supplied || supplied.trim().length === 0) {
     return refuse("NO_EXECUTABLE_SUPPLIED", "no participant executable was pinned.");
@@ -352,17 +438,22 @@ export const resolveRealProviderIdentity = (input: {
         "simulated observations as paid evidence.",
     );
   }
-  return {
-    approved: true,
-    identity: {
-      kind: "REAL_PROVIDER_EXECUTION",
-      executablePath: supplied,
-      testDoubleRoot: null,
-      contextKind: "PRODUCTION",
-      detail: `REAL_PROVIDER_EXECUTION pinned to ${supplied} in a PRODUCTION context`,
-    } as ProviderIdentity,
-  };
+
+  const identity: ProviderIdentity = Object.freeze({
+    kind: "REAL_PROVIDER_EXECUTION",
+    executablePath: supplied,
+    resolvedExecutablePath: supplied,
+    testDoubleRoot: null,
+    context,
+    detail: `REAL_PROVIDER_EXECUTION pinned to ${supplied} in a PRODUCTION context`,
+  }) as ProviderIdentity;
+  AUTHENTIC_PROVIDER_IDENTITIES.add(identity);
+  return { approved: true, identity };
 };
+
+/** Runtime authenticity predicate. Reading membership is safe to export; adding is not. */
+export const isAuthenticProviderIdentity = (value: unknown): value is ProviderIdentity =>
+  typeof value === "object" && value !== null && AUTHENTIC_PROVIDER_IDENTITIES.has(value);
 
 // ------------------------------------------------------------- spawn interlock
 
@@ -370,9 +461,15 @@ export const resolveRealProviderIdentity = (input: {
  * THE LOWEST PRACTICAL PROVIDER BOUNDARY.
  *
  * Called immediately before a participant executor is constructed, with the executable that is
- * genuinely about to be spawned. It re-derives the execution context rather than trusting the one
- * the identity was minted in, so a capability created earlier (or in a different process) cannot
- * carry a stale PRODUCTION classification into a test.
+ * genuinely about to be spawned. Every one of the following must hold; the first failure throws.
+ *
+ *   1. the execution context is AUTHENTIC                (not a `{ kind: "TEST" }` literal)
+ *   2. the PRODUCTION claim does not contradict the live environment
+ *   3. the provider identity is AUTHENTIC                (not a literal, clone or JSON round-trip)
+ *   4. the identity was minted in EXACTLY this context   (object identity, not a matching string)
+ *   5. TEST admits only TEST_DOUBLE; PRODUCTION admits only REAL_PROVIDER
+ *   6. the executable is present and absolute
+ *   7. the identity's executable is the one about to be spawned, verbatim
  *
  * Throws -- never returns a boolean. A caller that forgets to check a return value is a bug that
  * spends money; a caller that forgets to catch an exception is a bug that refuses.
@@ -381,11 +478,16 @@ export const assertProviderIdentityForSpawn = (
   identity: ProviderIdentity | undefined,
   context: {
     executablePath: string | undefined;
-    /** Re-detected at the boundary; defaults to the live process environment. */
-    executionContext?: ExecutionContext;
+    /** REQUIRED and authenticated. There is no default and no environment sniff to fall back on. */
+    executionContext: unknown;
+    /** Injected so a test can drive the contradiction rule deterministically. */
+    environment?: NodeJS.ProcessEnv;
   },
 ): void => {
-  const observed = context.executionContext ?? detectExecutionContext();
+  // 1 + 2. The world this spawn happens in, proven before anything about the provider is read.
+  assertAuthenticExecutionContext(context.executionContext, "the provider spawn boundary");
+  const observed = context.executionContext;
+  assertNoAmbientContradiction(observed, context.environment ?? process.env);
 
   if (!identity) {
     throw new Error(
@@ -395,17 +497,40 @@ export const assertProviderIdentityForSpawn = (
     );
   }
 
-  // The interlock. Stated first because it holds even when every other binding is perfect.
-  if (observed.kind === "TEST" && identity.kind !== "TEST_DOUBLE_PROVIDER_EXECUTION") {
+  // 3. Runtime authenticity. This is the check the erased TypeScript brand could not perform, and
+  //    the one the audit found missing: a plain object that merely LOOKS like an identity reaches
+  //    here routinely in an attack, and dies here.
+  if (!isAuthenticProviderIdentity(identity)) {
     throw new Error(
-      `SCORING_EXECUTION_REFUSED: the spawn boundary was reached in a TEST execution context ` +
-        `(${observed.signals.join(", ")}) with provider identity ${identity.kind}. Only an ` +
-        "approved TEST_DOUBLE may be spawned under test, whatever the freeze state, the billed " +
-        "confirmation, or the gate results say.",
+      "SCORING_EXECUTION_REFUSED: the provider identity presented at the spawn boundary was not " +
+        "created by the provider-identity factories. A hand-written object, an object spread, an " +
+        "Object.assign clone and a JSON round-trip all produce a DIFFERENT object and are all " +
+        "refused. Only approveTestDoubleProvider() and resolveRealProviderIdentity() can mint one.",
     );
   }
 
-  // A test double must never be spawned as though it were production evidence.
+  // 4. The identity must belong to THIS context, by object reference. A capability minted earlier,
+  //    elsewhere, or under a different classification cannot be presented here.
+  if (identity.context !== observed) {
+    throw new Error(
+      `SCORING_EXECUTION_REFUSED: provider identity ${identity.kind} was established in a ` +
+        `different execution context (${identity.context.kind}, origin ` +
+        `${identity.context.origin}) than the one presented at the spawn boundary ` +
+        `(${observed.kind}, origin ${observed.origin}). A capability may not be carried across ` +
+        "execution contexts.",
+    );
+  }
+
+  // 5. The interlock. Stated after authenticity because a forged value must never reach it, and
+  //    before every binding below because it holds even when they are all perfect.
+  if (observed.kind === "TEST" && identity.kind !== "TEST_DOUBLE_PROVIDER_EXECUTION") {
+    throw new Error(
+      "SCORING_EXECUTION_REFUSED: the spawn boundary was reached in a TEST execution context " +
+        `(origin ${observed.origin}) with provider identity ${identity.kind}. Only an approved ` +
+        "TEST_DOUBLE may be spawned under test, whatever the freeze state, the billed " +
+        "confirmation, or the gate results say.",
+    );
+  }
   if (observed.kind === "PRODUCTION" && identity.kind === "TEST_DOUBLE_PROVIDER_EXECUTION") {
     throw new Error(
       "SCORING_EXECUTION_REFUSED: a TEST_DOUBLE provider identity reached a PRODUCTION execution " +
@@ -413,6 +538,7 @@ export const assertProviderIdentityForSpawn = (
     );
   }
 
+  // 6 + 7. The exact binary.
   if (context.executablePath === undefined || context.executablePath === "") {
     throw new Error(
       "SCORING_EXECUTION_REFUSED: the spawn boundary was reached without an executable, so the " +
@@ -425,7 +551,6 @@ export const assertProviderIdentityForSpawn = (
         "absolute; every spawn must name an exact binary rather than repeat a PATH lookup.",
     );
   }
-  // Exact equality, mission Repair 2: "spawned path equals the approved fake executable exactly".
   if (identity.executablePath !== context.executablePath) {
     throw new Error(
       `SCORING_EXECUTION_REFUSED: provider identity ${identity.kind} was established for ` +
@@ -437,10 +562,10 @@ export const assertProviderIdentityForSpawn = (
 /**
  * Cheap, bounded check for the test-double marker in a candidate REAL provider executable.
  *
- * Reads at most the first 256 KiB. A test double is a small script and carries the marker well
- * inside that window; a real Claude Code binary is far larger and contains it nowhere. Bounding the
- * read keeps the production path from slurping a multi-megabyte executable on every invocation
- * while still catching a simulated binary being passed off as the real provider.
+ * Reads at most the first 256 KiB of the REALPATH-resolved file. A test double is a small script and
+ * carries the marker well inside that window; a real Claude Code binary is far larger and contains
+ * it nowhere. Bounding the read keeps the production path from slurping a multi-megabyte executable
+ * on every invocation while still catching a simulated binary passed off as the real provider.
  */
 export const observeTestDoubleMarker = async (
   executablePath: string,
@@ -457,7 +582,8 @@ export const observeTestDoubleMarker = async (
   },
 ): Promise<boolean> => {
   try {
-    return (await readHead(executablePath, 256 * 1024)).includes(TEST_DOUBLE_MARKER);
+    const resolved = (await canonicalPath(executablePath)) ?? executablePath;
+    return (await readHead(resolved, 256 * 1024)).includes(TEST_DOUBLE_MARKER);
   } catch {
     // Unreadable is not evidence of being a test double; the REAL identity path has its own
     // absolute-path and context requirements, and the executable gate probes it separately.

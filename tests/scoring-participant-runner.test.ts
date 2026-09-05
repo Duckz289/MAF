@@ -26,7 +26,13 @@ import {
 } from "../evaluation/experiments/scoring/lib/frozen-refs";
 import type { ExperimentProvenanceRecord } from "../evaluation/experiments/real/lib/provenance";
 import type { ProviderIdentity } from "../evaluation/experiments/scoring/lib/provider-identity";
-import { approvedTestDouble } from "./helpers/test-double-provider";
+import {
+  approvedTestDouble,
+  authenticDecision,
+  authorizedCampaignGate,
+  testExecutionContext,
+} from "./helpers/test-double-provider";
+import { mintTestExecutionGateDecision } from "../evaluation/experiments/scoring/lib/internal/test-support";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
@@ -56,25 +62,17 @@ const schedule = buildScoringSchedule({
 const FROZEN_TASK_IDS = ["alpha-task", "beta-task"];
 const CAMPAIGN_ID = "campaign-under-test";
 
-const authorizedDecision = (): ExecutionGateDecision => ({
-  authorized: true,
-  checks: [],
-  failures: [],
-  protocolFreezeAuthority: "GIT_TAG",
-  protocolFrozen: true,
-  knownSourceMetadataNote: "note",
-  summary: "all gates passed",
-});
+/**
+ * An AUTHENTIC, authorized gate decision.
+ *
+ * These used to be object literals asserting `authorized: true`. The independent audit found that
+ * `issueProviderAuthorization` accepted them, so the whole capability chain could be started from a
+ * decision no gate had ever produced. Production now refuses an unregistered decision, and tests
+ * obtain a real one through the internal test-support seam instead.
+ */
+const authorizedDecision = (): ExecutionGateDecision => authenticDecision(testDouble);
 
-const refusedDecision = (): ExecutionGateDecision => ({
-  authorized: false,
-  checks: [{ id: "RUNNER_FROZEN", passed: false, detail: "runner tag absent" }],
-  failures: [{ id: "RUNNER_FROZEN", passed: false, detail: "runner tag absent" }],
-  protocolFreezeAuthority: "GIT_TAG",
-  protocolFrozen: true,
-  knownSourceMetadataNote: "note",
-  summary: "1 of 14 gates failed",
-});
+const refusedDecision = (): ExecutionGateDecision => authenticDecisionRefused();
 
 /**
  * The approved TEST_DOUBLE identity every capability in this file is minted against.
@@ -85,8 +83,23 @@ const refusedDecision = (): ExecutionGateDecision => ({
  */
 let testDouble: ProviderIdentity;
 beforeAll(async () => {
-  testDouble = await approvedTestDouble(fakeCliPath);
+  testDouble = await approvedTestDouble(fakeCliPath, testExecutionContext);
 });
+
+/** A refused-but-AUTHENTIC decision, so the refusal under test is the gate's, not a forgery check. */
+const authenticDecisionRefused = (): ExecutionGateDecision => {
+  const failing = {
+    id: "RUNNER_FROZEN" as const,
+    passed: false,
+    detail: "runner tag absent",
+  };
+  return mintTestExecutionGateDecision({
+    executionContext: testExecutionContext,
+    providerIdentity: testDouble,
+    checks: [failing],
+    authorized: false,
+  });
+};
 
 /** Mints a real capability for the given pair. There is no way to forge one. */
 const authorizationFor = (
@@ -95,11 +108,13 @@ const authorizationFor = (
 ): ProviderAuthorization => {
   const auth = issueProviderAuthorization({
     decision: authorizedDecision(),
+    campaignGate: authorizedCampaignGate(),
     campaignId: overrides.campaignId ?? CAMPAIGN_ID,
     scheduleDigest: overrides.scheduleDigest ?? schedule.scheduleDigest,
     nativeSlotDigest: pair.native.slotDigest,
     mafSlotDigest: pair.maf.slotDigest,
     providerIdentity: testDouble,
+    executionContext: testExecutionContext,
   });
   if (!auth) throw new Error("expected a capability to be issued");
   return auth;
@@ -166,6 +181,7 @@ const runWithFakeCli = async (options: {
       runnerSha: options.runnerSha ?? null,
       campaignId: CAMPAIGN_ID,
       scheduleDigest: schedule.scheduleDigest,
+      executionContext: testExecutionContext,
       fixtureRootResolver: () => preflightFixture,
       // No hidden grader exists for the synthetic task ids, so verification reports NOT_CHECKED --
       // which is exactly right: a run the controller could not independently verify must never be
@@ -387,6 +403,7 @@ describe("the provider boundary enforces authorization itself", () => {
     runnerSha: null,
     campaignId: CAMPAIGN_ID,
     scheduleDigest: schedule.scheduleDigest,
+    executionContext: testExecutionContext,
     fixtureRootResolver: () => preflightFixture,
     verifierLocate: () => null,
   });
@@ -418,6 +435,8 @@ describe("the provider boundary enforces authorization itself", () => {
         nativeSlotDigest: firstPair().native.slotDigest,
         mafSlotDigest: firstPair().maf.slotDigest,
         providerIdentity: testDouble,
+        campaignGate: authorizedCampaignGate(),
+        executionContext: testExecutionContext,
       }),
     ).toBeNull();
   });
@@ -470,6 +489,7 @@ describe("pre-spawn failure settles intents instead of stranding them", () => {
         runnerSha: null,
         campaignId: CAMPAIGN_ID,
         scheduleDigest: schedule.scheduleDigest,
+        executionContext: testExecutionContext,
         // A fixture path that does not exist: preparation fails after intents are written.
         fixtureRootResolver: () => path.join(root, "no-such-fixture"),
         verifierLocate: () => null,
@@ -509,6 +529,7 @@ describe("NON_SCORING and out-of-suite tasks can never be executed", () => {
           runnerSha: null,
           campaignId: CAMPAIGN_ID,
           scheduleDigest: schedule.scheduleDigest,
+          executionContext: testExecutionContext,
           fixtureRootResolver: () => preflightFixture,
           verifierLocate: () => null,
         },
@@ -542,6 +563,7 @@ describe("NON_SCORING and out-of-suite tasks can never be executed", () => {
           runnerSha: null,
           campaignId: CAMPAIGN_ID,
           scheduleDigest: preflightSchedule.scheduleDigest,
+          executionContext: testExecutionContext,
           fixtureRootResolver: () => preflightFixture,
           verifierLocate: () => null,
         },
@@ -556,6 +578,8 @@ describe("NON_SCORING and out-of-suite tasks can never be executed", () => {
             nativeSlotDigest: pair.native.slotDigest,
             mafSlotDigest: pair.maf.slotDigest,
             providerIdentity: testDouble,
+            campaignGate: authorizedCampaignGate(),
+            executionContext: testExecutionContext,
           }) as ProviderAuthorization,
         },
       ),

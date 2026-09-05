@@ -30,15 +30,25 @@ import { ScoringStateStore } from "../evaluation/experiments/scoring/lib/state-s
 import { buildScoringSchedule, type RunSlot } from "../evaluation/experiments/scoring/lib/schedule";
 import {
   ANALYSIS_SHA,
+  INCIDENT_SHA,
+  INCIDENT_TAG,
   PROTOCOL_V1_SHA,
   PROTOCOL_V2_SHA,
   RUNNER_TAG,
+  RUNNER_V1_SHA,
+  RUNNER_V1_TAG,
   SUITE_SHA,
   SUITE_TAG,
 } from "../evaluation/experiments/scoring/lib/frozen-refs";
 import type { SlotState } from "../evaluation/experiments/scoring/lib/state-store";
 import type { ProviderIdentity } from "../evaluation/experiments/scoring/lib/provider-identity";
-import { approvedTestDouble } from "./helpers/test-double-provider";
+import {
+  approvedTestDouble,
+  authenticDecision,
+  authorizedCampaignGate,
+  testExecutionContext,
+} from "./helpers/test-double-provider";
+import { mintTestExecutionGateDecision } from "../evaluation/experiments/scoring/lib/internal/test-support";
 
 // ============================================================ REPAIR 1: pair exposure
 
@@ -289,6 +299,8 @@ describe("REPAIR 2b: the execution gate enforces remote verification", () => {
     "remote:maf-experiment-protocol-v2": PROTOCOL_V2_SHA,
     "local:maf-experiment-analysis-v1": ANALYSIS_SHA,
     "remote:maf-experiment-analysis-v1": ANALYSIS_SHA,
+    "local:maf-scoring-incident-2026-09-03-v1": INCIDENT_SHA,
+    "remote:maf-scoring-incident-2026-09-03-v1": INCIDENT_SHA,
     [`local:${RUNNER_TAG}`]: HEAD,
     [`remote:${RUNNER_TAG}`]: HEAD,
     HEAD,
@@ -311,11 +323,11 @@ describe("REPAIR 2b: the execution gate enforces remote verification", () => {
     providerIdentity: testDouble,
     providerIdentityDetail: testDouble.detail,
     gitStateInjected: true,
-    executionContext: {
-      kind: "TEST" as const,
-      signals: ["unit-test"],
-      detail: "unit test harness",
-    },
+    // An AUTHENTIC TEST context. This used to be a hand-written `{ kind: "TEST" }` literal, which
+    // the audit identified as forgeable: the gate believed whatever the object claimed. The gate now
+    // proves provenance before reading `kind`, so a literal is refused and tests obtain a real
+    // context from the internal test-support seam like everything else.
+    executionContext: testExecutionContext,
 
     manifest: {
       model: "claude-sonnet-5",
@@ -544,15 +556,17 @@ describe("REPAIR 4: provider authorization is a capability, checked at the bound
     (s) => s.taskId === "beta" && s.arm === "NATIVE" && s.replicate === 1,
   ) as RunSlot;
 
-  const decision = (authorized: boolean): ExecutionGateDecision => ({
-    authorized,
-    checks: [],
-    failures: authorized ? [] : [{ id: "RUNNER_FROZEN", passed: false, detail: "absent" }],
-    protocolFreezeAuthority: "GIT_TAG",
-    protocolFrozen: true,
-    knownSourceMetadataNote: "note",
-    summary: authorized ? "ok" : "refused",
-  });
+  // AUTHENTIC decisions. A literal asserting `authorized: true` no longer starts the capability
+  // chain -- `issueProviderAuthorization` refuses any decision no gate evaluation registered.
+  const decision = (authorized: boolean): ExecutionGateDecision =>
+    authorized
+      ? authenticDecision(testDouble)
+      : mintTestExecutionGateDecision({
+          executionContext: testExecutionContext,
+          providerIdentity: testDouble,
+          checks: [{ id: "RUNNER_FROZEN", passed: false, detail: "absent" }],
+          authorized: false,
+        });
 
   // Runner v2: the capability binds an approved provider IDENTITY, not a path string. A synthetic
   // "C:/tools/claude.exe" is no longer expressible here -- which is the point, since that string is
@@ -565,9 +579,10 @@ describe("REPAIR 4: provider authorization is a capability, checked at the bound
     nativeSlotDigest: string;
     mafSlotDigest: string;
     executablePath: string;
+    executionContext: typeof testExecutionContext;
   };
   beforeAll(async () => {
-    testDouble = await approvedTestDouble();
+    testDouble = await approvedTestDouble(undefined, testExecutionContext);
     ABSOLUTE_EXE = testDouble.executablePath;
     context = {
       campaignId: "camp-1",
@@ -575,6 +590,7 @@ describe("REPAIR 4: provider authorization is a capability, checked at the bound
       nativeSlotDigest: nativeSlot.slotDigest,
       mafSlotDigest: mafSlot.slotDigest,
       executablePath: ABSOLUTE_EXE,
+      executionContext: testExecutionContext,
     };
   });
 
@@ -587,6 +603,8 @@ describe("REPAIR 4: provider authorization is a capability, checked at the bound
         nativeSlotDigest: nativeSlot.slotDigest,
         mafSlotDigest: mafSlot.slotDigest,
         providerIdentity: testDouble,
+        campaignGate: authorizedCampaignGate(),
+        executionContext: testExecutionContext,
       }),
     ).toBeNull();
   });
@@ -600,6 +618,8 @@ describe("REPAIR 4: provider authorization is a capability, checked at the bound
         nativeSlotDigest: nativeSlot.slotDigest,
         mafSlotDigest: mafSlot.slotDigest,
         providerIdentity: undefined as unknown as ProviderIdentity,
+        campaignGate: authorizedCampaignGate(),
+        executionContext: testExecutionContext,
       }),
     ).toBeNull();
   });
@@ -618,6 +638,8 @@ describe("REPAIR 4: provider authorization is a capability, checked at the bound
       nativeSlotDigest: nativeSlot.slotDigest,
       mafSlotDigest: mafSlot.slotDigest,
       providerIdentity: testDouble,
+      campaignGate: authorizedCampaignGate(),
+      executionContext: testExecutionContext,
     });
     expect(() => assertAuthorizedForPair(auth ?? undefined, context)).not.toThrow();
   });
@@ -630,6 +652,8 @@ describe("REPAIR 4: provider authorization is a capability, checked at the bound
       nativeSlotDigest: otherNative.slotDigest,
       mafSlotDigest: mafSlot.slotDigest,
       providerIdentity: testDouble,
+      campaignGate: authorizedCampaignGate(),
+      executionContext: testExecutionContext,
     });
     expect(() => assertAuthorizedForPair(auth ?? undefined, context)).toThrow(
       /issued for a different execution/u,
@@ -644,6 +668,8 @@ describe("REPAIR 4: provider authorization is a capability, checked at the bound
       nativeSlotDigest: nativeSlot.slotDigest,
       mafSlotDigest: mafSlot.slotDigest,
       providerIdentity: testDouble,
+      campaignGate: authorizedCampaignGate(),
+      executionContext: testExecutionContext,
     });
     expect(() => assertAuthorizedForPair(auth ?? undefined, context)).toThrow(/campaign/u);
   });
@@ -656,6 +682,8 @@ describe("REPAIR 4: provider authorization is a capability, checked at the bound
       nativeSlotDigest: nativeSlot.slotDigest,
       mafSlotDigest: mafSlot.slotDigest,
       providerIdentity: testDouble,
+      campaignGate: authorizedCampaignGate(),
+      executionContext: testExecutionContext,
     });
     expect(() => assertAuthorizedForPair(auth ?? undefined, context)).toThrow(/schedule digest/u);
   });
@@ -775,6 +803,8 @@ describe("MINOR B: campaign init never silently overwrites", () => {
       runnerVersion: "1.0.0",
       runnerTag: RUNNER_TAG,
       runnerSha: null,
+      incidentTag: INCIDENT_TAG,
+      incidentSha: INCIDENT_SHA,
       scheduleDigest: schedule.scheduleDigest,
       totalSlots: schedule.slots.length,
       campaignCeilingUsd: 100,
@@ -845,6 +875,96 @@ describe("MINOR B: campaign init never silently overwrites", () => {
     });
     expect(opened.opened).toBe(false);
     if (!opened.opened) expect(opened.mismatches.join(" ")).toMatch(/analysisSha/u);
+  });
+
+  // ------------------------------------------ incident identity binding (audit Repair 6)
+
+  it("binds the incident identity and verifies it on resume", async () => {
+    const store = new ScoringStateStore({ root });
+    await store.createCampaign(metadata());
+    const opened = await store.openCampaign({
+      suiteSha: SUITE_SHA,
+      protocolSha: PROTOCOL_V2_SHA,
+      analysisSha: ANALYSIS_SHA,
+      scheduleDigest: schedule.scheduleDigest,
+      incidentTag: INCIDENT_TAG,
+      incidentSha: INCIDENT_SHA,
+    });
+    expect(opened.opened).toBe(true);
+    if (opened.opened) {
+      expect(opened.campaign.incidentTag).toBe(INCIDENT_TAG);
+      expect(opened.campaign.incidentSha).toBe(INCIDENT_SHA);
+    }
+  });
+
+  it("REFUSES to resume a campaign bound to a DIFFERENT incident identity", async () => {
+    const store = new ScoringStateStore({ root });
+    await store.createCampaign(metadata({ incidentSha: "9".repeat(40) }));
+    const opened = await store.openCampaign({
+      suiteSha: SUITE_SHA,
+      protocolSha: PROTOCOL_V2_SHA,
+      analysisSha: ANALYSIS_SHA,
+      scheduleDigest: schedule.scheduleDigest,
+      incidentTag: INCIDENT_TAG,
+      incidentSha: INCIDENT_SHA,
+    });
+    expect(opened.opened).toBe(false);
+    if (!opened.opened) expect(opened.mismatches.join(" ")).toMatch(/incidentSha/u);
+  });
+
+  it("a development campaign with NO incident identity can never become PAID", async () => {
+    // The audit's Repair 6 in one assertion: a campaign created before the incident record became a
+    // mandatory authority must be refused for paid work rather than silently promoted.
+    const store = new ScoringStateStore({ root });
+    await store.createCampaign(metadata({ incidentTag: undefined, incidentSha: undefined }));
+    const opened = await store.openCampaign({
+      suiteSha: SUITE_SHA,
+      protocolSha: PROTOCOL_V2_SHA,
+      analysisSha: ANALYSIS_SHA,
+      scheduleDigest: schedule.scheduleDigest,
+      requirePaid: true,
+    });
+    expect(opened.opened).toBe(false);
+    if (!opened.opened) {
+      expect(opened.mismatches.join(" ")).toMatch(/incident identity/u);
+      expect(opened.mismatches.join(" ")).toMatch(/initialise a new campaign/u);
+    }
+  });
+
+  it("a NON_BILLED_DEVELOPMENT campaign is never promoted to PAID", async () => {
+    const store = new ScoringStateStore({ root });
+    await store.createCampaign(metadata({ billingMode: "NON_BILLED_DEVELOPMENT" }));
+    const opened = await store.openCampaign({
+      suiteSha: SUITE_SHA,
+      protocolSha: PROTOCOL_V2_SHA,
+      analysisSha: ANALYSIS_SHA,
+      scheduleDigest: schedule.scheduleDigest,
+      incidentTag: INCIDENT_TAG,
+      incidentSha: INCIDENT_SHA,
+      requirePaid: true,
+    });
+    expect(opened.opened).toBe(false);
+    if (!opened.opened) expect(opened.mismatches.join(" ")).toMatch(/billingMode/u);
+  });
+
+  it("a PAID campaign bound to Runner v1 does not migrate to Runner v2", async () => {
+    const store = new ScoringStateStore({ root });
+    await store.createCampaign(
+      metadata({ billingMode: "PAID", runnerTag: RUNNER_V1_TAG, runnerSha: RUNNER_V1_SHA }),
+    );
+    const opened = await store.openCampaign({
+      suiteSha: SUITE_SHA,
+      protocolSha: PROTOCOL_V2_SHA,
+      analysisSha: ANALYSIS_SHA,
+      scheduleDigest: schedule.scheduleDigest,
+      runnerTag: RUNNER_TAG,
+      runnerSha: "a".repeat(40),
+      incidentTag: INCIDENT_TAG,
+      incidentSha: INCIDENT_SHA,
+      requirePaid: true,
+    });
+    expect(opened.opened).toBe(false);
+    if (!opened.opened) expect(opened.mismatches.join(" ")).toMatch(/runnerTag|runnerSha/u);
   });
 
   it("refuses to resume when no campaign exists", async () => {

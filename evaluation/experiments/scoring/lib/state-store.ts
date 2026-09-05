@@ -55,6 +55,20 @@ export interface CampaignMetadata {
   /** Null while the runner is not yet frozen; billed execution is impossible in that state. */
   runnerSha: string | null;
   /**
+   * The incident record that governs this runner, bound into the campaign at creation.
+   *
+   * Runner v2 exists because of maf-scoring-incident-2026-09-03-v1, so a PAID campaign must be able
+   * to name the incident identity it was collected under, exactly as it names the suite, protocol
+   * and analysis. `openCampaign` re-verifies both fields on every resume, which is what stops a
+   * development campaign created without them from silently becoming PAID later.
+   *
+   * These fields NAME the incident. They import nothing from it: the six accidental arm-runs are
+   * NON_OFFICIAL and have no path into campaign state, the DVS denominator, task aggregation,
+   * McNemar, the Newcombe interval, cost-per-DVS, or any official report.
+   */
+  incidentTag: string;
+  incidentSha: string;
+  /**
    * Whether this campaign may ever hold paid observations.
    *
    * A campaign created before the runner freeze has `runnerSha: null` -- there is no frozen runner
@@ -293,6 +307,13 @@ export class ScoringStateStore {
      */
     runnerTag?: string;
     runnerSha?: string | null;
+    /**
+     * Incident identity to require. Always compared when supplied, and MANDATORY for PAID
+     * execution: a campaign that cannot name the incident record governing its runner is not
+     * reproducible evidence and must not be resumed as a paid one.
+     */
+    incidentTag?: string;
+    incidentSha?: string;
     requirePaid?: boolean;
   }): Promise<
     | { opened: true; campaign: CampaignMetadata }
@@ -317,7 +338,25 @@ export class ScoringStateStore {
     compare("analysisSha", campaign.analysisSha, expected.analysisSha);
     compare("scheduleDigest", campaign.scheduleDigest, expected.scheduleDigest);
 
+    // The incident identity is verified on EVERY open, paid or not, so a campaign that predates the
+    // binding is visibly a different campaign rather than one that quietly acquires the identity.
+    if (expected.incidentTag !== undefined) {
+      compare("incidentTag", String(campaign.incidentTag), expected.incidentTag);
+    }
+    if (expected.incidentSha !== undefined) {
+      compare("incidentSha", String(campaign.incidentSha), expected.incidentSha);
+    }
+
     if (expected.requirePaid === true) {
+      // Mandatory for paid work even if the caller forgot to ask: a PAID campaign without a bound
+      // incident identity is refused rather than promoted.
+      if (!campaign.incidentTag || !campaign.incidentSha) {
+        mismatches.push(
+          "incident identity: this campaign records no incidentTag/incidentSha. It was created " +
+            "before the incident record became a mandatory frozen authority and cannot be " +
+            "promoted to PAID; initialise a new campaign instead",
+        );
+      }
       if (campaign.billingMode !== "PAID") {
         mismatches.push(
           `billingMode: stored=${campaign.billingMode} expected=PAID. This campaign was created ` +

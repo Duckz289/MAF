@@ -12,6 +12,7 @@
 // authorize a new paid slot rather than treating unmeasured spend as $0 -- the same "UNKNOWN never
 // becomes zero" discipline the per-run ledger already applies.
 
+import { createHash } from "node:crypto";
 import type { ObservationRecord, SlotState } from "./state-store";
 
 export interface CampaignSpend {
@@ -198,3 +199,31 @@ export const theoreticalMaximumCampaignUsd = (
   totalRuns: number,
   perRunCeilingUsd: number,
 ): number => totalRuns * perRunCeilingUsd;
+
+/**
+ * A single value naming the BUDGET STATE one authorization was granted under.
+ *
+ * Bound into every provider authorization so a capability minted while $84 remained cannot be
+ * replayed after the campaign has spent down to $9. The audit asked for exactly this: an
+ * authorization tied to a different budget state must be refused, and comparing a digest is what
+ * makes "different" decidable at the spawn boundary rather than trusted from the caller.
+ *
+ * Every field that can change the answer is included -- the status, the ceiling, the per-run
+ * ceiling, the pair exposure, the known spend and how many observations that spend was summed from.
+ */
+export const campaignBudgetDigest = (decision: CampaignGateDecision): string =>
+  createHash("sha256")
+    .update(
+      [
+        decision.status,
+        String(decision.authorized),
+        String(decision.ceilingUsd),
+        String(decision.perRunCeilingUsd),
+        String(decision.pairMaxExposureUsd),
+        decision.spend.knownSpendUsd.toFixed(6),
+        String(decision.spend.totalObservations),
+        decision.spend.spendStatus,
+        String(decision.spend.headroomUnknowable),
+      ].join("|"),
+    )
+    .digest("hex");

@@ -10,14 +10,18 @@
 // on the remote, and MUST peel to its expected commit -- so it gets its own gate here.
 
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import {
   ANALYSIS_SHA,
   ANALYSIS_TAG,
+  INCIDENT_SHA,
+  INCIDENT_TAG,
   PROTOCOL_V1_SHA,
   PROTOCOL_V1_TAG,
   PROTOCOL_V2_SHA,
   PROTOCOL_V2_TAG,
+  RUNNER_TAG,
   SUITE_SHA,
   SUITE_TAG,
 } from "./frozen-refs";
@@ -175,16 +179,52 @@ export const verifyFrozenTag = async (
 };
 
 /**
- * The four frozen artifacts every scoring action depends on: what was measured (suite), how it was
- * designed (protocol v1), how it is executed (protocol v2), and how it will be analysed
- * (analysis v1). A scoring observation that cannot name all four is not reproducible.
+ * The FIVE frozen artifacts every scoring action depends on: what was measured (suite), how it was
+ * designed (protocol v1), how it is executed (protocol v2), how it will be analysed (analysis v1),
+ * and why this runner exists at all (incident v1).
+ *
+ * The incident is a mandatory authority, not a footnote. Runner v2 is a direct consequence of
+ * maf-scoring-incident-2026-09-03-v1, and a paid observation that cannot name the incident record
+ * governing its own runner is not reproducible evidence -- so the same existence, peeled-SHA and
+ * local==remote proof the other four require applies to it.
  */
 export const FROZEN_TAG_EXPECTATIONS: readonly TagExpectation[] = [
   { tag: SUITE_TAG, expectedSha: SUITE_SHA },
   { tag: PROTOCOL_V1_TAG, expectedSha: PROTOCOL_V1_SHA },
   { tag: PROTOCOL_V2_TAG, expectedSha: PROTOCOL_V2_SHA },
   { tag: ANALYSIS_TAG, expectedSha: ANALYSIS_SHA },
+  { tag: INCIDENT_TAG, expectedSha: INCIDENT_SHA },
 ];
+
+/**
+ * A single value naming WHICH frozen authorities a decision was reached under.
+ *
+ * Bound into every provider authorization so a capability minted against one frozen world cannot be
+ * replayed in another. The runner tag's NAME is included (a campaign scored under a different
+ * runner tag is a different campaign) but not its SHA, which is HEAD-dependent by design and
+ * already proven separately by `verifyRunnerFreeze`.
+ */
+const digestAuthorities = (entries: ReadonlyArray<readonly [string, string]>): string => {
+  const canonical = [...entries]
+    .map(([tag, sha]) => `${tag}=${sha}`)
+    .sort()
+    .join("\n");
+  return createHash("sha256").update(`${RUNNER_TAG}\n${canonical}`).digest("hex");
+};
+
+/** The digest of the frozen authorities as this runner revision PINS them. */
+export const canonicalFrozenAuthorityDigest = (): string =>
+  digestAuthorities(FROZEN_TAG_EXPECTATIONS.map((e) => [e.tag, e.expectedSha] as const));
+
+/**
+ * The digest of the frozen authorities as they were ACTUALLY OBSERVED in the repository.
+ *
+ * Computed from the peeled commits verification really saw, so a world whose tags differ from the
+ * pinned constants produces a different digest -- and the spawn boundary, which compares against
+ * `canonicalFrozenAuthorityDigest()`, refuses rather than trusting the decision's own summary.
+ */
+export const observedFrozenAuthorityDigest = (checks: readonly TagCheckResult[]): string =>
+  digestAuthorities(checks.map((check) => [check.tag, check.localSha ?? "ABSENT"] as const));
 
 export const verifyFrozenArtifacts = async (
   options: TagVerificationOptions,
@@ -358,5 +398,110 @@ export const verifyRunnerFreeze = async (input: {
     ok: true,
     status: "OK",
     detail: `runner tag ${runnerTag} verified local == remote == HEAD == ${localSha}`,
+  };
+};
+
+// ------------------------------------------------------------ incident freeze
+
+export type IncidentFreezeStatus =
+  | "OK"
+  | "MISSING_LOCAL"
+  | "MISSING_REMOTE"
+  | "LOCAL_MISMATCH"
+  | "REMOTE_MISMATCH"
+  | "LOCAL_REMOTE_DIVERGED"
+  | "REMOTE_NOT_CHECKED";
+
+export interface IncidentFreezeVerification {
+  ok: boolean;
+  status: IncidentFreezeStatus;
+  incidentTag: string;
+  expectedSha: string;
+  localSha: string | null;
+  remoteSha: string | null;
+  remoteChecked: boolean;
+  detail: string;
+}
+
+/**
+ * Full incident-freeze verification, required before ANY paid Runner v2 execution.
+ *
+ * Runner v2 exists because of maf-scoring-incident-2026-09-03-v1. Treating that record as optional
+ * would let a paid campaign be collected under a runner whose own justification could not be
+ * produced -- so the incident tag is proven exactly as strictly as the suite and the protocol:
+ * present locally, published on origin, and peeling on BOTH sides to the pinned commit.
+ *
+ * `skipRemote` is honoured for developer inspection but recorded as `REMOTE_NOT_CHECKED`, which is
+ * never OK. A local-only incident record is not durable evidence, and the mission requires that a
+ * skipped remote lookup refuse rather than quietly narrow what was proven.
+ */
+export const verifyIncidentFreeze = async (
+  options: TagVerificationOptions,
+): Promise<IncidentFreezeVerification> => {
+  const git = options.git ?? realGit;
+  const incidentTag = INCIDENT_TAG;
+  const expectedSha = INCIDENT_SHA;
+  const localSha = await localPeeled(git, options.repoRoot, incidentTag);
+  const remoteChecked = options.skipRemote !== true;
+  const remoteSha = remoteChecked ? await remotePeeled(git, options.repoRoot, incidentTag) : null;
+  const base = { incidentTag, expectedSha, localSha, remoteSha, remoteChecked };
+
+  if (localSha === null) {
+    return {
+      ...base,
+      ok: false,
+      status: "MISSING_LOCAL",
+      detail:
+        `incident tag ${incidentTag} does not exist locally. Paid Runner v2 execution requires the ` +
+        "incident record that produced this runner to be a present, frozen authority.",
+    };
+  }
+  if (localSha !== expectedSha) {
+    return {
+      ...base,
+      ok: false,
+      status: "LOCAL_MISMATCH",
+      detail: `incident tag ${incidentTag} peels locally to ${localSha}, expected ${expectedSha}; a moved incident tag invalidates the record`,
+    };
+  }
+  if (!remoteChecked) {
+    return {
+      ...base,
+      ok: false,
+      status: "REMOTE_NOT_CHECKED",
+      detail:
+        `the remote was not consulted for ${incidentTag}. A local-only incident record is not ` +
+        "durable evidence, so billed execution is refused regardless of the local tag.",
+    };
+  }
+  if (remoteSha === null) {
+    return {
+      ...base,
+      ok: false,
+      status: "MISSING_REMOTE",
+      detail: `incident tag ${incidentTag} is not published on origin; a local-only incident record is not durable evidence`,
+    };
+  }
+  if (remoteSha !== expectedSha) {
+    return {
+      ...base,
+      ok: false,
+      status: "REMOTE_MISMATCH",
+      detail: `incident tag ${incidentTag} peels on origin to ${remoteSha}, expected ${expectedSha}`,
+    };
+  }
+  if (localSha !== remoteSha) {
+    return {
+      ...base,
+      ok: false,
+      status: "LOCAL_REMOTE_DIVERGED",
+      detail: `incident tag ${incidentTag} peels locally to ${localSha} but to ${remoteSha} on origin`,
+    };
+  }
+  return {
+    ...base,
+    ok: true,
+    status: "OK",
+    detail: `incident tag ${incidentTag} verified local == remote == ${expectedSha}`,
   };
 };

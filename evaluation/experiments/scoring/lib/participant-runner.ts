@@ -14,8 +14,9 @@
 //
 // ORDER OF OPERATIONS around money, which is the part that must not be rearranged:
 //
-//   0. assert the provider authorization is bound to THIS pair, THIS absolute executable, and an
-//      established provider identity admissible in the observed execution context
+//   0. assert the provider authorization is bound to THIS pair, THIS absolute executable, THIS
+//      execution context, THIS frozen world and THIS budget state, and carries a runtime-authentic
+//      provider identity admissible in that context
 //   1. claim BOTH slots            -- exclusive create; if either is unavailable, nothing spawns
 //   2. declare provider-start intent for BOTH arms, flushed to disk, BEFORE any slow work
 //   3. hash the fixture, prove Native/MAF starting-state parity, scan the workspace config
@@ -126,6 +127,21 @@ export interface ParticipantRunnerConfig {
   campaignId: string;
   /** Schedule the pair was drawn from; the authorization is bound to it. */
   scheduleDigest: string;
+  /**
+   * The AUTHENTIC execution context this run happens in.
+   *
+   * Required, and compared by object reference against the one the capability was minted in. The
+   * audit's finding was that this classification used to be re-sniffed from ambient environment at
+   * the boundary, which made a mutable, inherited signal the trust root.
+   */
+  executionContext: unknown;
+  /**
+   * Which frozen authorities the caller believes are in force, and the budget state it is executing
+   * under. Both are compared against the capability's own bindings, so a capability minted in a
+   * different frozen world or with different remaining headroom is refused before any claim.
+   */
+  freezeAuthorityDigest?: string;
+  budgetDigest?: string;
   /** Directory holding the frozen suite's pristine task fixtures. */
   fixtureRootResolver: (taskId: string) => string;
   /** Locates a task's hidden grader phase for the independent verifier. */
@@ -223,6 +239,11 @@ export const executePairedSlots = async (
     // a PATH lookup, so an omitted or mismatched command is refused here rather than silently
     // reaching a different binary than the one that was version- and auth-checked.
     executablePath: config.claudeCommand,
+    executionContext: config.executionContext,
+    ...(config.freezeAuthorityDigest !== undefined
+      ? { freezeAuthorityDigest: config.freezeAuthorityDigest }
+      : {}),
+    ...(config.budgetDigest !== undefined ? { budgetDigest: config.budgetDigest } : {}),
   });
 
   // Membership: a NON_SCORING or out-of-suite task must never reach an executor, let alone a paid
@@ -339,13 +360,16 @@ export const executePairedSlots = async (
   //    only differences are the treatment ones Protocol v2 declares.
   //
   //    THE LAST GATE BEFORE MONEY. Step 0 already checked this, and it is checked AGAIN here, on
-  //    purpose: this is the final statement before a child process can exist, and the context is
-  //    re-detected rather than remembered. Steps 1-3 do filesystem work of unbounded duration, and
-  //    a re-check immediately before construction is what makes "no real provider under test" a
-  //    property of the spawn itself rather than of an earlier moment. Incident
-  //    maf-scoring-incident-2026-09-03-v1 reached an equivalent point with every gate passing.
+  //    purpose: this is the final statement before a child process can exist. Steps 1-3 do
+  //    filesystem work of unbounded duration, and a re-check immediately before construction is what
+  //    makes "no real provider under test" a property of the spawn itself rather than of an earlier
+  //    moment. The check re-proves runtime authenticity of BOTH the identity and the context, and
+  //    re-reads the LIVE environment for a contradiction, so nothing established earlier is taken on
+  //    trust. Incident maf-scoring-incident-2026-09-03-v1 reached an equivalent point with every
+  //    gate passing.
   assertProviderIdentityForSpawn(options.authorization.providerIdentity, {
     executablePath: config.claudeCommand,
+    executionContext: config.executionContext,
   });
 
   const controllerConfig = {
